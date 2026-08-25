@@ -46,6 +46,13 @@ General
   role-specific custom playbooks that are not part of the main :file:`site.yml`
   playbook.
 
+:ref:`debops.elasticsearch` role
+''''''''''''''''''''''''''''''''
+
+- The :file:`scope/elasticsearch/remove_node` playbook allows for a clean
+  removal of an Elasticsearch node from the ES cluster by migrating all shards
+  to other nodes and stopping the service.
+
 :ref:`debops.java` role
 '''''''''''''''''''''''
 
@@ -118,14 +125,20 @@ General
 ''''''''''''''''''''''''''''''''
 
 - Since Elasticsearch v8.0.0, the service does not support a configurable Java
-  security policy. The role was updated to instead symlink private keys, X.509
-  certificates and CA certificates managed by the :ref:`debops.pki` role to the
-  :file:`/etc/elasticsearch/certs/` subdirectory to allow for TLS encryption.
+  security policy. The role was updated to instead copy (default) or symlink
+  private keys, X.509 certificates and CA certificates managed by the
+  :ref:`debops.pki` role to the :file:`/etc/elasticsearch/certs/` subdirectory
+  to allow for TLS encryption. The type of the integration is configurable.
 
   .. note:: Existing Elasticsearch installations should work correctly after
      the role has been applied (symlinks created, configuration file changed to
      point to the new file paths, service restarted). But it's best to test
      this change on a separate environment.
+
+- By default role will skip configuring authentication on Elasticsearch nodes
+  that are not specified as initial master nodes. This permits addition of more
+  ES nodes after initial cluster deployment with assumption that they will be
+  bootstrapped by the current Eleasticsearch master node.
 
 :ref:`debops.pki` role
 ''''''''''''''''''''''
