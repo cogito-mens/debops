@@ -54,6 +54,44 @@ def _resolve_role(roles_path, name):
     return name, path
 
 
+def _load_role_defaults(role_path):
+    """Load a role's defaults sources in the order Ansible reads them.
+
+    A role defines its defaults in 'defaults/main.yml', in a
+    'defaults/main/' directory whose files are read in alphabetical
+    order, or both. Returns an ordered list of (source_name, text) pairs.
+    """
+    sources = []
+    main_file = os.path.join(role_path, 'defaults', 'main.yml')
+    if os.path.isfile(main_file):
+        with open(main_file) as fp:
+            sources.append(('main.yml', fp.read()))
+    main_dir = os.path.join(role_path, 'defaults', 'main')
+    if os.path.isdir(main_dir):
+        for filename in sorted(os.listdir(main_dir)):
+            if (filename.endswith(('.yml', '.yaml'))
+                    and not filename.startswith('.')):
+                with open(os.path.join(main_dir, filename)) as fp:
+                    sources.append((filename, fp.read()))
+    return sources
+
+
+def _role_default_values(sources):
+    """Merge the default values of all sources; later files win.
+
+    Returns (values, partial): 'partial' marks sources which did not
+    parse as YAML.
+    """
+    values = {}
+    partial = False
+    for _source, text in sources:
+        try:
+            values.update(yaml.safe_load(text) or {})
+        except yaml.YAMLError:
+            partial = True
+    return values, partial
+
+
 def _extract_envvar_docs(text):
     """Extract documented variables from a DebOps defaults file.
 
@@ -156,21 +194,16 @@ def _tool_role_info(roles_path, arguments):
         except yaml.YAMLError as errmsg:
             logger.warning('Cannot parse %s: %s', meta_file, errmsg)
 
-    defaults_file = os.path.join(path, 'defaults', 'main.yml')
-    variables = 0
-    if os.path.isfile(defaults_file):
-        try:
-            with open(defaults_file) as fp:
-                variables = len(yaml.safe_load(fp) or {})
-        except yaml.YAMLError:
-            variables = -1
+    variables, partial = _role_default_values(_load_role_defaults(path))
 
     lines = ['# debops.{}'.format(name), '']
     if description:
         lines.extend([description, ''])
+    variables_line = str(len(variables))
+    if partial:
+        variables_line += ' (partial, a defaults file did not parse)'
     lines.extend([
-            '- variables: {}'.format('unparseable defaults file'
-                                     if variables < 0 else variables),
+            '- variables: {}'.format(variables_line),
             '- tasks: {}'.format(
                 'yes' if os.path.isfile(os.path.join(
                     path, 'tasks', 'main.yml')) else 'no'),
@@ -197,28 +230,38 @@ def _tool_role_variables(roles_path, arguments):
                              .format(arguments.get('name')))
     name, path = resolved
 
-    defaults_file = os.path.join(path, 'defaults', 'main.yml')
-    if not os.path.isfile(defaults_file):
-        return _error_result('role debops.{} has no defaults/main.yml'
-                             .format(name))
-    with open(defaults_file) as fp:
-        text = fp.read()
+    sources = _load_role_defaults(path)
+    if not sources:
+        return _error_result('role debops.{} has no defaults'.format(name))
 
-    try:
-        values = yaml.safe_load(text) or {}
-    except yaml.YAMLError:
-        values = None
+    values = {}
+    per_file_values = []
+    for source, text in sources:
+        try:
+            file_values = yaml.safe_load(text) or {}
+        except yaml.YAMLError:
+            file_values = None
+        if file_values:
+            values.update(file_values)
+        per_file_values.append((source, file_values))
 
-    # Documented variables, in file order, then any undocumented ones
+    # Documented variables first, in file order, then undocumented ones;
+    # the first documentation of a variable wins, while values of later
+    # files override earlier ones, as Ansible does
     entries = []
     seen = set()
-    for var_name, description, value_text in _extract_envvar_docs(text):
-        entries.append((var_name, description, value_text))
-        seen.add(var_name)
-    if values is not None:
-        for var_name in values:
+    for source, text in sources:
+        for var_name, description, value_text in _extract_envvar_docs(text):
             if var_name not in seen:
-                entries.append((var_name, '', ''))
+                entries.append((var_name, description, value_text, source))
+                seen.add(var_name)
+    for source, file_values in per_file_values:
+        if not file_values:
+            continue
+        for var_name in file_values:
+            if var_name not in seen:
+                entries.append((var_name, '', '', source))
+                seen.add(var_name)
 
     name_filter = str(arguments.get('filter') or '').lower()
     if name_filter:
@@ -229,21 +272,30 @@ def _tool_role_variables(roles_path, arguments):
         return _text_result('no matching variables in debops.{} '
                             'defaults'.format(name))
 
-    lines = ['# debops.{} default variables'.format(name), '']
-    for var_name, description, value_text in entries:
-        lines.append('## {}'.format(var_name))
-        lines.append('')
-        if description:
-            lines.extend([description, ''])
-        default = None
-        if values is not None and var_name in values:
-            default = yaml.safe_dump(values[var_name],
-                                     default_flow_style=None,
-                                     width=1000).strip()
-        elif value_text:
-            default = value_text
-        if default:
-            lines.extend(['```yaml', default, '```', ''])
+    lines = ['# debops.{} default variables'.format(name)]
+    if len(sources) > 1:
+        lines[0] += ' ({} files)'.format(len(sources))
+    lines.append('')
+    for source, _text in sources:
+        group = [entry for entry in entries if entry[3] == source]
+        if not group:
+            continue
+        if len(sources) > 1:
+            lines.extend(['**File: {}**'.format(source), ''])
+        for var_name, description, value_text, _source in group:
+            lines.append('## {}'.format(var_name))
+            lines.append('')
+            if description:
+                lines.extend([description, ''])
+            default = None
+            if var_name in values:
+                default = yaml.safe_dump(values[var_name],
+                                         default_flow_style=None,
+                                         width=1000).strip()
+            elif value_text:
+                default = value_text
+            if default:
+                lines.extend(['```yaml', default, '```', ''])
     return _text_result('\n'.join(lines))
 
 

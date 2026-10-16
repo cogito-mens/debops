@@ -45,6 +45,29 @@ dependencies:
   - debops.otherrole
 '''
 
+# A role with split defaults in a 'defaults/main/' directory; files are
+# read in alphabetical order and later files win per variable
+SPLIT_DEFAULTS_A = '''---
+# .. envvar:: splitrole__alpha [[[
+#
+# Variable from the first file.
+splitrole__alpha: "a"
+
+# .. envvar:: splitrole__shared [[[
+#
+# Documented in the first file.
+splitrole__shared: "from-a"
+'''
+
+SPLIT_DEFAULTS_B = '''---
+# .. envvar:: splitrole__beta [[[
+#
+# Variable from the second file.
+splitrole__beta: "b"
+
+splitrole__shared: "from-b"
+'''
+
 
 class ToolsTestCase(unittest.TestCase):
 
@@ -75,6 +98,15 @@ class ToolsTestCase(unittest.TestCase):
             fp.write(ROLE_META)
         with open(os.path.join(role, 'tasks', 'main.yml'), 'w') as fp:
             fp.write('---\n[]\n')
+
+        splitrole = os.path.join(self.roles_path, 'splitrole')
+        os.makedirs(os.path.join(splitrole, 'defaults', 'main'))
+        with open(os.path.join(splitrole, 'defaults', 'main', 'a.yml'),
+                  'w') as fp:
+            fp.write(SPLIT_DEFAULTS_A)
+        with open(os.path.join(splitrole, 'defaults', 'main', 'b.yml'),
+                  'w') as fp:
+            fp.write(SPLIT_DEFAULTS_B)
 
         self.server = McpServer(project=self.project,
                                 policy=McpPolicy(self.project))
@@ -179,6 +211,28 @@ class ToolsTestCase(unittest.TestCase):
     def test_role_variables_unknown_role(self):
         response = self.call_tool('role_variables', {'name': 'nosuch'})
         self.assertTrue(response['result']['isError'])
+
+    # -- split defaults files ----------------------------------------------
+
+    def test_role_variables_split_defaults(self):
+        response = self.call_tool('role_variables', {'name': 'splitrole'})
+        text = self.result_text(response)
+        self.assertFalse(response['result']['isError'])
+        # Both files contribute their variables, with file separators
+        self.assertIn('(2 files)', text)
+        self.assertIn('**File: a.yml**', text)
+        self.assertIn('**File: b.yml**', text)
+        self.assertIn('## splitrole__alpha', text)
+        self.assertIn('## splitrole__beta', text)
+        # A shared variable is documented once, but the later file wins
+        self.assertEqual(text.count('## splitrole__shared'), 1)
+        self.assertIn('Documented in the first file.', text)
+        self.assertIn('from-b', text)
+
+    def test_role_info_counts_split_defaults(self):
+        response = self.call_tool('role_info', {'name': 'splitrole'})
+        text = self.result_text(response)
+        self.assertIn('variables: 3', text)
 
 
 if __name__ == '__main__':
