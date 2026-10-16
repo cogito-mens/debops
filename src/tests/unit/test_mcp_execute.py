@@ -14,6 +14,8 @@ from debops.mcp.server import McpServer, RequestCancelled, ToolContext
 from debops.mcp.tools import register_project_tools
 from debops.mcp.tools.execute import _build_ansible_args
 from unittest import mock
+import contextlib
+import io
 import os
 import shutil
 import subprocess
@@ -134,6 +136,28 @@ class ExecuteTestCase(unittest.TestCase):
         self.assertTrue(result['isError'])
         self.assertIn('exit code: 2', result['content'][0]['text'])
         self.assertIn('failed!', result['content'][0]['text'])
+
+    def test_runner_abort_stays_off_the_protocol_channel(self):
+        """A runner which prints and exits becomes an error result."""
+        from debops.mcp.tools.execute import _execute_playbook
+
+        def aborting_runner(*args, **kwargs):
+            print('Error: No inventory specified in the "ansible.cfg" '
+                  'configuration file.')
+            raise SystemExit(1)
+
+        real_stdout = io.StringIO()
+        with mock.patch('debops.mcp.tools.execute.AnsiblePlaybookRunner',
+                        side_effect=aborting_runner), \
+                contextlib.redirect_stdout(real_stdout):
+            result = _execute_playbook(self.project, self.policy,
+                                       {'playbook': 'site'}, self.context,
+                                       check=True)
+        self.assertTrue(result['isError'])
+        self.assertIn('No inventory specified',
+                      result['content'][0]['text'])
+        # Nothing reached the real stdout
+        self.assertEqual(real_stdout.getvalue(), '')
 
     def test_hook_abort_prevents_execution(self):
         from debops.mcp.tools.execute import _execute_playbook

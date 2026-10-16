@@ -14,6 +14,8 @@ These tools run for a long time and against real infrastructure; they
 run with a request context so that clients can cancel them.
 """
 
+import contextlib
+import io
 import logging
 import os
 import subprocess
@@ -74,18 +76,34 @@ def _build_ansible_args(arguments, check, allowed_options=EXECUTE_OPTIONS):
 
 
 def _execute_playbook(project, policy, arguments, context, check):
-    try:
-        args = _build_ansible_args(arguments, check, policy.execute_options)
-        runner = AnsiblePlaybookRunner(project, ansible_args=args)
-    except (ValueError, FileNotFoundError, ChildProcessError) as errmsg:
-        return error_result(str(errmsg))
-    command = runner.command()
-
     mode = 'check' if check else 'run'
-    logger.notice('Executing a playbook in %s mode: %s',
-                  mode, ' '.join(command))
 
     with _EXECUTION_LOCK:
+        try:
+            args = _build_ansible_args(arguments, check,
+                                       policy.execute_options)
+        except ValueError as errmsg:
+            return error_result(str(errmsg))
+
+        # The runner is command-line machinery: some of its error paths
+        # print to stdout and call sys.exit(). Both would damage a server
+        # (stdout is the protocol channel, and an exit kills the daemon),
+        # so its construction is captured and its aborts become results
+        runner_stdout = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(runner_stdout):
+                runner = AnsiblePlaybookRunner(project, ansible_args=args)
+        except (ValueError, FileNotFoundError,
+                ChildProcessError) as errmsg:
+            return error_result(str(errmsg))
+        except SystemExit as errmsg:
+            details = runner_stdout.getvalue().strip()
+            return error_result('the playbook runner aborted (code {}): {}'
+                                .format(errmsg.code, details))
+        command = runner.command()
+
+        logger.notice('Executing a playbook in %s mode: %s',
+                      mode, ' '.join(command))
         if not run_hooks(project.path, 'pre-' + mode):
             return error_result('the pre-{} hook aborted the execution'
                                 .format(mode))
