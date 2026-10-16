@@ -11,6 +11,8 @@ from .ansiblerunner import AnsibleRunner
 from .ansibleplaybookrunner import AnsiblePlaybookRunner
 from .envrunner import EnvRunner
 from .mcp.server import McpServer
+from .mcp.policy import McpPolicy
+from .mcp.tools import register_project_tools
 from .mcp.transport import StdioTransport, UnixSocketTransport
 from .mcp.transport import bridge_stdio_to_unix
 import logging
@@ -240,7 +242,9 @@ class Interpreter(object):
 
         logger.notice('Serving project \'%s\' at %s, view \'%s\'',
                       project.name, project.path, project.view)
-        server = McpServer(project=project)
+        policy = McpPolicy(project)
+        server = McpServer(project=project, policy=policy)
+        register_project_tools(server)
         try:
             if args.socket:
                 transport = UnixSocketTransport(

@@ -42,7 +42,7 @@ class UnixSocketTransportTestCase(unittest.TestCase):
                 target=self.transport.serve, args=(self.server,),
                 daemon=True)
         self.thread.start()
-        for _ in range(200):
+        for _ in range(500):
             if os.path.exists(self.path):
                 break
             time.sleep(0.01)

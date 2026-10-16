@@ -32,6 +32,18 @@ def project_dir(tmp_path):
     return tmp_path
 
 
+@pytest.fixture
+def mcp_env(debops_env):
+    """A hermetic environment for the debops subprocess.
+
+    Unit tests construct ProjectDir in-process, which leaks ANSIBLE_CONFIG
+    into os.environ; ProjectDir would then redirect the project path to
+    its parent directory. Neutralize the variable so the subprocess uses
+    the project directory it is given.
+    """
+    return dict(debops_env, ANSIBLE_CONFIG="")
+
+
 def make_discover_request(request_id=1):
     return json.dumps({
         "jsonrpc": "2.0", "id": request_id, "method": "server/discover",
@@ -44,9 +56,9 @@ def read_json_lines(text):
     return [json.loads(line) for line in text.splitlines() if line.strip()]
 
 
-def test_serve_stdio_round_trip(run_debops, debops_env, project_dir):
+def test_serve_stdio_round_trip(run_debops, mcp_env, project_dir):
     result = run_debops("mcp", "serve", cwd=str(project_dir),
-                        env=debops_env, input_text=make_discover_request())
+                        env=mcp_env, input_text=make_discover_request())
 
     assert result.returncode == 0
     # Nothing except protocol messages may be written to stdout
@@ -57,21 +69,21 @@ def test_serve_stdio_round_trip(run_debops, debops_env, project_dir):
     assert "tools" in response["result"]["capabilities"]
 
 
-def test_serve_stdio_reports_parse_errors(run_debops, debops_env,
+def test_serve_stdio_reports_parse_errors(run_debops, mcp_env,
                                           project_dir):
     result = run_debops("mcp", "serve", cwd=str(project_dir),
-                        env=debops_env, input_text="not json\n")
+                        env=mcp_env, input_text="not json\n")
 
     assert result.returncode == 0
     (response,) = read_json_lines(result.stdout)
     assert response["error"]["code"] == -32700
 
 
-def test_serve_stdio_reports_unknown_methods(run_debops, debops_env,
+def test_serve_stdio_reports_unknown_methods(run_debops, mcp_env,
                                              project_dir):
     request = ('{"jsonrpc": "2.0", "id": 5, "method": "resources/list"}\n')
     result = run_debops("mcp", "serve", cwd=str(project_dir),
-                        env=debops_env, input_text=request)
+                        env=mcp_env, input_text=request)
 
     assert result.returncode == 0
     (response,) = read_json_lines(result.stdout)
@@ -79,10 +91,10 @@ def test_serve_stdio_reports_unknown_methods(run_debops, debops_env,
     assert response["error"]["code"] == -32601
 
 
-def test_serve_verbose_logs_startup_notice(run_debops, debops_env,
+def test_serve_verbose_logs_startup_notice(run_debops, mcp_env,
                                            project_dir):
     result = run_debops("mcp", "serve", "-v", cwd=str(project_dir),
-                        env=debops_env, input_text=make_discover_request())
+                        env=mcp_env, input_text=make_discover_request())
 
     assert result.returncode == 0
     # stdout stays protocol-only
@@ -94,8 +106,8 @@ def test_serve_verbose_logs_startup_notice(run_debops, debops_env,
     assert "serving on stdio" in result.stderr
 
 
-def test_serve_outside_a_project_fails(run_debops, debops_env, tmp_path):
-    result = run_debops("mcp", "serve", cwd=str(tmp_path), env=debops_env,
+def test_serve_outside_a_project_fails(run_debops, mcp_env, tmp_path):
+    result = run_debops("mcp", "serve", cwd=str(tmp_path), env=mcp_env,
                         input_text="")
 
     assert result.returncode == 1
@@ -104,13 +116,13 @@ def test_serve_outside_a_project_fails(run_debops, debops_env, tmp_path):
     assert result.stdout == ""
 
 
-def test_serve_exits_quietly_on_sigint(debops_source_dir, debops_env,
+def test_serve_exits_quietly_on_sigint(debops_source_dir, mcp_env,
                                        project_dir):
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(
             [debops_source_dir,
              env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
-    env.update(debops_env)
+    env.update(mcp_env)
     process = subprocess.Popen(
             [sys.executable, "-m", "debops", "mcp", "serve"],
             cwd=str(project_dir), env=env, stdin=subprocess.PIPE,
@@ -127,15 +139,61 @@ def test_serve_exits_quietly_on_sigint(debops_source_dir, debops_env,
     assert "Traceback" not in stderr
 
 
-def test_connect_to_missing_socket_fails(run_debops, debops_env, tmp_path):
+def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
+    request = ('{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}\n')
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=request)
+
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    names = [tool["name"] for tool in response["result"]["tools"]]
+    assert sorted(names) == ["project_status", "role_info",
+                             "role_variables"]
+
+
+def test_role_variables_via_stdio(run_debops, mcp_env, project_dir):
+    request = json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "role_variables",
+                   "arguments": {"name": "elasticsearch",
+                                 "filter": "base_packages"}},
+    }) + "\n"
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=request)
+
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    content = response["result"]["content"]
+    assert response["result"]["isError"] is False
+    assert "elasticsearch__base_packages" in content[0]["text"]
+
+
+def test_policy_deny_hides_a_tool(run_debops, mcp_env, project_dir):
+    conf_d = project_dir / ".debops" / "conf.d"
+    conf_d.mkdir(parents=True)
+    (conf_d / "mcp.yml").write_text(
+            "---\nproject:\n  mcp:\n    deny: ['role_info']\n")
+
+    request = ('{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}\n')
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=request)
+
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    names = [tool["name"] for tool in response["result"]["tools"]]
+    assert "role_info" not in names
+    assert "role_variables" in names
+
+
+def test_connect_to_missing_socket_fails(run_debops, mcp_env, tmp_path):
     result = run_debops("mcp", "connect", str(tmp_path / "missing.sock"),
-                        env=debops_env)
+                        env=mcp_env)
 
     assert result.returncode == 1
     assert "Error" in result.stderr
 
 
-def test_connect_bridges_stdio_to_unix_socket(run_debops, debops_env,
+def test_connect_bridges_stdio_to_unix_socket(run_debops, mcp_env,
                                               project_dir, tmp_path):
     socket_path = str(tmp_path / "server.sock")
     transport = UnixSocketTransport(socket_path)
@@ -143,13 +201,13 @@ def test_connect_bridges_stdio_to_unix_socket(run_debops, debops_env,
                               daemon=True)
     thread.start()
     try:
-        for _ in range(200):
+        for _ in range(500):
             if os.path.exists(socket_path):
                 break
             time.sleep(0.01)
 
         result = run_debops("mcp", "connect", socket_path,
-                            cwd=str(project_dir), env=debops_env,
+                            cwd=str(project_dir), env=mcp_env,
                             input_text=make_discover_request())
 
         assert result.returncode == 0

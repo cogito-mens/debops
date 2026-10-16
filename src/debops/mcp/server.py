@@ -55,12 +55,14 @@ class Tool(object):
 class McpServer(object):
     """Dispatch MCP requests to their handlers."""
 
-    def __init__(self, name='debops', version=None, project=None):
+    def __init__(self, name='debops', version=None, project=None,
+                 policy=None):
         self.name = name
         self.version = version or __version__
         # The project directory the server is confined to; tools resolve
         # all paths against it
         self.project = project
+        self.policy = policy
         self.tools = {}
         self._methods = {
             'server/discover': self._discover,
