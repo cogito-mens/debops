@@ -13,6 +13,7 @@ from debops.mcp.server import McpServer
 from debops.mcp.transport import UnixSocketTransport
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -147,8 +148,10 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
     assert result.returncode == 0
     (response,) = read_json_lines(result.stdout)
     names = [tool["name"] for tool in response["result"]["tools"]]
-    assert sorted(names) == ["project_status", "role_info",
-                             "role_variables"]
+    assert sorted(names) == ["collection_role_info",
+                             "collection_role_variables",
+                             "collection_roles", "project_status",
+                             "role_info", "role_variables"]
 
 
 def test_role_variables_via_stdio(run_debops, mcp_env, project_dir):
@@ -176,6 +179,26 @@ def test_role_variables_via_stdio(run_debops, mcp_env, project_dir):
     assert "```yaml" not in brief_text
     assert "## elasticsearch__base_packages" in full_text
     assert "```yaml" in full_text
+
+
+def test_collection_roles_via_stdio(run_debops, mcp_env, project_dir):
+    if shutil.which("ansible-galaxy") is None:
+        pytest.skip("ansible-galaxy is not installed")
+
+    request = json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "collection_roles", "arguments": {}},
+    }) + "\n"
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=request)
+
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    # Whether or not the machine has external collections installed,
+    # the call itself works
+    assert response["result"]["isError"] is False
+    text = response["result"]["content"][0]["text"]
+    assert ("Collections" in text or "no collections" in text)
 
 
 def test_policy_deny_hides_a_tool(run_debops, mcp_env, project_dir):

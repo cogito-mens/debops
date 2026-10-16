@@ -74,6 +74,41 @@ splitrole__beta: "b"
 splitrole__shared: "from-b"
 '''
 
+SPEC_ROLE_ARGUMENT_SPECS = '''---
+argument_specs:
+  main:
+    short_description: A role with argument specs
+    options:
+      specrole__state:
+        description:
+          - Desired state of the thing.
+        type: str
+        choices: ['present', 'absent']
+        default: present
+      specrole__password:
+        description: Secret password.
+        type: str
+        required: true
+'''
+
+SPEC_ROLE_DEFAULTS = '''---
+specrole__state: "present"
+specrole__extra_default: "not in the specs"
+'''
+
+PLAIN_ROLE_META = '''---
+galaxy_info:
+  description: A plainly documented role
+  galaxy_tags: [fixture]
+'''
+
+PLAIN_ROLE_DEFAULTS = '''---
+# Configure the listen port.
+plainrole__port: 9000
+
+plainrole__undocumented: true
+'''
+
 
 class ToolsTestCase(unittest.TestCase):
 
@@ -114,10 +149,36 @@ class ToolsTestCase(unittest.TestCase):
                   'w') as fp:
             fp.write(SPLIT_DEFAULTS_B)
 
+        # A fixture Ansible Collection with roles in various doc styles
+        collection = os.path.join(self.tmpdir, 'ansible_collections',
+                                  'testns', 'testcoll')
+        specrole = os.path.join(collection, 'roles', 'specrole')
+        plainrole = os.path.join(collection, 'roles', 'plainrole')
+        emptyrole = os.path.join(collection, 'roles', 'emptyrole')
+        os.makedirs(os.path.join(specrole, 'meta'))
+        os.makedirs(os.path.join(specrole, 'defaults'))
+        os.makedirs(os.path.join(plainrole, 'meta'))
+        os.makedirs(os.path.join(plainrole, 'defaults'))
+        os.makedirs(emptyrole)
+        with open(os.path.join(specrole, 'meta', 'argument_specs.yml'),
+                  'w') as fp:
+            fp.write(SPEC_ROLE_ARGUMENT_SPECS)
+        with open(os.path.join(specrole, 'defaults', 'main.yml'), 'w') as fp:
+            fp.write(SPEC_ROLE_DEFAULTS)
+        with open(os.path.join(plainrole, 'meta', 'main.yml'), 'w') as fp:
+            fp.write(PLAIN_ROLE_META)
+        with open(os.path.join(plainrole, 'defaults', 'main.yml'), 'w') as fp:
+            fp.write(PLAIN_ROLE_DEFAULTS)
+
+        self.collection_index = {
+            'testns.testcoll': {'path': collection, 'version': '1.0.0'},
+        }
+
         self.server = McpServer(project=self.project,
                                 policy=McpPolicy(self.project))
-        register_project_tools(self.server,
-                               roles_path=self.roles_path)
+        register_project_tools(
+                self.server, roles_path=self.roles_path,
+                collection_index_provider=lambda: self.collection_index)
 
     def call_tool(self, name, arguments=None, request_id=1):
         return self.server.handle({
@@ -139,7 +200,9 @@ class ToolsTestCase(unittest.TestCase):
                 'params': {}})
         names = [tool['name'] for tool in response['result']['tools']]
         self.assertEqual(sorted(names),
-                         ['project_status', 'role_info', 'role_variables'])
+                         ['collection_role_info', 'collection_role_variables',
+                          'collection_roles', 'project_status', 'role_info',
+                          'role_variables'])
 
     def test_denied_tool_is_not_registered(self):
         self.project.config.raw['project'] = {'mcp': {'deny': ['role_info']}}
@@ -278,6 +341,98 @@ class ToolsTestCase(unittest.TestCase):
         response = self.call_tool('role_info', {'name': 'splitrole'})
         text = self.result_text(response)
         self.assertIn('variables: 3', text)
+
+    # -- collection_roles --------------------------------------------------
+
+    def test_collection_roles(self):
+        response = self.call_tool('collection_roles')
+        text = self.result_text(response)
+        self.assertIn('## testns.testcoll (1.0.0)', text)
+        self.assertIn('- emptyrole', text)
+        self.assertIn('- plainrole', text)
+        self.assertIn('- specrole', text)
+
+    def test_collection_roles_filter(self):
+        response = self.call_tool('collection_roles', {'filter': 'zzz'})
+        self.assertIn('no collections with roles',
+                      self.result_text(response))
+
+    def test_collection_roles_without_ansible_galaxy(self):
+        def failing_provider():
+            raise RuntimeError('the ansible-galaxy command was not found')
+        server = McpServer(project=self.project,
+                           policy=McpPolicy(self.project))
+        register_project_tools(server, roles_path=self.roles_path,
+                               collection_index_provider=failing_provider)
+        response = server.handle({
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'name': 'collection_roles', 'arguments': {}}})
+        self.assertTrue(response['result']['isError'])
+        self.assertIn('ansible-galaxy',
+                      response['result']['content'][0]['text'])
+
+    # -- collection_role_info ----------------------------------------------
+
+    def test_collection_role_info_plain(self):
+        response = self.call_tool('collection_role_info',
+                                  {'role': 'testns.testcoll.plainrole'})
+        text = self.result_text(response)
+        self.assertIn('# testns.testcoll.plainrole', text)
+        self.assertIn('A plainly documented role', text)
+        self.assertIn('argument specs: none', text)
+        self.assertIn('variables: 2', text)
+        self.assertIn('resolved at:', text)
+
+    def test_collection_role_info_with_specs(self):
+        response = self.call_tool('collection_role_info',
+                                  {'role': 'testns.testcoll.specrole'})
+        self.assertIn('argument specs: main', self.result_text(response))
+
+    def test_collection_role_info_rejects_bad_names(self):
+        for name in ('two.parts', '../..', 'testns.testcoll.nosuch',
+                     'nosuch.collection.role'):
+            response = self.call_tool('collection_role_info',
+                                      {'role': name})
+            self.assertTrue(response['result']['isError'], name)
+
+    # -- collection_role_variables -----------------------------------------
+
+    def test_collection_role_variables_from_argument_specs(self):
+        response = self.call_tool('collection_role_variables',
+                                  {'role': 'testns.testcoll.specrole'})
+        text = self.result_text(response)
+        # Specs carry type, required and choices
+        self.assertIn('- **specrole__state** (str)', text)
+        self.assertIn('- **specrole__password** (str, required)', text)
+        # Variables present in defaults but not in specs are listed too
+        self.assertIn('- **specrole__extra_default**', text)
+
+    def test_collection_role_variables_specs_full(self):
+        response = self.call_tool('collection_role_variables',
+                                  {'role': 'testns.testcoll.specrole',
+                                   'detail': 'full'})
+        text = self.result_text(response)
+        self.assertIn('## specrole__state', text)
+        self.assertIn('choices: present, absent', text)
+        self.assertIn('Desired state of the thing.', text)
+        self.assertIn('```yaml\npresent\n```', text)
+
+    def test_collection_role_variables_plain_comment_association(self):
+        response = self.call_tool('collection_role_variables',
+                                  {'role': 'testns.testcoll.plainrole'})
+        text = self.result_text(response)
+        self.assertIn('- **plainrole__port** — Configure the listen port. '
+                      '(default: `9000`)', text)
+        self.assertIn('- **plainrole__undocumented** (default: `true`)',
+                      text)
+
+    def test_collection_role_variables_names_detail(self):
+        response = self.call_tool('collection_role_variables',
+                                  {'role': 'testns.testcoll.specrole',
+                                   'detail': 'names'})
+        text = self.result_text(response)
+        self.assertIn('specrole__state', text)
+        self.assertNotIn('**', text)
 
 
 if __name__ == '__main__':
