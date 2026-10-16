@@ -46,6 +46,7 @@ class StdioTransport(object):
     """
 
     def serve(self, server):
+        logger.notice('MCP server serving on stdio')
         reader = sys.stdin.buffer
         writer = sys.stdout.buffer
         while True:
@@ -96,6 +97,7 @@ class UnixSocketTransport(object):
             probe.connect(self.path)
         except ConnectionRefusedError:
             # A leftover socket from a previous run; safe to replace
+            logger.notice('Replacing a stale socket: %s', self.path)
             os.unlink(self.path)
         else:
             raise FileExistsError('another MCP server is already '
@@ -148,6 +150,8 @@ class UnixSocketTransport(object):
                 os.unlink(self.path)
             except OSError:
                 pass
+            else:
+                logger.notice('MCP server on %s shut down', self.path)
 
     def shutdown(self):
         """Ask the accept loop to stop; in-flight connections finish."""
@@ -156,14 +160,16 @@ class UnixSocketTransport(object):
     def _serve_connection(self, connection, server):
         try:
             pid, uid, gid = get_peer_credentials(connection)
-            logger.debug('Connection from pid=%s uid=%s gid=%s',
-                         pid, uid, gid)
+            logger.notice('Client connected: pid=%s uid=%s gid=%s',
+                          pid, uid, gid)
             reader = connection.makefile('rb')
             writer = connection.makefile('wb')
             while True:
                 try:
                     data = rpc.read_message(reader)
                 except rpc.JsonRpcError as errmsg:
+                    logger.warning('Rejecting a message from pid=%s: %s',
+                                   pid, errmsg.message)
                     rpc.write_message(writer, errmsg.to_response())
                     continue
                 except OSError:
@@ -176,6 +182,7 @@ class UnixSocketTransport(object):
                         rpc.write_message(writer, response)
                     except OSError:
                         break
+            logger.notice('Client disconnected: pid=%s', pid)
         except OSError as errmsg:
             logger.debug('Connection ended with an error: %s', errmsg)
         finally:
@@ -196,6 +203,7 @@ def bridge_stdio_to_unix(path):
     except OSError as errmsg:
         raise ConnectionError('cannot connect to {}: {}'
                               .format(path, errmsg))
+    logger.debug('Bridging stdio to %s', path)
 
     def pump_stdin():
         try:

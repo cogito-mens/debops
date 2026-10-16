@@ -82,6 +82,8 @@ class McpServer(object):
         try:
             message = rpc.parse_message(data)
         except rpc.JsonRpcError as errmsg:
+            logger.warning('Rejecting an unparseable message: %s',
+                           errmsg.message)
             return errmsg.to_response()
         return self.handle(message)
 
@@ -112,11 +114,17 @@ class McpServer(object):
 
         self._check_protocol_version(message, request_id)
 
+        if is_notification:
+            logger.info('Notification: %s', method)
+        else:
+            logger.info('Request: %s (id=%s)', method, request_id)
+
         handler = self._methods.get(method)
         if handler is None:
             if is_notification:
                 logger.debug('Ignoring unknown notification: %s', method)
                 return None
+            logger.warning('Unknown method requested: %s', method)
             raise rpc.JsonRpcError(rpc.METHOD_NOT_FOUND, 'Method not found',
                                    data={'method': method},
                                    request_id=request_id)
@@ -153,6 +161,8 @@ class McpServer(object):
             return
         version = meta.get(PROTOCOL_VERSION_KEY)
         if version is not None and version != PROTOCOL_VERSION:
+            logger.warning('Unsupported protocol version requested: %s',
+                           version)
             raise rpc.JsonRpcError(
                     rpc.UNSUPPORTED_PROTOCOL_VERSION,
                     'Unsupported protocol version',
@@ -176,6 +186,7 @@ class McpServer(object):
         name = params.get('name')
         tool = self.tools.get(name)
         if tool is None:
+            logger.warning('Unknown tool requested: %s', name)
             raise rpc.JsonRpcError(
                     rpc.INVALID_PARAMS, 'Invalid params',
                     data={'details': 'unknown tool: {}'.format(name)})
@@ -186,6 +197,9 @@ class McpServer(object):
             raise rpc.JsonRpcError(
                     rpc.INVALID_PARAMS, 'Invalid params',
                     data={'details': "'arguments' must be an object"})
+        # Log the argument keys only; values may contain secrets
+        logger.debug('Calling tool %s with arguments: %s',
+                     name, sorted(arguments))
         return tool.handler(arguments)
 
     def _cancelled(self, params):

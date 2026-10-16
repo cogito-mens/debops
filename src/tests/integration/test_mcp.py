@@ -79,6 +79,21 @@ def test_serve_stdio_reports_unknown_methods(run_debops, debops_env,
     assert response["error"]["code"] == -32601
 
 
+def test_serve_verbose_logs_startup_notice(run_debops, debops_env,
+                                           project_dir):
+    result = run_debops("mcp", "serve", "-v", cwd=str(project_dir),
+                        env=debops_env, input_text=make_discover_request())
+
+    assert result.returncode == 0
+    # stdout stays protocol-only
+    (response,) = read_json_lines(result.stdout)
+    assert response["id"] == 1
+    # the startup notices go to stderr at the NOTICE level
+    assert "Serving project" in result.stderr
+    assert "view 'system'" in result.stderr
+    assert "serving on stdio" in result.stderr
+
+
 def test_serve_outside_a_project_fails(run_debops, debops_env, tmp_path):
     result = run_debops("mcp", "serve", cwd=str(tmp_path), env=debops_env,
                         input_text="")

@@ -238,6 +238,8 @@ class Interpreter(object):
             print('Error:', errmsg, file=sys.stderr)
             sys.exit(1)
 
+        logger.notice('Serving project \'%s\' at %s, view \'%s\'',
+                      project.name, project.path, project.view)
         server = McpServer(project=project)
         try:
             if args.socket:
