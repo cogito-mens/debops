@@ -35,7 +35,13 @@ testrole__port: 8080
 
 # An undocumented variable has no envvar block.
 testrole__extra: "undocumented"
+
+# A long default value, to check truncation in brief output
+testrole__long_list:
 '''
+# Completed programmatically to keep the fixture readable
+ROLE_DEFAULTS += ''.join(
+        '  - "item-{:02d}"\n'.format(index) for index in range(30))
 
 ROLE_META = '''---
 galaxy_info:
@@ -165,7 +171,7 @@ class ToolsTestCase(unittest.TestCase):
         text = self.result_text(response)
         self.assertIn('# debops.testrole', text)
         self.assertIn('A test role', text)
-        self.assertIn('variables: 3', text)
+        self.assertIn('variables: 4', text)
         self.assertIn('dependencies: debops.otherrole', text)
 
     def test_role_info_accepts_qualified_name(self):
@@ -184,21 +190,59 @@ class ToolsTestCase(unittest.TestCase):
 
     # -- role_variables --------------------------------------------------
 
-    def test_role_variables(self):
-        response = self.call_tool('role_variables', {'name': 'testrole'})
+    def test_role_variables_full(self):
+        response = self.call_tool('role_variables',
+                                  {'name': 'testrole', 'detail': 'full'})
         text = self.result_text(response)
         # Documented variables carry their description and default value
         self.assertIn('## testrole__enabled', text)
         self.assertIn('Enable or disable the test role.', text)
         self.assertIn('true', text)
-        self.assertIn('## testrole__port', text)
-        self.assertIn('8080', text)
+        # The default renders as a bare scalar, without the PyYAML
+        # end-of-document marker
+        self.assertIn('```yaml\n8080\n```', text)
+        self.assertNotIn('\n...\n', text)
         # Undocumented variables are listed too
         self.assertIn('## testrole__extra', text)
 
+    def test_role_variables_names_detail(self):
+        response = self.call_tool('role_variables',
+                                  {'name': 'testrole', 'detail': 'names'})
+        text = self.result_text(response)
+        self.assertIn('(4)', text)
+        self.assertIn('testrole__enabled', text)
+        self.assertIn('testrole__long_list', text)
+        self.assertNotIn('##', text)
+        self.assertNotIn('```', text)
+
+    def test_role_variables_brief_is_the_default(self):
+        response = self.call_tool('role_variables', {'name': 'testrole'})
+        text = self.result_text(response)
+        # One compact line per variable, no full documentation
+        self.assertIn('- **testrole__enabled** — Enable or disable the '
+                      'test role. (default: `true`)', text)
+        self.assertNotIn('```yaml', text)
+        self.assertNotIn('## testrole__enabled', text)
+
+    def test_role_variables_brief_truncates_long_defaults(self):
+        response = self.call_tool('role_variables',
+                                  {'name': 'testrole',
+                                   'filter': 'long_list'})
+        text = self.result_text(response)
+        (line,) = [line for line in text.splitlines()
+                   if line.startswith('- **')]
+        self.assertLess(len(line), 140)
+        self.assertTrue(line.endswith('…`)'))
+
+    def test_role_variables_invalid_detail(self):
+        response = self.call_tool('role_variables',
+                                  {'name': 'testrole', 'detail': 'everything'})
+        self.assertTrue(response['result']['isError'])
+
     def test_role_variables_filter(self):
         response = self.call_tool('role_variables',
-                                  {'name': 'testrole', 'filter': 'port'})
+                                  {'name': 'testrole', 'filter': 'port',
+                                   'detail': 'full'})
         text = self.result_text(response)
         self.assertIn('testrole__port', text)
         self.assertNotIn('testrole__enabled', text)
@@ -215,7 +259,8 @@ class ToolsTestCase(unittest.TestCase):
     # -- split defaults files ----------------------------------------------
 
     def test_role_variables_split_defaults(self):
-        response = self.call_tool('role_variables', {'name': 'splitrole'})
+        response = self.call_tool('role_variables',
+                                  {'name': 'splitrole', 'detail': 'full'})
         text = self.result_text(response)
         self.assertFalse(response['result']['isError'])
         # Both files contribute their variables, with file separators

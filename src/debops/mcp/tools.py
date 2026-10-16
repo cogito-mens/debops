@@ -76,6 +76,16 @@ def _load_role_defaults(role_path):
     return sources
 
 
+def _dump_default(value, flow=None):
+    """Render a default value as YAML, without the trailing
+    end-of-document marker PyYAML adds for scalar documents."""
+    text = yaml.safe_dump(value, default_flow_style=flow, width=1000)
+    lines = text.rstrip().splitlines()
+    if lines and lines[-1] == '...':
+        lines.pop()
+    return '\n'.join(lines)
+
+
 def _role_default_values(sources):
     """Merge the default values of all sources; later files win.
 
@@ -272,7 +282,39 @@ def _tool_role_variables(roles_path, arguments):
         return _text_result('no matching variables in debops.{} '
                             'defaults'.format(name))
 
-    lines = ['# debops.{} default variables'.format(name)]
+    detail = arguments.get('detail', 'brief')
+    if detail not in ('names', 'brief', 'full'):
+        return _error_result('invalid detail level: {}'.format(detail))
+
+    header = '# debops.{} default variables ({})'.format(name,
+                                                         len(entries))
+    if detail == 'names':
+        return _text_result('\n'.join(
+                [header, ''] + [entry[0] for entry in entries]))
+
+    if detail == 'brief':
+        lines = [header, '']
+        for var_name, description, value_text, _source in entries:
+            summary = ''
+            for description_line in description.splitlines():
+                if description_line.strip():
+                    summary = description_line.strip()
+                    break
+            if var_name in values:
+                default = _dump_default(values[var_name], flow=True)
+            else:
+                default = ' '.join(value_text.split())
+            if len(default) > 100:
+                default = default[:97] + '…'
+            line = '- **{}**'.format(var_name)
+            if summary:
+                line += ' — {}'.format(summary)
+            if default:
+                line += ' (default: `{}`)'.format(default)
+            lines.append(line)
+        return _text_result('\n'.join(lines))
+
+    lines = [header]
     if len(sources) > 1:
         lines[0] += ' ({} files)'.format(len(sources))
     lines.append('')
@@ -289,9 +331,7 @@ def _tool_role_variables(roles_path, arguments):
                 lines.extend([description, ''])
             default = None
             if var_name in values:
-                default = yaml.safe_dump(values[var_name],
-                                         default_flow_style=None,
-                                         width=1000).strip()
+                default = _dump_default(values[var_name])
             elif value_text:
                 default = value_text
             if default:
@@ -322,14 +362,25 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES):
         ('role_variables',
          'List the default inventory variables of a DebOps role, with '
          'their documentation and default values. Use this to learn how '
-         'to configure a role through the Ansible inventory.',
+         'to configure a role through the Ansible inventory. Survey a role '
+         'with the "brief" or "names" detail level, then use "filter" '
+         'with the "full" detail level to read the complete documentation '
+         'of specific variables.',
          {'type': 'object',
           'properties': {'name': {'type': 'string',
                                   'description': 'Role name, with or '
                                   'without the "debops." prefix'},
                          'filter': {'type': 'string',
                                     'description': 'Only include variables '
-                                    'whose name contains this string'}},
+                                    'whose name contains this string'},
+                         'detail': {'type': 'string',
+                                    'enum': ['names', 'brief', 'full'],
+                                    'description': 'Level of detail: '
+                                    '"names" lists variable names only, '
+                                    '"brief" (default) gives a one-line '
+                                    'summary and a truncated default per '
+                                    'variable, "full" gives the complete '
+                                    'documentation'}},
           'required': ['name']},
          lambda arguments: _tool_role_variables(roles_path, arguments)),
     ]

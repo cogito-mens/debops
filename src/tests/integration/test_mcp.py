@@ -152,20 +152,30 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
 
 
 def test_role_variables_via_stdio(run_debops, mcp_env, project_dir):
-    request = json.dumps({
+    brief = json.dumps({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": "role_variables",
                    "arguments": {"name": "elasticsearch",
                                  "filter": "base_packages"}},
-    }) + "\n"
+    })
+    full = json.dumps({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "role_variables",
+                   "arguments": {"name": "elasticsearch",
+                                 "filter": "base_packages",
+                                 "detail": "full"}},
+    })
     result = run_debops("mcp", "serve", cwd=str(project_dir),
-                        env=mcp_env, input_text=request)
+                        env=mcp_env, input_text=brief + "\n" + full + "\n")
 
     assert result.returncode == 0
-    (response,) = read_json_lines(result.stdout)
-    content = response["result"]["content"]
-    assert response["result"]["isError"] is False
-    assert "elasticsearch__base_packages" in content[0]["text"]
+    brief_response, full_response = read_json_lines(result.stdout)
+    brief_text = brief_response["result"]["content"][0]["text"]
+    full_text = full_response["result"]["content"][0]["text"]
+    assert "- **elasticsearch__base_packages**" in brief_text
+    assert "```yaml" not in brief_text
+    assert "## elasticsearch__base_packages" in full_text
+    assert "```yaml" in full_text
 
 
 def test_policy_deny_hides_a_tool(run_debops, mcp_env, project_dir):
