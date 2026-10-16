@@ -16,12 +16,31 @@ from .collections import (COLLECTION_INDEX_TTL, galaxy_collection_list,
                           tool_collection_playbooks, tool_collection_role_info,
                           tool_collection_role_variables,
                           tool_collection_roles)
+from .execute import tool_check, tool_run
 from .files import (tool_config_get, tool_inventory_query,
                     tool_project_files, tool_project_read)
 from .playbooks import (COLLECTION_PLAYBOOKS, tool_playbook_info,
                         tool_playbooks)
 from .project import tool_project_status
 from .roles import COLLECTION_ROLES, tool_role_info, tool_role_variables
+
+# The schema shared by the execution tools
+EXECUTION_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'playbook': {'type': 'string',
+                     'description': 'Playbook target, e.g. '
+                     '"service/nginx" or "site"'},
+        'limit': {'type': 'string',
+                  'description': 'Limit execution to hosts, '
+                  '--limit style'},
+        'tags': {'type': 'string',
+                 'description': 'Only run tagged tasks, --tags style'},
+        'skip_tags': {'type': 'string',
+                      'description': 'Skip tagged tasks, '
+                      '--skip-tags style'}},
+    'required': ['playbook'],
+}
 
 
 def register_project_tools(server, roles_path=COLLECTION_ROLES,
@@ -231,6 +250,35 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
              collection_index_provider, arguments)),
     ]
 
-    for name, description, schema, handler in tools:
+    # Playbook execution is gated: 'check' mode by default, changes only
+    # with 'project.mcp.execute: all'
+    execute_mode = policy.execute if policy is not None else 'check'
+    if execute_mode in ('check', 'all'):
+        tools.append((
+            'check',
+            'Run an Ansible playbook in check mode (no changes are '
+            'made), reporting what would change. Facts are gathered '
+            'live from the managed hosts. Accepts a playbook target '
+            '(see the playbooks tool) and optional limit/tags.',
+            EXECUTION_SCHEMA,
+            lambda arguments, context: tool_check(project, policy,
+                                                  arguments, context),
+            True))
+    if execute_mode == 'all':
+        tools.append((
+            'run',
+            'Run an Ansible playbook, changing the managed hosts. Use '
+            'the "check" tool first to preview the changes. Accepts a '
+            'playbook target (see the playbooks tool) and optional '
+            'limit/tags.',
+            EXECUTION_SCHEMA,
+            lambda arguments, context: tool_run(project, policy,
+                                                arguments, context),
+            True))
+
+    for entry in tools:
+        name, description, schema, handler = entry[:4]
+        needs_context = entry[4] if len(entry) > 4 else False
         if policy is None or policy.is_tool_allowed(name):
-            server.register_tool(name, description, schema, handler)
+            server.register_tool(name, description, schema, handler,
+                                 needs_context=needs_context)

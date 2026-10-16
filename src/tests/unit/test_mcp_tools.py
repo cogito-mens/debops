@@ -259,12 +259,12 @@ class ToolsTestCase(unittest.TestCase):
                 'params': {}})
         names = [tool['name'] for tool in response['result']['tools']]
         self.assertEqual(sorted(names),
-                         ['collection_playbook_info', 'collection_playbooks',
-                          'collection_role_info', 'collection_role_variables',
-                          'collection_roles', 'config_get',
-                          'inventory_query', 'playbook_info', 'playbooks',
-                          'project_files', 'project_read', 'project_status',
-                          'role_info', 'role_variables'])
+                         ['check', 'collection_playbook_info',
+                          'collection_playbooks', 'collection_role_info',
+                          'collection_role_variables', 'collection_roles',
+                          'config_get', 'inventory_query', 'playbook_info',
+                          'playbooks', 'project_files', 'project_read',
+                          'project_status', 'role_info', 'role_variables'])
 
     def test_denied_tool_is_not_registered(self):
         self.project.config.raw['project'] = {'mcp': {'deny': ['role_info']}}
@@ -539,7 +539,7 @@ class ToolsTestCase(unittest.TestCase):
                                   {'playbook': 'service/testrole'})
         text = self.result_text(response)
         self.assertFalse(response['result']['isError'])
-        self.assertIn('Run with: debops run service/testrole', text)
+        self.assertIn('Execution target: `service/testrole`', text)
         self.assertIn('- Manage the test role — hosts: '
                       'debops_service_testrole (become)', text)
         # Short role names are normalized using the play's collections
@@ -585,7 +585,8 @@ class ToolsTestCase(unittest.TestCase):
                                   {'collection': 'testns.testcoll',
                                    'playbook': 'install'})
         text = self.result_text(response)
-        self.assertIn('Run with: debops run testns.testcoll/install', text)
+        self.assertIn('Execution target: `testns.testcoll/install`',
+                      text)
         # The task-level include_role statement is found
         self.assertIn('- testns.testcoll.plainrole', text)
 

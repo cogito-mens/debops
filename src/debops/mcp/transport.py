@@ -70,30 +70,37 @@ class StdioTransport(object):
         writer = sys.stdout.buffer
         write_lock = threading.Lock()
         workers = []
-        while True:
-            try:
-                data = rpc.read_message(reader)
-            except rpc.JsonRpcError as errmsg:
-                with write_lock:
-                    rpc.write_message(writer, errmsg.to_response())
-                continue
-            if data is None:
-                break
-            thread = threading.Thread(
-                    target=_write_response,
-                    args=(server, writer, write_lock, data), daemon=True)
-            thread.start()
-            workers.append(thread)
-        # The client is gone: cancel in-flight requests and give their
-        # workers a moment to wind down before exiting, so that nearly
-        # finished responses are still delivered
-        server.cancel_all()
-        deadline = time.monotonic() + 5
+        try:
+            while True:
+                try:
+                    data = rpc.read_message(reader)
+                except rpc.JsonRpcError as errmsg:
+                    with write_lock:
+                        rpc.write_message(writer, errmsg.to_response())
+                    continue
+                if data is None:
+                    break
+                thread = threading.Thread(
+                        target=_write_response,
+                        args=(server, writer, write_lock, data),
+                        daemon=True)
+                thread.start()
+                workers.append(thread)
+        except KeyboardInterrupt:
+            # Interrupt: cancel in-flight requests and wind down
+            server.cancel_all()
+            deadline = time.monotonic() + 5
+            for worker in workers:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                worker.join(timeout=remaining)
+            raise
+        # End of input (the client went away or is batching): let
+        # in-flight requests finish and deliver their responses; every
+        # tool is bounded (fast or 'execute_timeout'-limited)
         for worker in workers:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            worker.join(timeout=remaining)
+            worker.join()
 
 
 class UnixSocketTransport(object):
@@ -180,6 +187,9 @@ class UnixSocketTransport(object):
             if previous_sigterm is not None:
                 signal.signal(signal.SIGTERM, previous_sigterm)
             listener.close()
+            # Shutting down: cancel in-flight requests; their tools
+            # terminate promptly
+            server.cancel_all()
             try:
                 os.unlink(self.path)
             except OSError:

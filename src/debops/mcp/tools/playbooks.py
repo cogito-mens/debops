@@ -181,7 +181,7 @@ def resolve_debops_playbook(project, policy, playbooks_path, name):
 
 def render_playbook_info(title, target, plays, roles, imports, groups):
     lines = ['# {}'.format(title), '',
-             'Run with: debops run {}'.format(target), '']
+             'Execution target: `{}`'.format(target), '']
     if plays:
         lines.extend(['## Plays ({})'.format(len(plays)), ''])
         for play in plays:

@@ -71,6 +71,22 @@ class McpPolicy(object):
         for entry in self.read_deny:
             logger.notice('Path denied to read tools by policy: %s', entry)
 
+        # Playbook execution gate: 'none' registers no execution tools,
+        # 'check' (default) allows check mode only, 'all' allows changes
+        self.execute = str(mcp_config.get('execute', 'check'))
+        if self.execute not in ('none', 'check', 'all'):
+            logger.warning('Unknown project.mcp.execute value %r, '
+                           'using "check"', self.execute)
+            self.execute = 'check'
+        try:
+            self.execute_timeout = int(
+                    mcp_config.get('execute_timeout', 3600))
+        except (TypeError, ValueError):
+            self.execute_timeout = 3600
+        if self.execute != 'none':
+            logger.notice('Playbook execution enabled: %s '
+                          '(timeout %ss)', self.execute, self.execute_timeout)
+
     def is_tool_allowed(self, name):
         """Check if a tool may be exposed; the deny list wins."""
         if name in self.deny:

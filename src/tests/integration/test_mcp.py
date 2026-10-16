@@ -148,7 +148,7 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
     assert result.returncode == 0
     (response,) = read_json_lines(result.stdout)
     names = [tool["name"] for tool in response["result"]["tools"]]
-    assert sorted(names) == ["collection_playbook_info",
+    assert sorted(names) == ["check", "collection_playbook_info",
                              "collection_playbooks", "collection_role_info",
                              "collection_role_variables", "collection_roles",
                              "config_get", "inventory_query",
@@ -277,10 +277,49 @@ def test_playbook_info_via_stdio(run_debops, mcp_env, project_dir):
     assert result.returncode == 0
     (response,) = read_json_lines(result.stdout)
     text = response["result"]["content"][0]["text"]
-    assert "Run with: debops run service/nginx" in text
+    assert "Execution target: `service/nginx`" in text
     assert "debops_service_nginx" in text
     assert "debops.debops.nginx" in text
     assert "debops.debops.keyring" in text
+
+
+def test_check_tool_runs_a_playbook_in_check_mode(run_debops, mcp_env,
+                                                  project_dir):
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+
+    # A legacy project keeps its ansible.cfg in the project root
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+    playbooks = project_dir / "ansible" / "playbooks"
+    playbooks.mkdir(parents=True)
+    (playbooks / "custom.yml").write_text("""---
+- name: Test play
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Say hello
+      ansible.builtin.debug:
+        msg: hello from mcp
+""")
+
+    request = json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "check", "arguments": {"playbook": "custom"}},
+    }) + "\n"
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=request)
+
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    text = response["result"]["content"][0]["text"]
+    assert response["result"]["isError"] is False
+    assert "exit code: 0" in text
+    assert "hello from mcp" in text
 
 
 def test_policy_deny_hides_a_tool(run_debops, mcp_env, project_dir):
