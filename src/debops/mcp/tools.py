@@ -18,6 +18,7 @@ import time
 import yaml
 
 from ..constants import DEBOPS_PACKAGE_DATA
+from .policy import confine_under
 
 logger = logging.getLogger(__name__)
 
@@ -264,6 +265,348 @@ def _extract_envvar_docs(text):
         entries.append((name, '\n'.join(description_lines).strip(),
                         '\n'.join(value_lines).strip()))
     return entries
+
+
+# Playbooks shipped in the debops.debops Ansible Collection
+COLLECTION_PLAYBOOKS = os.path.join(
+        DEBOPS_PACKAGE_DATA, 'ansible', 'collections',
+        'ansible_collections', 'debops', 'debops', 'playbooks')
+
+# Subdirectories of a playbooks/ directory which hold supporting files
+# (variable files, task files, ...) rather than runnable playbooks
+PLAYBOOK_SUPPORT_DIRS = ('files', 'roles', 'tasks', 'templates', 'vars')
+
+
+def _parse_playbook(text):
+    """Parse a playbook into its plays, roles, imports and host groups.
+
+    Returns (plays, roles, imports, groups). Role references are read
+    both from the 'roles' section of a play and from task-level
+    'include_role'/'import_role' statements; short role names are
+    normalized to fully qualified ones using the play's 'collections'
+    declaration.
+    """
+    try:
+        documents = list(yaml.safe_load_all(text))
+    except yaml.YAMLError as errmsg:
+        raise ValueError('cannot parse the playbook: {}'.format(errmsg))
+
+    plays = []
+    roles = []
+    imports = []
+    groups = []
+
+    def add_role(name, collections):
+        if not name:
+            return
+        name = str(name)
+        if '.' not in name and collections:
+            name = str(collections[0]) + '.' + name
+        if name not in roles:
+            roles.append(name)
+
+    for document in documents:
+        if not isinstance(document, list):
+            continue
+        for entry in document:
+            if not isinstance(entry, dict):
+                continue
+            if 'import_playbook' in entry:
+                imports.append(str(entry['import_playbook']))
+                continue
+
+            hosts = entry.get('hosts') or []
+            if isinstance(hosts, str):
+                hosts = [hosts]
+            hosts = [str(host) for host in hosts]
+            collections = entry.get('collections') or []
+            plays.append({
+                'name': str(entry.get('name', '')),
+                'hosts': hosts,
+                'become': bool(entry.get('become', False)),
+            })
+            for host in hosts:
+                if host not in groups:
+                    groups.append(host)
+
+            for role_entry in entry.get('roles') or []:
+                if isinstance(role_entry, str):
+                    add_role(role_entry, collections)
+                elif isinstance(role_entry, dict):
+                    add_role(role_entry.get('role')
+                             or role_entry.get('name'), collections)
+
+            # Roles may also be pulled in dynamically, from tasks
+            for section in ('pre_tasks', 'tasks', 'post_tasks'):
+                for task in entry.get(section) or []:
+                    if not isinstance(task, dict):
+                        continue
+                    for key in ('include_role', 'import_role',
+                                'ansible.builtin.include_role',
+                                'ansible.builtin.import_role'):
+                        statement = task.get(key)
+                        if isinstance(statement, dict):
+                            add_role(statement.get('name'), collections)
+
+    return plays, roles, imports, groups
+
+
+def _list_playbooks(root):
+    """Return playbook paths under a root, relative, in stable order.
+
+    Subdirectories which hold playbook support files ('files', 'vars',
+    ...) instead of runnable playbooks are excluded.
+    """
+    playbooks = []
+    for base, dirs, files in os.walk(root):
+        dirs[:] = [directory for directory in sorted(dirs)
+                   if directory not in PLAYBOOK_SUPPORT_DIRS
+                   and not directory.startswith('.')]
+        for filename in sorted(files):
+            if (filename.endswith(('.yml', '.yaml'))
+                    and not filename.startswith('.')):
+                playbooks.append(os.path.relpath(
+                        os.path.join(base, filename), root))
+    return sorted(playbooks)
+
+
+def _playbook_summary(path):
+    """A one-line summary of a playbook: first play name, host groups."""
+    try:
+        with open(path) as fp:
+            plays, _roles, _imports, groups = _parse_playbook(fp.read())
+    except (OSError, ValueError):
+        return ''
+    name = plays[0]['name'] if plays else ''
+    if name and groups:
+        return '{} (hosts: {})'.format(name, ', '.join(groups))
+    return name or ', '.join(groups)
+
+
+def _target_form(relative_path):
+    """The name 'run'/'check' resolve: the path without the extension."""
+    return os.path.splitext(relative_path)[0]
+
+
+def _project_playbook_dirs(project, policy):
+    """The project's playbook directories, in resolution order.
+
+    Mirrors the playbook runner: the view's playbooks, then
+    'ansible/playbooks', then 'playbooks' in the project root.
+    """
+    candidates = [
+        ('view "{}"'.format(project.view),
+         os.path.join(policy.view_root, 'playbooks')),
+        ('ansible/playbooks',
+         os.path.join(project.path, 'ansible', 'playbooks')),
+        ('playbooks', os.path.join(project.path, 'playbooks')),
+    ]
+    seen = set()
+    result = []
+    for label, path in candidates:
+        path = os.path.realpath(path)
+        if path in seen or not os.path.isdir(path):
+            continue
+        seen.add(path)
+        result.append((label, path))
+    return result
+
+
+def _resolve_debops_playbook(project, policy, playbooks_path, name):
+    """Resolve a playbook target to (path, target form).
+
+    Project playbook directories are searched first, then the bundled
+    DebOps collection, mirroring the playbook runner; unlike the command
+    line, direct filesystem paths outside these roots are not followed.
+    """
+    name = str(name or '')
+    if not name.endswith(('.yml', '.yaml')):
+        name += '.yml'
+    try:
+        for _label, directory in _project_playbook_dirs(project, policy):
+            candidate = confine_under(directory, name)
+            if os.path.isfile(candidate):
+                return candidate, _target_form(name)
+        candidate = confine_under(playbooks_path, name)
+        if os.path.isfile(candidate):
+            return candidate, _target_form(name)
+    except ValueError:
+        pass
+    return None
+
+
+def _render_playbook_info(title, target, plays, roles, imports, groups):
+    lines = ['# {}'.format(title), '',
+             'Run with: debops run {}'.format(target), '']
+    if plays:
+        lines.extend(['## Plays ({})'.format(len(plays)), ''])
+        for play in plays:
+            line = '- {}'.format(play['name'] or '(unnamed)')
+            if play['hosts']:
+                line += ' — hosts: {}'.format(', '.join(play['hosts']))
+            if play['become']:
+                line += ' (become)'
+            lines.append(line)
+        lines.append('')
+    if roles:
+        lines.extend(['## Roles ({})'.format(len(roles)), ''])
+        lines.extend('- {}'.format(role) for role in roles)
+        lines.append('')
+    if groups:
+        lines.extend(['## Inventory groups in use', ''])
+        lines.extend('- {}'.format(group) for group in groups)
+        lines.append('')
+    if imports:
+        lines.extend(['## Imported playbooks', ''])
+        lines.extend('- {}'.format(item) for item in imports)
+        lines.append('')
+    return '\n'.join(lines)
+
+
+def _tool_playbooks(project, policy, playbooks_path, arguments):
+    name_filter = str(arguments.get('filter') or '').lower()
+    sections = []
+
+    # Project playbooks resolve first, mirroring the playbook runner
+    for label, directory in _project_playbook_dirs(project, policy):
+        entries = []
+        for relpath in _list_playbooks(directory):
+            if name_filter and name_filter not in relpath.lower():
+                continue
+            entries.append((relpath, _playbook_summary(
+                    os.path.join(directory, relpath))))
+        if entries:
+            sections.append(('Project playbooks ({})'.format(label),
+                             entries))
+
+    # The bundled DebOps collection, grouped by subdirectory
+    grouped = {}
+    for relpath in _list_playbooks(playbooks_path):
+        if name_filter and name_filter not in relpath.lower():
+            continue
+        group = os.path.dirname(relpath)
+        grouped.setdefault(group, []).append(
+                (relpath,
+                 _playbook_summary(os.path.join(playbooks_path, relpath))))
+    for group in sorted(grouped):
+        title = 'DebOps collection' if not group \
+            else 'DebOps collection: {}/'.format(group)
+        sections.append((title, grouped[group]))
+
+    lines = []
+    total = 0
+    for title, entries in sections:
+        lines.append('## {}'.format(title))
+        for relpath, summary in entries:
+            line = '- `{}`'.format(_target_form(relpath))
+            if summary:
+                line += ' — {}'.format(summary)
+            lines.append(line)
+            total += 1
+        lines.append('')
+
+    # Playbook sets from the view configuration are also valid targets
+    playbook_sets = (project.config.raw.get('views', {})
+                     .get(project.view, {}).get('playbook_sets', {}))
+    if playbook_sets:
+        lines.append('## Playbook sets (view configuration)')
+        for name in sorted(playbook_sets):
+            members = playbook_sets[name]
+            lines.append('- `{}` → {}'.format(
+                    name, ', '.join(str(member) for member in members)))
+        lines.append('')
+
+    if not lines:
+        return _text_result('no playbooks found')
+    header = '# Playbook targets ({})'.format(total)
+    return _text_result('\n'.join([header, ''] + lines))
+
+
+def _tool_playbook_info(project, policy, playbooks_path, arguments):
+    resolved = _resolve_debops_playbook(project, policy, playbooks_path,
+                                        arguments.get('playbook'))
+    if resolved is None:
+        return _error_result('playbook not found or invalid: {}'.format(
+                arguments.get('playbook')))
+    path, target = resolved
+    try:
+        with open(path) as fp:
+            plays, roles, imports, groups = _parse_playbook(fp.read())
+    except (OSError, ValueError) as errmsg:
+        return _error_result(str(errmsg))
+    return _text_result(_render_playbook_info(target, target, plays, roles,
+                                              imports, groups))
+
+
+def _tool_collection_playbooks(index_provider, arguments):
+    try:
+        index = index_provider()
+    except RuntimeError as errmsg:
+        return _error_result(str(errmsg))
+    collection = str(arguments.get('collection') or '')
+    if not re.match(r'^[a-z0-9_]+\.[a-z0-9_]+$', collection):
+        return _error_result('invalid collection name: {}'.format(collection))
+    entry = index.get(collection)
+    if entry is None:
+        return _error_result('collection not found: {}'.format(collection))
+
+    playbooks_dir = os.path.join(entry['path'], 'playbooks')
+    if not os.path.isdir(playbooks_dir):
+        return _text_result('collection {} provides no playbooks'
+                            .format(collection))
+
+    name_filter = str(arguments.get('filter') or '').lower()
+    lines = ['# Playbooks in {} ({})'.format(
+            collection, entry['version'] or 'unknown version'), '']
+    total = 0
+    for relpath in _list_playbooks(playbooks_dir):
+        if name_filter and name_filter not in relpath.lower():
+            continue
+        line = '- `{}/{}`'.format(collection, _target_form(relpath))
+        summary = _playbook_summary(os.path.join(playbooks_dir, relpath))
+        if summary:
+            line += ' — {}'.format(summary)
+        lines.append(line)
+        total += 1
+    if not total:
+        return _text_result('collection {} provides no playbooks'
+                            .format(collection))
+    return _text_result('\n'.join(lines))
+
+
+def _tool_collection_playbook_info(index_provider, arguments):
+    try:
+        index = index_provider()
+    except RuntimeError as errmsg:
+        return _error_result(str(errmsg))
+    collection = str(arguments.get('collection') or '')
+    if not re.match(r'^[a-z0-9_]+\.[a-z0-9_]+$', collection):
+        return _error_result('invalid collection name: {}'.format(collection))
+    entry = index.get(collection)
+    if entry is None:
+        return _error_result('collection not found: {}'.format(collection))
+
+    name = str(arguments.get('playbook') or '')
+    if not name.endswith(('.yml', '.yaml')):
+        name += '.yml'
+    playbooks_dir = os.path.join(entry['path'], 'playbooks')
+    try:
+        path = confine_under(playbooks_dir, name)
+    except ValueError:
+        return _error_result('playbook not found or invalid: {}'.format(
+                arguments.get('playbook')))
+    if not os.path.isfile(path):
+        return _error_result('playbook not found: {}'.format(
+                arguments.get('playbook')))
+    try:
+        with open(path) as fp:
+            plays, roles, imports, groups = _parse_playbook(fp.read())
+    except (OSError, ValueError) as errmsg:
+        return _error_result(str(errmsg))
+    target = '{}/{}'.format(collection, _target_form(name))
+    return _text_result(_render_playbook_info(
+            '{}/{}'.format(collection, name), target, plays, roles,
+            imports, groups))
 
 
 def _tool_project_status(project, policy, arguments):
@@ -662,6 +1005,7 @@ def _tool_collection_role_variables(index_provider, arguments):
 
 
 def register_project_tools(server, roles_path=COLLECTION_ROLES,
+                           playbooks_path=COLLECTION_PLAYBOOKS,
                            collection_index_provider=None):
     """Register the built-in tools, honoring the server policy."""
     project = server.project
@@ -718,6 +1062,58 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                     'documentation'}},
           'required': ['name']},
          lambda arguments: _tool_role_variables(roles_path, arguments)),
+        ('playbooks',
+         'List the playbook targets which "run" and "check" can execute '
+         'in this project: the project\'s own playbooks, the bundled '
+         'DebOps collection playbooks, and playbook sets from the view '
+         'configuration.',
+         {'type': 'object',
+          'properties': {'filter': {'type': 'string',
+                                    'description': 'Only include '
+                                    'playbooks whose path contains '
+                                    'this string'}}},
+         lambda arguments: _tool_playbooks(project, policy, playbooks_path,
+                                           arguments)),
+        ('playbook_info',
+         'Describe a project or bundled DebOps playbook: its plays, the '
+         'inventory groups it targets, the roles it applies, and the '
+         'playbooks it imports. Use this to learn what a playbook does '
+         'before running it.',
+         {'type': 'object',
+          'properties': {'playbook': {'type': 'string',
+                                      'description': 'Playbook target, '
+                                      'e.g. "service/nginx" or "site"'}},
+          'required': ['playbook']},
+         lambda arguments: _tool_playbook_info(project, policy,
+                                               playbooks_path, arguments)),
+        ('collection_playbooks',
+         'List the playbooks provided by an Ansible Collection visible '
+         'to this project.',
+         {'type': 'object',
+          'properties': {'collection': {'type': 'string',
+                                        'description': 'Collection, e.g. '
+                                        '"community.sops"'},
+                         'filter': {'type': 'string',
+                                    'description': 'Only include '
+                                    'playbooks whose path contains '
+                                    'this string'}},
+          'required': ['collection']},
+         lambda arguments: _tool_collection_playbooks(
+             collection_index_provider, arguments)),
+        ('collection_playbook_info',
+         'Describe a playbook from an Ansible Collection: its plays, '
+         'inventory groups, roles and imported playbooks.',
+         {'type': 'object',
+          'properties': {'collection': {'type': 'string',
+                                        'description': 'Collection, e.g. '
+                                        '"community.sops"'},
+                         'playbook': {'type': 'string',
+                                      'description': 'Playbook name '
+                                      'inside the collection, e.g. '
+                                      '"install"'}},
+          'required': ['collection', 'playbook']},
+         lambda arguments: _tool_collection_playbook_info(
+             collection_index_provider, arguments)),
         ('collection_roles',
          'List the Ansible Collections visible to this project and the '
          'roles they contain. Use this to find roles outside of the '

@@ -109,6 +109,40 @@ plainrole__port: 9000
 plainrole__undocumented: true
 '''
 
+SITE_PLAYBOOK = '''---
+- name: Manage everything
+  import_playbook: service/testrole.yml
+'''
+
+SERVICE_PLAYBOOK = '''---
+- name: Manage the test role
+  collections: ['debops.debops']
+  hosts: ['debops_service_testrole']
+  become: True
+
+  roles:
+    - role: keyring
+    - role: testrole
+'''
+
+CUSTOM_PLAYBOOK = '''---
+- name: Custom project playbook
+  hosts: custom_group
+  tasks:
+    - name: Include a role dynamically
+      ansible.builtin.include_role:
+        name: testrole
+'''
+
+COLLECTION_PLAYBOOK = '''---
+- name: Install the thing
+  hosts: localhost
+  tasks:
+    - name: Include the role
+      ansible.builtin.include_role:
+        name: testns.testcoll.plainrole
+'''
+
 
 class ToolsTestCase(unittest.TestCase):
 
@@ -170,6 +204,30 @@ class ToolsTestCase(unittest.TestCase):
         with open(os.path.join(plainrole, 'defaults', 'main.yml'), 'w') as fp:
             fp.write(PLAIN_ROLE_DEFAULTS)
 
+        # Playbooks: one project playbook, a fixture bundled collection
+        os.makedirs(os.path.join(project_dir, 'ansible', 'playbooks'))
+        with open(os.path.join(project_dir, 'ansible', 'playbooks',
+                               'custom.yml'), 'w') as fp:
+            fp.write(CUSTOM_PLAYBOOK)
+
+        self.playbooks_path = os.path.join(self.tmpdir, 'debops-playbooks')
+        os.makedirs(os.path.join(self.playbooks_path, 'service'))
+        os.makedirs(os.path.join(self.playbooks_path, 'templates'))
+        with open(os.path.join(self.playbooks_path, 'site.yml'), 'w') as fp:
+            fp.write(SITE_PLAYBOOK)
+        with open(os.path.join(self.playbooks_path, 'service',
+                               'testrole.yml'), 'w') as fp:
+            fp.write(SERVICE_PLAYBOOK)
+        # Support directory contents are not runnable playbooks
+        with open(os.path.join(self.playbooks_path, 'templates',
+                               'vars.yml'), 'w') as fp:
+            fp.write('---\n{}\n')
+
+        os.makedirs(os.path.join(collection, 'playbooks'))
+        with open(os.path.join(collection, 'playbooks', 'install.yml'),
+                  'w') as fp:
+            fp.write(COLLECTION_PLAYBOOK)
+
         self.collection_index = {
             'testns.testcoll': {'path': collection, 'version': '1.0.0'},
         }
@@ -178,6 +236,7 @@ class ToolsTestCase(unittest.TestCase):
                                 policy=McpPolicy(self.project))
         register_project_tools(
                 self.server, roles_path=self.roles_path,
+                playbooks_path=self.playbooks_path,
                 collection_index_provider=lambda: self.collection_index)
 
     def call_tool(self, name, arguments=None, request_id=1):
@@ -200,9 +259,10 @@ class ToolsTestCase(unittest.TestCase):
                 'params': {}})
         names = [tool['name'] for tool in response['result']['tools']]
         self.assertEqual(sorted(names),
-                         ['collection_role_info', 'collection_role_variables',
-                          'collection_roles', 'project_status', 'role_info',
-                          'role_variables'])
+                         ['collection_playbook_info', 'collection_playbooks',
+                          'collection_role_info', 'collection_role_variables',
+                          'collection_roles', 'playbook_info', 'playbooks',
+                          'project_status', 'role_info', 'role_variables'])
 
     def test_denied_tool_is_not_registered(self):
         self.project.config.raw['project'] = {'mcp': {'deny': ['role_info']}}
@@ -433,6 +493,105 @@ class ToolsTestCase(unittest.TestCase):
         text = self.result_text(response)
         self.assertIn('specrole__state', text)
         self.assertNotIn('**', text)
+
+    # -- playbooks ----------------------------------------------------------
+
+    def test_playbooks_list(self):
+        response = self.call_tool('playbooks')
+        text = self.result_text(response)
+        self.assertIn('## Project playbooks (view "system")', text)
+        self.assertIn('- `custom` — Custom project playbook '
+                      '(hosts: custom_group)', text)
+        self.assertIn('## DebOps collection: service/', text)
+        self.assertIn('- `service/testrole` — Manage the test role '
+                      '(hosts: debops_service_testrole)', text)
+        self.assertIn('- `site`', text)
+        # Support directories are not listed as playbooks
+        self.assertNotIn('vars', text)
+
+    def test_playbooks_filter(self):
+        response = self.call_tool('playbooks', {'filter': 'testrole'})
+        text = self.result_text(response)
+        self.assertIn('service/testrole', text)
+        self.assertNotIn('`site`', text)
+
+    def test_playbooks_sets_from_view_configuration(self):
+        self.project.config.raw['views'] = {
+                'system': {'playbook_sets': {
+                    'web': ['service/nginx', 'service/php_fpm']}}}
+        server = McpServer(project=self.project,
+                           policy=McpPolicy(self.project))
+        register_project_tools(
+                server, roles_path=self.roles_path,
+                playbooks_path=self.playbooks_path,
+                collection_index_provider=lambda: self.collection_index)
+        response = server.handle({
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'name': 'playbooks', 'arguments': {}}})
+        text = response['result']['content'][0]['text']
+        self.assertIn('## Playbook sets (view configuration)', text)
+        self.assertIn('- `web` → service/nginx, service/php_fpm', text)
+
+    def test_playbook_info(self):
+        response = self.call_tool('playbook_info',
+                                  {'playbook': 'service/testrole'})
+        text = self.result_text(response)
+        self.assertFalse(response['result']['isError'])
+        self.assertIn('Run with: debops run service/testrole', text)
+        self.assertIn('- Manage the test role — hosts: '
+                      'debops_service_testrole (become)', text)
+        # Short role names are normalized using the play's collections
+        self.assertIn('- debops.debops.keyring', text)
+        self.assertIn('- debops.debops.testrole', text)
+        self.assertIn('## Inventory groups in use', text)
+        self.assertIn('- debops_service_testrole', text)
+
+    def test_playbook_info_imports(self):
+        response = self.call_tool('playbook_info', {'playbook': 'site'})
+        text = self.result_text(response)
+        self.assertIn('## Imported playbooks', text)
+        self.assertIn('- service/testrole.yml', text)
+
+    def test_playbook_info_project_playbook(self):
+        response = self.call_tool('playbook_info', {'playbook': 'custom'})
+        text = self.result_text(response)
+        # The task-level include_role statement is found
+        self.assertIn('- testrole', text)
+
+    def test_playbook_info_rejects_traversal(self):
+        for name in ('../defaults/main', '/etc/passwd', 'nosuch'):
+            response = self.call_tool('playbook_info', {'playbook': name})
+            self.assertTrue(response['result']['isError'], name)
+
+    # -- collection playbooks ----------------------------------------------
+
+    def test_collection_playbooks(self):
+        response = self.call_tool('collection_playbooks',
+                                  {'collection': 'testns.testcoll'})
+        text = self.result_text(response)
+        self.assertIn('# Playbooks in testns.testcoll (1.0.0)', text)
+        self.assertIn('- `testns.testcoll/install` — Install the thing '
+                      '(hosts: localhost)', text)
+
+    def test_collection_playbooks_no_playbooks_dir(self):
+        response = self.call_tool('collection_playbooks',
+                                  {'collection': 'testns.nosuch'})
+        self.assertTrue(response['result']['isError'])
+
+    def test_collection_playbook_info(self):
+        response = self.call_tool('collection_playbook_info',
+                                  {'collection': 'testns.testcoll',
+                                   'playbook': 'install'})
+        text = self.result_text(response)
+        self.assertIn('Run with: debops run testns.testcoll/install', text)
+        # The task-level include_role statement is found
+        self.assertIn('- testns.testcoll.plainrole', text)
+
+    def test_collection_playbook_info_rejects_traversal(self):
+        response = self.call_tool('collection_playbook_info',
+                                  {'collection': 'testns.testcoll',
+                                   'playbook': '../roles/plainrole'})
+        self.assertTrue(response['result']['isError'])
 
 
 if __name__ == '__main__':

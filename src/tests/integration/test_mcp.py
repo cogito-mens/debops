@@ -148,9 +148,10 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
     assert result.returncode == 0
     (response,) = read_json_lines(result.stdout)
     names = [tool["name"] for tool in response["result"]["tools"]]
-    assert sorted(names) == ["collection_role_info",
-                             "collection_role_variables",
-                             "collection_roles", "project_status",
+    assert sorted(names) == ["collection_playbook_info",
+                             "collection_playbooks", "collection_role_info",
+                             "collection_role_variables", "collection_roles",
+                             "playbook_info", "playbooks", "project_status",
                              "role_info", "role_variables"]
 
 
@@ -199,6 +200,40 @@ def test_collection_roles_via_stdio(run_debops, mcp_env, project_dir):
     assert response["result"]["isError"] is False
     text = response["result"]["content"][0]["text"]
     assert ("Collections" in text or "no collections" in text)
+
+
+def test_playbooks_via_stdio(run_debops, mcp_env, project_dir):
+    request = json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "playbooks",
+                   "arguments": {"filter": "service/nginx"}},
+    }) + "\n"
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=request)
+
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    text = response["result"]["content"][0]["text"]
+    assert "service/nginx" in text
+    assert "Manage nginx webserver" in text
+
+
+def test_playbook_info_via_stdio(run_debops, mcp_env, project_dir):
+    request = json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "playbook_info",
+                   "arguments": {"playbook": "service/nginx"}},
+    }) + "\n"
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=request)
+
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    text = response["result"]["content"][0]["text"]
+    assert "Run with: debops run service/nginx" in text
+    assert "debops_service_nginx" in text
+    assert "debops.debops.nginx" in text
+    assert "debops.debops.keyring" in text
 
 
 def test_policy_deny_hides_a_tool(run_debops, mcp_env, project_dir):

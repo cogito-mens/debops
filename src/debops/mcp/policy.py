@@ -17,6 +17,19 @@ import os
 logger = logging.getLogger(__name__)
 
 
+def confine_under(root, path):
+    """Resolve a path inside a root directory, rejecting escapes.
+
+    Returns the canonical absolute path. Raises ValueError when the
+    result would fall outside the root, including through symlinks.
+    """
+    root = os.path.realpath(root)
+    candidate = os.path.realpath(os.path.join(root, path))
+    if os.path.commonpath((root, candidate)) != root:
+        raise ValueError('path escapes its allowed directory: ' + str(path))
+    return candidate
+
+
 class McpPolicy(object):
     """Confinement and access policy for one project view."""
 
@@ -51,13 +64,5 @@ class McpPolicy(object):
         return True
 
     def confine(self, path):
-        """Resolve a path inside the view root, rejecting escapes.
-
-        Returns the canonical absolute path. Raises ValueError when the
-        result would fall outside the view root, including through
-        symlinks.
-        """
-        candidate = os.path.realpath(os.path.join(self.view_root, path))
-        if os.path.commonpath((self.view_root, candidate)) != self.view_root:
-            raise ValueError('path escapes the project view: ' + str(path))
-        return candidate
+        """Resolve a path inside the view root, rejecting escapes."""
+        return confine_under(self.view_root, path)
