@@ -79,6 +79,12 @@ General
   versions can be locked and a given virtual environment can be reinstalled
   when needed.
 
+- The :command:`debops mcp` command can run a Model Context Protocol server
+  (2026-07-28 revision) over stdio or a UNIX socket, with
+  :command:`debops mcp connect` acting as a stdio-to-socket bridge for MCP
+  clients. This is intended to give LLM agents controlled access to DebOps
+  project directories.
+
 :ref:`debops.core` role
 '''''''''''''''''''''''
 

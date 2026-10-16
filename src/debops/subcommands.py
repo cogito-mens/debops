@@ -38,7 +38,8 @@ Sections:
     run      run Ansible playbook(s) against hosts
     check    run Ansible playbook(s) in check mode
     env      run shell commands in project environment
-    config   display DebOps configuration options''')
+    config   display DebOps configuration options
+    mcp      run a Model Context Protocol server or client''')
 
         parser.add_argument('section', help='Section to run')
         parser.add_argument('--version', action='version',
@@ -374,6 +375,53 @@ Commands:
             parser.print_help()
             sys.exit(1)
         getattr(self, 'do_config_' + self._command.command)()
+
+    def do_mcp(self):
+        parser = argparse.ArgumentParser(
+                description='run a Model Context Protocol server or client',
+                usage='''debops mcp <command> [<args>]
+
+Commands:
+    serve    run an MCP server over stdio or a UNIX socket
+    connect  bridge stdio to an MCP server UNIX socket''')
+        parser.add_argument('command', help='MCP command to run')
+        self._command = parser.parse_args(self.args[2:3])
+        self.command = self._command.command
+        if not hasattr(self, 'do_mcp_' + self._command.command):
+            print('Error: unrecognized command:', self._command.command)
+            parser.print_help()
+            sys.exit(1)
+        getattr(self, 'do_mcp_' + self._command.command)()
+
+    def do_mcp_serve(self):
+        parser = argparse.ArgumentParser(
+                parents=[self.global_parser],
+                description='run an MCP server over stdio or a UNIX socket',
+                usage='debops mcp serve [<args>]')
+        parser.add_argument('-V', '--view', type=str,
+                            help='select the infrastructure view '
+                                 'to serve')
+        parser.add_argument('--socket', type=str, metavar='PATH',
+                            help='listen on a UNIX socket at PATH instead '
+                                 'of serving on stdio')
+        parser.add_argument('--mode', type=lambda value: int(value, 8),
+                            default=0o660, metavar='MODE',
+                            help='file mode of the UNIX socket, in octal '
+                                 '(default: %(default)04o)')
+        parser.add_argument('--max-connections', type=int, default=32,
+                            metavar='COUNT',
+                            help='maximum number of concurrent connections '
+                                 '(default: %(default)s)')
+        self.args = parser.parse_args(self.args[3:])
+
+    def do_mcp_connect(self):
+        parser = argparse.ArgumentParser(
+                parents=[self.global_parser],
+                description='bridge stdio to an MCP server UNIX socket',
+                usage='debops mcp connect [<args>] <socket>')
+        parser.add_argument('socket', type=str,
+                            help='path of the MCP server UNIX socket')
+        self.args = parser.parse_args(self.args[3:])
 
     def do_config_list(self):
         parser = argparse.ArgumentParser(

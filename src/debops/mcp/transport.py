@@ -1,0 +1,227 @@
+# Copyright (C) 2026 Maciej Delmanowski <drybjed@gmail.com>
+# Copyright (C) 2026 DebOps <https://debops.org/>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+"""Transports for the DebOps MCP server.
+
+Two transports are provided: stdio, where the server is spawned by an MCP
+client as a subprocess, and a UNIX socket listener, where a long-running
+server can serve local clients under its own UNIX account. Both carry
+newline-delimited JSON-RPC messages; on the socket this follows the
+specification's guidance that custom byte-stream transports should reuse
+the stdio framing.
+
+Access to the socket is controlled by filesystem permissions; there is no
+protocol-level authentication on this transport.
+"""
+
+import logging
+import os
+import signal
+import socket
+import stat
+import struct
+import sys
+import threading
+
+from . import rpc
+
+logger = logging.getLogger(__name__)
+
+
+def get_peer_credentials(connection):
+    """Return the (pid, uid, gid) of the process on the other end of a
+    connected UNIX socket, using the SO_PEERCRED socket option."""
+    credentials = connection.getsockopt(socket.SOL_SOCKET,
+                                        socket.SO_PEERCRED,
+                                        struct.calcsize('3i'))
+    return struct.unpack('3i', credentials)
+
+
+class StdioTransport(object):
+    """Serve MCP requests on stdin/stdout.
+
+    Nothing except protocol messages may be written to stdout; logging
+    goes to stderr.
+    """
+
+    def serve(self, server):
+        reader = sys.stdin.buffer
+        writer = sys.stdout.buffer
+        while True:
+            try:
+                data = rpc.read_message(reader)
+            except rpc.JsonRpcError as errmsg:
+                rpc.write_message(writer, errmsg.to_response())
+                continue
+            if data is None:
+                break
+            response = server.handle_bytes(data)
+            if response is not None:
+                rpc.write_message(writer, response)
+
+
+class UnixSocketTransport(object):
+    """Serve MCP requests on a UNIX socket.
+
+    The server accepts multiple concurrent connections; because the
+    protocol is stateless, connections share no state and clients can
+    reconnect freely.
+    """
+
+    def __init__(self, path, mode=0o660, max_connections=32):
+        self.path = os.path.abspath(os.path.expanduser(path))
+        self.mode = mode
+        self._semaphore = threading.BoundedSemaphore(max_connections)
+        self._socket = None
+        self._serving = False
+
+    def _prepare_socket_path(self):
+        """Make sure that the socket path can be bound safely."""
+        parent = os.path.dirname(self.path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        if os.path.islink(self.path):
+            raise ValueError('refusing to use a symlink as the socket: '
+                             + self.path)
+        if not os.path.exists(self.path):
+            return
+        if not stat.S_ISSOCK(os.stat(self.path).st_mode):
+            raise FileExistsError('refusing to remove a non-socket file: '
+                                  + self.path)
+        # Distinguish a stale socket from a live server: a live server
+        # accepts connections, a stale one refuses them
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.connect(self.path)
+        except ConnectionRefusedError:
+            # A leftover socket from a previous run; safe to replace
+            os.unlink(self.path)
+        else:
+            raise FileExistsError('another MCP server is already '
+                                  'listening on ' + self.path)
+        finally:
+            probe.close()
+
+    def serve(self, server):
+        self._prepare_socket_path()
+        old_umask = os.umask(0o077)
+        try:
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            listener.bind(self.path)
+        finally:
+            os.umask(old_umask)
+        os.chmod(self.path, self.mode)
+        listener.listen()
+        # The timeout lets the accept loop notice a shutdown request
+        listener.settimeout(0.5)
+        self._socket = listener
+        self._serving = True
+        # Terminate gracefully so that the socket file is cleaned up;
+        # signal handlers can only be installed in the main thread
+        previous_sigterm = None
+        if threading.current_thread() is threading.main_thread():
+            previous_sigterm = signal.getsignal(signal.SIGTERM)
+            signal.signal(signal.SIGTERM, lambda *_: self.shutdown())
+        logger.notice('MCP server listening on %s (mode %04o)',
+                      self.path, self.mode)
+        try:
+            while self._serving:
+                try:
+                    connection, _ = listener.accept()
+                except socket.timeout:
+                    continue
+                if not self._semaphore.acquire(blocking=False):
+                    logger.warning('Connection limit reached, rejecting '
+                                   'a connection')
+                    connection.close()
+                    continue
+                thread = threading.Thread(
+                        target=self._serve_connection,
+                        args=(connection, server), daemon=True)
+                thread.start()
+        finally:
+            if previous_sigterm is not None:
+                signal.signal(signal.SIGTERM, previous_sigterm)
+            listener.close()
+            try:
+                os.unlink(self.path)
+            except OSError:
+                pass
+
+    def shutdown(self):
+        """Ask the accept loop to stop; in-flight connections finish."""
+        self._serving = False
+
+    def _serve_connection(self, connection, server):
+        try:
+            pid, uid, gid = get_peer_credentials(connection)
+            logger.debug('Connection from pid=%s uid=%s gid=%s',
+                         pid, uid, gid)
+            reader = connection.makefile('rb')
+            writer = connection.makefile('wb')
+            while True:
+                try:
+                    data = rpc.read_message(reader)
+                except rpc.JsonRpcError as errmsg:
+                    rpc.write_message(writer, errmsg.to_response())
+                    continue
+                except OSError:
+                    break
+                if data is None:
+                    break
+                response = server.handle_bytes(data)
+                if response is not None:
+                    try:
+                        rpc.write_message(writer, response)
+                    except OSError:
+                        break
+        except OSError as errmsg:
+            logger.debug('Connection ended with an error: %s', errmsg)
+        finally:
+            self._semaphore.release()
+            connection.close()
+
+
+def bridge_stdio_to_unix(path):
+    """Bridge stdin/stdout to a UNIX socket ('debops mcp connect').
+
+    The bridge is a dumb byte relay; protocol enforcement is entirely the
+    server's job.
+    """
+    path = os.path.abspath(os.path.expanduser(path))
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        connection.connect(path)
+    except OSError as errmsg:
+        raise ConnectionError('cannot connect to {}: {}'
+                              .format(path, errmsg))
+
+    def pump_stdin():
+        try:
+            while True:
+                chunk = sys.stdin.buffer.read1(65536)
+                if not chunk:
+                    break
+                connection.sendall(chunk)
+        except OSError:
+            pass
+        finally:
+            # Tell the server that no more requests will come
+            try:
+                connection.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
+    thread = threading.Thread(target=pump_stdin, daemon=True)
+    thread.start()
+
+    try:
+        while True:
+            chunk = connection.recv(65536)
+            if not chunk:
+                break
+            sys.stdout.buffer.write(chunk)
+            sys.stdout.buffer.flush()
+    finally:
+        connection.close()

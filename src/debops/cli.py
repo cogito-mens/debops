@@ -10,6 +10,9 @@ from .projectvenv import ProjectVenv
 from .ansiblerunner import AnsibleRunner
 from .ansibleplaybookrunner import AnsiblePlaybookRunner
 from .envrunner import EnvRunner
+from .mcp.server import McpServer
+from .mcp.transport import StdioTransport, UnixSocketTransport
+from .mcp.transport import bridge_stdio_to_unix
 import logging
 import getpass
 import sys
@@ -57,6 +60,12 @@ class Interpreter(object):
                 self.do_config_list(self.parsed_args.args)
             elif self.parsed_args.command == 'get':
                 self.do_config_get(self.parsed_args.args)
+
+        elif self.parsed_args.section == 'mcp':
+            if self.parsed_args.command == 'serve':
+                self.do_mcp_serve(self.parsed_args.args)
+            elif self.parsed_args.command == 'connect':
+                self.do_mcp_connect(self.parsed_args.args)
 
     def do_project_init(self, args):
         try:
@@ -218,6 +227,44 @@ class Interpreter(object):
             sys.exit(runner.execute())
         else:
             sys.exit(runner.show_env(scope=args.scope))
+
+    def do_mcp_serve(self, args):
+        # The server is confined to a project directory; refuse to start
+        # outside of one
+        try:
+            project = ProjectDir(path=args.project_dir, config=self.config,
+                                 view=args.view)
+        except (IsADirectoryError, NotADirectoryError) as errmsg:
+            print('Error:', errmsg, file=sys.stderr)
+            sys.exit(1)
+
+        server = McpServer(project=project)
+        try:
+            if args.socket:
+                transport = UnixSocketTransport(
+                        args.socket, mode=args.mode,
+                        max_connections=args.max_connections)
+            else:
+                transport = StdioTransport()
+            transport.serve(server)
+        except (ValueError, FileExistsError, PermissionError,
+                OSError) as errmsg:
+            # Errors go to stderr: in stdio mode stdout is reserved for
+            # protocol messages
+            print('Error:', errmsg, file=sys.stderr)
+            sys.exit(1)
+        except KeyboardInterrupt:
+            # 128 + SIGINT; the transport cleans up after itself
+            sys.exit(130)
+
+    def do_mcp_connect(self, args):
+        try:
+            bridge_stdio_to_unix(args.socket)
+        except (ConnectionError, OSError) as errmsg:
+            print('Error:', errmsg, file=sys.stderr)
+            sys.exit(1)
+        except KeyboardInterrupt:
+            sys.exit(130)
 
     def do_config_list(self, args):
         try:

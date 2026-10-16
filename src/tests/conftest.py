@@ -40,7 +40,7 @@ def run_debops(debops_source_dir):
     ``PYTHONPATH``, which is how the package behaves before installation and
     keeps the real ``sys.exit`` codes observable.
     """
-    def _run(*args, cwd=None, env=None, check=False):
+    def _run(*args, cwd=None, env=None, check=False, input_text=None):
         run_env = os.environ.copy()
         run_env["PYTHONPATH"] = os.pathsep.join(
             [debops_source_dir, run_env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
@@ -49,6 +49,6 @@ def run_debops(debops_source_dir):
 
         return subprocess.run(
             [sys.executable, "-m", "debops", *args],
-            cwd=cwd, env=run_env, check=check,
+            cwd=cwd, env=run_env, check=check, input=input_text,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     return _run

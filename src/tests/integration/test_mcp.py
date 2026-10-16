@@ -1,0 +1,146 @@
+# Copyright (C) 2026 Maciej Delmanowski <drybjed@gmail.com>
+# Copyright (C) 2026 DebOps <https://debops.org/>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+"""End-to-end tests of the 'debops mcp' command line.
+
+These tests drive the real ``python -m debops mcp`` entry point as a
+subprocess, so they exercise the argument handling and the protocol
+framing a user (or an MCP client) sees.
+"""
+
+from debops.mcp.server import McpServer
+from debops.mcp.transport import UnixSocketTransport
+import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+
+import pytest
+
+
+pytestmark = pytest.mark.integration
+
+
+@pytest.fixture
+def project_dir(tmp_path):
+    """A minimal legacy DebOps project directory."""
+    (tmp_path / ".debops.cfg").touch()
+    return tmp_path
+
+
+def make_discover_request(request_id=1):
+    return json.dumps({
+        "jsonrpc": "2.0", "id": request_id, "method": "server/discover",
+        "params": {},
+        "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"},
+    }) + "\n"
+
+
+def read_json_lines(text):
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def test_serve_stdio_round_trip(run_debops, debops_env, project_dir):
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=debops_env, input_text=make_discover_request())
+
+    assert result.returncode == 0
+    # Nothing except protocol messages may be written to stdout
+    (response,) = read_json_lines(result.stdout)
+    assert response["id"] == 1
+    assert response["result"]["protocolVersion"] == "2026-07-28"
+    assert response["result"]["serverInfo"]["name"] == "debops"
+    assert "tools" in response["result"]["capabilities"]
+
+
+def test_serve_stdio_reports_parse_errors(run_debops, debops_env,
+                                          project_dir):
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=debops_env, input_text="not json\n")
+
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    assert response["error"]["code"] == -32700
+
+
+def test_serve_stdio_reports_unknown_methods(run_debops, debops_env,
+                                             project_dir):
+    request = ('{"jsonrpc": "2.0", "id": 5, "method": "resources/list"}\n')
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=debops_env, input_text=request)
+
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    assert response["id"] == 5
+    assert response["error"]["code"] == -32601
+
+
+def test_serve_outside_a_project_fails(run_debops, debops_env, tmp_path):
+    result = run_debops("mcp", "serve", cwd=str(tmp_path), env=debops_env,
+                        input_text="")
+
+    assert result.returncode == 1
+    assert "project directory not found" in result.stderr
+    # Nothing may be written to the protocol channel
+    assert result.stdout == ""
+
+
+def test_serve_exits_quietly_on_sigint(debops_source_dir, debops_env,
+                                       project_dir):
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+            [debops_source_dir,
+             env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    env.update(debops_env)
+    process = subprocess.Popen(
+            [sys.executable, "-m", "debops", "mcp", "serve"],
+            cwd=str(project_dir), env=env, stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        time.sleep(1)
+        process.send_signal(signal.SIGINT)
+        _stdout, stderr = process.communicate(timeout=10)
+    finally:
+        if process.poll() is None:
+            process.kill()
+
+    assert process.returncode == 130
+    assert "Traceback" not in stderr
+
+
+def test_connect_to_missing_socket_fails(run_debops, debops_env, tmp_path):
+    result = run_debops("mcp", "connect", str(tmp_path / "missing.sock"),
+                        env=debops_env)
+
+    assert result.returncode == 1
+    assert "Error" in result.stderr
+
+
+def test_connect_bridges_stdio_to_unix_socket(run_debops, debops_env,
+                                              project_dir, tmp_path):
+    socket_path = str(tmp_path / "server.sock")
+    transport = UnixSocketTransport(socket_path)
+    thread = threading.Thread(target=transport.serve, args=(McpServer(),),
+                              daemon=True)
+    thread.start()
+    try:
+        for _ in range(200):
+            if os.path.exists(socket_path):
+                break
+            time.sleep(0.01)
+
+        result = run_debops("mcp", "connect", socket_path,
+                            cwd=str(project_dir), env=debops_env,
+                            input_text=make_discover_request())
+
+        assert result.returncode == 0
+        (response,) = read_json_lines(result.stdout)
+        assert response["id"] == 1
+        assert response["result"]["protocolVersion"] == "2026-07-28"
+    finally:
+        transport.shutdown()
+        thread.join(timeout=5)
