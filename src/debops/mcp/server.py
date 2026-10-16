@@ -11,6 +11,7 @@ can hand any message to handle_bytes() independently of any other.
 """
 
 import logging
+import threading
 
 from . import rpc
 
@@ -30,16 +31,38 @@ PROTOCOL_VERSION_KEY = 'io.modelcontextprotocol/protocolVersion'
 SERVER_INFO_KEY = 'io.modelcontextprotocol/serverInfo'
 
 
+class RequestCancelled(Exception):
+    """Raised by a tool when its request was cancelled by the client.
+
+    The server sends no response for a cancelled request, per the
+    specification.
+    """
+
+
+class ToolContext(object):
+    """Request-scoped context passed to tools which need it.
+
+    'cancelled' is an event which is set when the client cancels the
+    request via 'notifications/cancelled'; long-running tools should
+    poll it and stop.
+    """
+
+    def __init__(self, request_id, cancelled):
+        self.request_id = request_id
+        self.cancelled = cancelled
+
+
 class Tool(object):
     """A single tool exposed by the server."""
 
     def __init__(self, name, description, input_schema, handler,
-                 output_schema=None):
+                 output_schema=None, needs_context=False):
         self.name = name
         self.description = description
         self.input_schema = input_schema
         self.output_schema = output_schema
         self.handler = handler
+        self.needs_context = needs_context
 
     def describe(self):
         description = {
@@ -64,6 +87,10 @@ class McpServer(object):
         self.project = project
         self.policy = policy
         self.tools = {}
+        # Cancellation registry: request id -> cancel event, for the
+        # requests currently being handled
+        self._active_requests = {}
+        self._active_lock = threading.Lock()
         self._methods = {
             'server/discover': self._discover,
             'tools/list': self._tools_list,
@@ -72,10 +99,17 @@ class McpServer(object):
         }
 
     def register_tool(self, name, description, input_schema, handler,
-                      output_schema=None):
+                      output_schema=None, needs_context=False):
         """Register a tool exposed via tools/list and tools/call."""
         self.tools[name] = Tool(name, description, input_schema, handler,
-                                output_schema)
+                                output_schema, needs_context)
+
+    def cancel_all(self):
+        """Cancel every in-flight request (transport teardown)."""
+        with self._active_lock:
+            events = list(self._active_requests.values())
+        for event in events:
+            event.set()
 
     # -- transport entry point ---------------------------------------------
 
@@ -138,7 +172,12 @@ class McpServer(object):
             raise rpc.JsonRpcError(rpc.INVALID_PARAMS, 'Invalid params',
                                    request_id=request_id)
 
-        result = handler(params)
+        try:
+            result = handler(params, request_id)
+        except RequestCancelled:
+            # A cancelled request gets no response
+            logger.debug('Request %s was cancelled', request_id)
+            return None
         if is_notification:
             return None
         if result is None:
@@ -172,7 +211,7 @@ class McpServer(object):
                           'requested': version},
                     request_id=request_id)
 
-    def _discover(self, params):
+    def _discover(self, params, request_id):
         return {
             'protocolVersion': PROTOCOL_VERSION,
             'serverInfo': {'name': self.name, 'version': self.version},
@@ -180,11 +219,11 @@ class McpServer(object):
             'authorization': None,
         }
 
-    def _tools_list(self, params):
+    def _tools_list(self, params, request_id):
         return {'tools': [tool.describe() for tool in self.tools.values()],
                 'nextCursor': None}
 
-    def _tools_call(self, params):
+    def _tools_call(self, params, request_id):
         name = params.get('name')
         tool = self.tools.get(name)
         if tool is None:
@@ -202,11 +241,29 @@ class McpServer(object):
         # Log the argument keys only; values may contain secrets
         logger.debug('Calling tool %s with arguments: %s',
                      name, sorted(arguments))
-        return tool.handler(arguments)
+        if not tool.needs_context:
+            return tool.handler(arguments)
 
-    def _cancelled(self, params):
-        # There are no long-running tools yet, so there is nothing to
-        # cancel; the notification is accepted and ignored. Cooperative
-        # cancellation arrives together with the tools.
-        logger.debug('Received notifications/cancelled: %s', params)
+        cancel_event = threading.Event()
+        if request_id is not None:
+            with self._active_lock:
+                self._active_requests[request_id] = cancel_event
+        try:
+            return tool.handler(arguments,
+                                ToolContext(request_id, cancel_event))
+        finally:
+            if request_id is not None:
+                with self._active_lock:
+                    self._active_requests.pop(request_id, None)
+
+    def _cancelled(self, params, request_id):
+        target = params.get('requestId')
+        with self._active_lock:
+            event = self._active_requests.get(target)
+        if event is not None:
+            logger.notice('Request %s cancelled by the client', target)
+            event.set()
+        else:
+            logger.debug('Cancellation for an unknown or finished '
+                         'request: %s', target)
         return None

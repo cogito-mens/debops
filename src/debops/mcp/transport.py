@@ -23,6 +23,7 @@ import stat
 import struct
 import sys
 import threading
+import time
 
 from . import rpc
 
@@ -38,6 +39,24 @@ def get_peer_credentials(connection):
     return struct.unpack('3i', credentials)
 
 
+def _write_response(server, writer, write_lock, data):
+    """Handle one message and write its response, if any.
+
+    Each message runs in its own thread, so a long-running request does
+    not block cancellations or later requests; writes are serialized to
+    keep messages intact.
+    """
+    response = server.handle_bytes(data)
+    if response is None:
+        return
+    try:
+        with write_lock:
+            rpc.write_message(writer, response)
+    except OSError:
+        # The client went away while the request was being handled
+        pass
+
+
 class StdioTransport(object):
     """Serve MCP requests on stdin/stdout.
 
@@ -49,17 +68,32 @@ class StdioTransport(object):
         logger.notice('MCP server serving on stdio')
         reader = sys.stdin.buffer
         writer = sys.stdout.buffer
+        write_lock = threading.Lock()
+        workers = []
         while True:
             try:
                 data = rpc.read_message(reader)
             except rpc.JsonRpcError as errmsg:
-                rpc.write_message(writer, errmsg.to_response())
+                with write_lock:
+                    rpc.write_message(writer, errmsg.to_response())
                 continue
             if data is None:
                 break
-            response = server.handle_bytes(data)
-            if response is not None:
-                rpc.write_message(writer, response)
+            thread = threading.Thread(
+                    target=_write_response,
+                    args=(server, writer, write_lock, data), daemon=True)
+            thread.start()
+            workers.append(thread)
+        # The client is gone: cancel in-flight requests and give their
+        # workers a moment to wind down before exiting, so that nearly
+        # finished responses are still delivered
+        server.cancel_all()
+        deadline = time.monotonic() + 5
+        for worker in workers:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            worker.join(timeout=remaining)
 
 
 class UnixSocketTransport(object):
@@ -164,24 +198,27 @@ class UnixSocketTransport(object):
                           pid, uid, gid)
             reader = connection.makefile('rb')
             writer = connection.makefile('wb')
+            write_lock = threading.Lock()
             while True:
                 try:
                     data = rpc.read_message(reader)
                 except rpc.JsonRpcError as errmsg:
                     logger.warning('Rejecting a message from pid=%s: %s',
                                    pid, errmsg.message)
-                    rpc.write_message(writer, errmsg.to_response())
+                    with write_lock:
+                        rpc.write_message(writer, errmsg.to_response())
                     continue
                 except OSError:
                     break
                 if data is None:
                     break
-                response = server.handle_bytes(data)
-                if response is not None:
-                    try:
-                        rpc.write_message(writer, response)
-                    except OSError:
-                        break
+                # Requests run concurrently so that long-running tools do
+                # not block cancellations and later requests
+                thread = threading.Thread(
+                        target=_write_response,
+                        args=(server, writer, write_lock, data),
+                        daemon=True)
+                thread.start()
             logger.notice('Client disconnected: pid=%s', pid)
         except OSError as errmsg:
             logger.debug('Connection ended with an error: %s', errmsg)

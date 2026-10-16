@@ -79,11 +79,56 @@ class UnixSocketTransportTestCase(unittest.TestCase):
         connection.sendall(b'{"jsonrpc": "2.0", "id": 2, '
                            b'"method": "tools/list", "params": {}}\n')
         reader = connection.makefile('rb')
-        first = json.loads(rpc.read_message(reader))
-        second = json.loads(rpc.read_message(reader))
-        self.assertEqual(first['id'], 1)
-        self.assertEqual(second['id'], 2)
-        self.assertEqual(second['result']['tools'], [])
+        # Requests run concurrently; responses may arrive out of order
+        responses = {}
+        for _ in range(2):
+            response = json.loads(rpc.read_message(reader))
+            responses[response['id']] = response
+        self.assertEqual(responses[1]['result']['protocolVersion'],
+                         '2026-07-28')
+        self.assertEqual(responses[2]['result']['tools'], [])
+
+    def test_requests_run_concurrently(self):
+        # A slow request must not block a later one on the same connection
+        gate = threading.Event()
+        server = McpServer()
+
+        def slow(arguments, context):
+            gate.wait(10)
+            return {'content': [{'type': 'text', 'text': 'slow'}]}
+
+        server.register_tool('slow', 'A slow tool', {'type': 'object'},
+                             slow, needs_context=True)
+        path = os.path.join(self.tmpdir, 'concurrent.sock')
+        transport = UnixSocketTransport(path)
+        thread = threading.Thread(target=transport.serve, args=(server,),
+                                  daemon=True)
+        thread.start()
+        try:
+            for _ in range(500):
+                if os.path.exists(path):
+                    break
+                time.sleep(0.01)
+
+            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            connection.connect(path)
+            connection.sendall(
+                    b'{"jsonrpc": "2.0", "id": 1, "method": "tools/call", '
+                    b'"params": {"name": "slow", "arguments": {}}}\n')
+            connection.sendall(
+                    b'{"jsonrpc": "2.0", "id": 2, "method": "tools/list", '
+                    b'"params": {}}\n')
+            reader = connection.makefile('rb')
+            first = json.loads(rpc.read_message(reader))
+            self.assertEqual(first['id'], 2)
+            gate.set()
+            second = json.loads(rpc.read_message(reader))
+            self.assertEqual(second['id'], 1)
+            connection.close()
+        finally:
+            gate.set()
+            transport.shutdown()
+            thread.join(timeout=5)
 
     def test_concurrent_connections(self):
         results = []

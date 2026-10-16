@@ -9,7 +9,8 @@ dependencies.
 """
 
 from debops.mcp import rpc
-from debops.mcp.server import McpServer, PROTOCOL_VERSION
+from debops.mcp.server import McpServer, PROTOCOL_VERSION, RequestCancelled
+import threading
 import unittest
 
 
@@ -170,6 +171,56 @@ class ToolsTestCase(unittest.TestCase):
         response = server.handle(make_request(
                 'tools/call', params={'name': 'echo', 'arguments': ['x']}))
         self.assertEqual(response['error']['code'], rpc.INVALID_PARAMS)
+
+
+class CancellationTestCase(unittest.TestCase):
+
+    def test_cancellation_stops_and_suppresses_the_request(self):
+        server = McpServer()
+        started = threading.Event()
+
+        def slow(arguments, context):
+            started.set()
+            context.cancelled.wait(10)
+            raise RequestCancelled()
+
+        server.register_tool('slow', 'A slow tool', {'type': 'object'},
+                             slow, needs_context=True)
+
+        outcome = []
+
+        def call():
+            outcome.append(server.handle({
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'name': 'slow', 'arguments': {}}}))
+
+        thread = threading.Thread(target=call)
+        thread.start()
+        self.assertTrue(started.wait(5))
+
+        # The cancellation notification itself gets no response
+        self.assertIsNone(server.handle({
+                'jsonrpc': '2.0', 'method': 'notifications/cancelled',
+                'params': {'requestId': 1}}))
+        thread.join(timeout=5)
+        # ... and neither does the cancelled request
+        self.assertEqual(outcome, [None])
+
+    def test_cancellation_of_unknown_request_is_ignored(self):
+        server = McpServer()
+        self.assertIsNone(server.handle({
+                'jsonrpc': '2.0', 'method': 'notifications/cancelled',
+                'params': {'requestId': 'nosuch'}}))
+
+    def test_tool_without_context_needs_no_registry(self):
+        server = McpServer()
+        server.register_tool('plain', 'Plain tool', {'type': 'object'},
+                             lambda arguments: {'content': [],
+                                                'isError': False})
+        response = server.handle(make_request(
+                'tools/call', params={'name': 'plain', 'arguments': {}}))
+        self.assertEqual(response['result']['content'], [])
+        self.assertEqual(server._active_requests, {})
 
 
 if __name__ == '__main__':

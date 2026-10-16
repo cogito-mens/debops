@@ -175,9 +175,11 @@ def test_role_variables_via_stdio(run_debops, mcp_env, project_dir):
                         env=mcp_env, input_text=brief + "\n" + full + "\n")
 
     assert result.returncode == 0
-    brief_response, full_response = read_json_lines(result.stdout)
-    brief_text = brief_response["result"]["content"][0]["text"]
-    full_text = full_response["result"]["content"][0]["text"]
+    # Responses may arrive out of order; requests run concurrently
+    responses = {response["id"]: response
+                 for response in read_json_lines(result.stdout)}
+    brief_text = responses[1]["result"]["content"][0]["text"]
+    full_text = responses[2]["result"]["content"][0]["text"]
     assert "- **elasticsearch__base_packages**" in brief_text
     assert "```yaml" not in brief_text
     assert "## elasticsearch__base_packages" in full_text
