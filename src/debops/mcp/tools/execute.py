@@ -23,6 +23,7 @@ import time
 from ...ansible.inventory import AnsibleInventory
 from ...ansibleplaybookrunner import AnsiblePlaybookRunner
 from ...hooks import run_hooks
+from ..policy import EXECUTE_OPTIONS
 from ..server import RequestCancelled
 from .common import error_result, text_result
 
@@ -44,8 +45,11 @@ ALLOWED_OPTIONS = {'limit': '--limit', 'tags': '--tags',
                    'skip_tags': '--skip-tags'}
 
 
-def _build_ansible_args(arguments, check):
-    """Build the ansible-playbook arguments from the tool arguments."""
+def _build_ansible_args(arguments, check, allowed_options=EXECUTE_OPTIONS):
+    """Build the ansible-playbook arguments from the tool arguments.
+
+    Only options permitted by the project policy are accepted.
+    """
     playbook = str(arguments.get('playbook') or '')
     if not playbook:
         raise ValueError('the "playbook" argument is required')
@@ -55,6 +59,9 @@ def _build_ansible_args(arguments, check):
         value = arguments.get(option)
         if value is None:
             continue
+        if option not in allowed_options:
+            raise ValueError('the "{}" option is disabled by the project '
+                             'policy'.format(option))
         value = str(value)
         if not value or '\n' in value or '\r' in value:
             raise ValueError('invalid value for "{}": {!r}'.format(
@@ -68,7 +75,7 @@ def _build_ansible_args(arguments, check):
 
 def _execute_playbook(project, policy, arguments, context, check):
     try:
-        args = _build_ansible_args(arguments, check)
+        args = _build_ansible_args(arguments, check, policy.execute_options)
         runner = AnsiblePlaybookRunner(project, ansible_args=args)
     except (ValueError, FileNotFoundError, ChildProcessError) as errmsg:
         return error_result(str(errmsg))

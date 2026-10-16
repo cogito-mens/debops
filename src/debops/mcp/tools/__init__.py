@@ -23,24 +23,31 @@ from .playbooks import (COLLECTION_PLAYBOOKS, tool_playbook_info,
                         tool_playbooks)
 from .project import tool_project_status
 from .roles import COLLECTION_ROLES, tool_role_info, tool_role_variables
+from ..policy import EXECUTE_OPTIONS
 
-# The schema shared by the execution tools
-EXECUTION_SCHEMA = {
-    'type': 'object',
-    'properties': {
+# The schema shared by the execution tools, with options the project
+# policy disabled filtered out, so agents never see what they cannot use
+OPTION_DESCRIPTIONS = {
+    'limit': 'Limit execution to hosts, --limit style',
+    'tags': 'Only run tagged tasks, --tags style',
+    'skip_tags': 'Skip tagged tasks, --skip-tags style',
+}
+
+
+def execution_schema(policy):
+    allowed = (set(EXECUTE_OPTIONS) if policy is None
+               else set(policy.execute_options))
+    properties = {
         'playbook': {'type': 'string',
                      'description': 'Playbook target, e.g. '
                      '"service/nginx" or "site"'},
-        'limit': {'type': 'string',
-                  'description': 'Limit execution to hosts, '
-                  '--limit style'},
-        'tags': {'type': 'string',
-                 'description': 'Only run tagged tasks, --tags style'},
-        'skip_tags': {'type': 'string',
-                      'description': 'Skip tagged tasks, '
-                      '--skip-tags style'}},
-    'required': ['playbook'],
-}
+    }
+    for option, description in OPTION_DESCRIPTIONS.items():
+        if option in allowed:
+            properties[option] = {'type': 'string',
+                                  'description': description}
+    return {'type': 'object', 'properties': properties,
+            'required': ['playbook']}
 
 
 def register_project_tools(server, roles_path=COLLECTION_ROLES,
@@ -260,7 +267,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
             'made), reporting what would change. Facts are gathered '
             'live from the managed hosts. Accepts a playbook target '
             '(see the playbooks tool) and optional limit/tags.',
-            EXECUTION_SCHEMA,
+            execution_schema(policy),
             lambda arguments, context: tool_check(project, policy,
                                                   arguments, context),
             True))
@@ -271,7 +278,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
             'the "check" tool first to preview the changes. Accepts a '
             'playbook target (see the playbooks tool) and optional '
             'limit/tags.',
-            EXECUTION_SCHEMA,
+            execution_schema(policy),
             lambda arguments, context: tool_run(project, policy,
                                                 arguments, context),
             True))

@@ -233,6 +233,46 @@ class ExecutionGateTestCase(unittest.TestCase):
         self.assertIn('check', names)
         self.assertNotIn('run', names)
 
+    # -- execute_options passthrough policy --------------------------------
+
+    def test_execute_options_filter_the_schema(self):
+        project = FakeProject(self.tmpdir,
+                              {'project': {'mcp': {
+                                  'execute_options': ['tags']}}})
+        server = McpServer(project=project, policy=McpPolicy(project))
+        register_project_tools(
+                server, roles_path=self.tmpdir,
+                playbooks_path=self.tmpdir,
+                collection_index_provider=lambda: {})
+        properties = server.tools['check'].input_schema['properties']
+        self.assertEqual(sorted(properties), ['playbook', 'tags'])
+
+    def test_execute_options_reject_disabled_options(self):
+        from debops.mcp.tools.execute import _build_ansible_args
+        with self.assertRaises(ValueError) as context:
+            _build_ansible_args({'playbook': 'site', 'limit': 'web'},
+                                check=True, allowed_options=['tags'])
+        self.assertIn('disabled by the project policy',
+                      str(context.exception))
+
+    def test_execute_options_accept_flag_spellings(self):
+        project = FakeProject(self.tmpdir,
+                              {'project': {'mcp': {
+                                  'execute_options': ['-l', '--tags']}}})
+        policy = McpPolicy(project)
+        self.assertEqual(policy.execute_options, ['limit', 'tags'])
+
+    def test_execute_options_unknown_entries_ignored(self):
+        project = FakeProject(self.tmpdir,
+                              {'project': {'mcp': {
+                                  'execute_options': ['--check', 'tags']}}})
+        policy = McpPolicy(project)
+        self.assertEqual(policy.execute_options, ['tags'])
+
+
+if __name__ == '__main__':
+    unittest.main()
+
 
 if __name__ == '__main__':
     unittest.main()

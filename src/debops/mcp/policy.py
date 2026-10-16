@@ -38,6 +38,18 @@ READ_DENY_COMPONENTS = frozenset((
         'secret', '.git', '.encfs.secret', '.encfs6.keyfile',
         '.encfs6.xml', '__pycache__', 'venv'))
 
+# ansible-playbook options the execution tools may pass through;
+# 'project.mcp.execute_options' restricts the set. Entries may use the
+# tool names ('limit') or the ansible-playbook flag spellings
+# ('--limit', '-l')
+EXECUTE_OPTIONS = ('limit', 'tags', 'skip_tags')
+EXECUTE_OPTION_ALIASES = {
+    'limit': 'limit', '--limit': 'limit', '-l': 'limit',
+    'tags': 'tags', '--tags': 'tags', '-t': 'tags',
+    'skip_tags': 'skip_tags', '--skip-tags': 'skip_tags',
+    'skip-tags': 'skip_tags',
+}
+
 
 class McpPolicy(object):
     """Confinement and access policy for one project view."""
@@ -86,6 +98,22 @@ class McpPolicy(object):
         if self.execute != 'none':
             logger.notice('Playbook execution enabled: %s '
                           '(timeout %ss)', self.execute, self.execute_timeout)
+
+        options = mcp_config.get('execute_options')
+        if options is None:
+            options = EXECUTE_OPTIONS
+        self.execute_options = []
+        for option in options:
+            canonical = EXECUTE_OPTION_ALIASES.get(str(option))
+            if canonical is None:
+                logger.warning('Unknown project.mcp.execute_options entry '
+                               '%r, ignoring', option)
+                continue
+            if canonical not in self.execute_options:
+                self.execute_options.append(canonical)
+        if set(self.execute_options) != set(EXECUTE_OPTIONS):
+            logger.notice('Execution options restricted by policy: %s',
+                          ', '.join(self.execute_options) or '(none)')
 
     def is_tool_allowed(self, name):
         """Check if a tool may be exposed; the deny list wins."""
