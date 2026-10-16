@@ -44,9 +44,18 @@ def _write_response(server, writer, write_lock, data):
 
     Each message runs in its own thread, so a long-running request does
     not block cancellations or later requests; writes are serialized to
-    keep messages intact.
+    keep messages intact. The notify channel lets tools send
+    server-initiated messages (progress notifications) mid-request.
     """
-    response = server.handle_bytes(data)
+    def notify(message):
+        try:
+            with write_lock:
+                rpc.write_message(writer, message)
+        except OSError:
+            # The client went away while the request was being handled
+            pass
+
+    response = server.handle_bytes(data, notify=notify)
     if response is None:
         return
     try:

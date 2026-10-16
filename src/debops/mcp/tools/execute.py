@@ -14,10 +14,13 @@ These tools run for a long time and against real infrastructure; they
 run with a request context so that clients can cancel them.
 """
 
+import collections
 import contextlib
 import io
+import itertools
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -41,6 +44,14 @@ TERMINATION_GRACE = 5  # seconds
 # One execution at a time: inventory (un)locking and hook execution
 # cannot race
 _EXECUTION_LOCK = threading.Lock()
+
+# Play and task headers in ansible-playbook output drive progress
+# notifications; the play recap and host result lines do not
+_PLAY_HEADER = re.compile(r'^PLAY \[.*\]')
+_TASK_HEADER = re.compile(r'^TASK \[.*\]')
+
+# Minimum interval between progress notifications
+PROGRESS_INTERVAL = 0.5  # seconds
 
 # ansible-playbook options the tools accept, mapped to their flags
 ALLOWED_OPTIONS = {'limit': '--limit', 'tags': '--tags',
@@ -117,7 +128,30 @@ def _execute_playbook(project, policy, arguments, context, check):
             process = subprocess.Popen(
                     command, env=env, cwd=project.path,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    universal_newlines=True)
+                    universal_newlines=True, bufsize=1)
+
+            # A reader thread consumes the output as it comes, capturing
+            # it for the result and reporting play/task progress to the
+            # client; the buffer is bounded so that long runs use
+            # constant memory
+            output_lines = collections.deque(maxlen=4096)
+            progress_counter = itertools.count(1)
+            last_progress = [0.0]
+
+            def read_output():
+                for line in process.stdout:
+                    output_lines.append(line)
+                    if (_PLAY_HEADER.match(line)
+                            or _TASK_HEADER.match(line)):
+                        now = time.monotonic()
+                        if now - last_progress[0] >= PROGRESS_INTERVAL:
+                            last_progress[0] = now
+                            context.progress(
+                                    line.rstrip(),
+                                    progress=next(progress_counter))
+
+            reader = threading.Thread(target=read_output, daemon=True)
+            reader.start()
 
             deadline = time.monotonic() + policy.execute_timeout
             cancelled = False
@@ -133,10 +167,12 @@ def _execute_playbook(project, policy, arguments, context, check):
                     break
                 time.sleep(0.2)
             try:
-                output, _ = process.communicate(timeout=TERMINATION_GRACE)
+                process.wait(timeout=TERMINATION_GRACE)
             except subprocess.TimeoutExpired:
                 process.kill()
-                output, _ = process.communicate()
+                process.wait()
+            reader.join(timeout=TERMINATION_GRACE)
+            output = ''.join(output_lines)
             returncode = process.returncode
         finally:
             if unlocked:

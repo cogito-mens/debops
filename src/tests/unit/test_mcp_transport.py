@@ -88,6 +88,45 @@ class UnixSocketTransportTestCase(unittest.TestCase):
                          '2026-07-28')
         self.assertEqual(responses[2]['result']['tools'], [])
 
+    def test_progress_notifications_on_the_wire(self):
+        server = McpServer()
+
+        def noisy(arguments, context):
+            context.progress('working', progress=1)
+            return {'content': [{'type': 'text', 'text': 'done'}]}
+
+        server.register_tool('noisy', 'A noisy tool', {'type': 'object'},
+                             noisy, needs_context=True)
+        path = os.path.join(self.tmpdir, 'progress.sock')
+        transport = UnixSocketTransport(path)
+        thread = threading.Thread(target=transport.serve, args=(server,),
+                                  daemon=True)
+        thread.start()
+        try:
+            for _ in range(500):
+                if os.path.exists(path):
+                    break
+                time.sleep(0.01)
+
+            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            connection.connect(path)
+            connection.sendall(json.dumps({
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'name': 'noisy', 'arguments': {}},
+                '_meta': {'progressToken': 'pt-9'}}).encode() + b'\n')
+            reader = connection.makefile('rb')
+            # The progress notification precedes the response
+            first = json.loads(rpc.read_message(reader))
+            second = json.loads(rpc.read_message(reader))
+            self.assertEqual(first.get('method'), 'notifications/progress')
+            self.assertEqual(first['params']['progressToken'], 'pt-9')
+            self.assertEqual(first['params']['message'], 'working')
+            self.assertEqual(second['id'], 1)
+            connection.close()
+        finally:
+            transport.shutdown()
+            thread.join(timeout=5)
+
     def test_requests_run_concurrently(self):
         # A slow request must not block a later one on the same connection
         gate = threading.Event()

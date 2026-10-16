@@ -40,7 +40,9 @@ class FakeProject(object):
 def make_process(returncode=0, output='play recap\n', poll=None):
     process = mock.Mock()
     process.poll.side_effect = poll if poll is not None else [None, 0]
-    process.communicate.return_value = (output, '')
+    # The execution loop reads output incrementally from stdout
+    process.stdout = io.StringIO(output)
+    process.wait.return_value = None
     process.returncode = returncode
     return process
 
@@ -292,6 +294,75 @@ class ExecutionGateTestCase(unittest.TestCase):
                                   'execute_options': ['--check', 'tags']}}})
         policy = McpPolicy(project)
         self.assertEqual(policy.execute_options, ['tags'])
+
+
+PROGRESS_OUTPUT = ('PLAY [Test play] '
+                   '**************************************************\n'
+                   '\nTASK [Say hello] '
+                   '********************************************\n'
+                   'ok: [localhost]\n'
+                   '\nPLAY RECAP '
+                   '**********************************************************\n'
+                   'localhost : ok=1 changed=0\n')
+
+
+class ProgressTestCase(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-progress-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        self.project = FakeProject(self.tmpdir)
+        self.policy = McpPolicy(self.project)
+
+    def run_with_context(self, context, output=PROGRESS_OUTPUT):
+        from debops.mcp.tools.execute import _execute_playbook
+        with mock.patch(
+                'debops.mcp.tools.execute.AnsiblePlaybookRunner'), \
+                mock.patch('debops.mcp.tools.execute.AnsibleInventory'), \
+                mock.patch('debops.mcp.tools.execute.run_hooks',
+                           return_value=True), \
+                mock.patch(
+                'debops.mcp.tools.execute.subprocess.Popen') as popen:
+            popen.return_value = make_process(output=output)
+            return _execute_playbook(self.project, self.policy,
+                                     {'playbook': 'site'}, context,
+                                     check=True)
+
+    def test_progress_reported_with_a_token(self):
+        sent = []
+        context = ToolContext(1, threading.Event(), progress_token='pt-1',
+                              notify=sent.append)
+        self.run_with_context(context)
+        notifications = [message for message in sent
+                         if message.get('method')
+                         == 'notifications/progress']
+        self.assertTrue(notifications)
+        params = notifications[0]['params']
+        self.assertEqual(params['progressToken'], 'pt-1')
+        self.assertIn('PLAY [Test play]', params['message'])
+
+    def test_no_progress_without_a_token(self):
+        sent = []
+        context = ToolContext(1, threading.Event(), notify=sent.append)
+        self.run_with_context(context)
+        self.assertEqual(sent, [])
+
+    def test_progress_is_rate_limited(self):
+        sent = []
+        context = ToolContext(1, threading.Event(), progress_token='pt-1',
+                              notify=sent.append)
+        output = '\n'.join('TASK [task {}]'.format(index)
+                           for index in range(20)) + '\n'
+        self.run_with_context(context, output=output)
+        self.assertEqual(len(sent), 1)
+
+    def test_output_is_tail_capped(self):
+        context = ToolContext(1, threading.Event())
+        result = self.run_with_context(context,
+                                       output='x' * 200000 + '\n')
+        text = result['content'][0]['text']
+        self.assertIn('earlier output truncated', text)
+        self.assertLess(len(text), 150000)
 
 
 if __name__ == '__main__':

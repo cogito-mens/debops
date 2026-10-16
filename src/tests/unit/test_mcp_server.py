@@ -10,6 +10,7 @@ dependencies.
 
 from debops.mcp import rpc
 from debops.mcp.server import McpServer, PROTOCOL_VERSION, RequestCancelled
+import json
 import threading
 import unittest
 
@@ -221,6 +222,48 @@ class CancellationTestCase(unittest.TestCase):
                 'tools/call', params={'name': 'plain', 'arguments': {}}))
         self.assertEqual(response['result']['content'], [])
         self.assertEqual(server._active_requests, {})
+
+
+class ProgressTestCase(unittest.TestCase):
+    """Progress notifications travel the transport's notify channel."""
+
+    def _noisy_server(self):
+        server = McpServer()
+
+        def noisy(arguments, context):
+            context.progress('halfway', progress=1)
+            return {'content': []}
+
+        server.register_tool('noisy', 'Noisy tool', {'type': 'object'},
+                             noisy, needs_context=True)
+        return server
+
+    def test_progress_with_a_token(self):
+        server = self._noisy_server()
+        sent = []
+        request = make_request('tools/call', params={'name': 'noisy',
+                                                     'arguments': {}},
+                               meta={'progressToken': 'pt-42'})
+        response = server.handle_bytes(json.dumps(request).encode(),
+                                       notify=sent.append)
+        self.assertIsNotNone(response)
+        notifications = [message for message in sent
+                         if message.get('method')
+                         == 'notifications/progress']
+        self.assertEqual(len(notifications), 1)
+        self.assertEqual(notifications[0]['params']['progressToken'],
+                         'pt-42')
+        self.assertEqual(notifications[0]['params']['message'], 'halfway')
+
+    def test_no_token_no_progress(self):
+        server = self._noisy_server()
+        sent = []
+        request = make_request('tools/call', params={'name': 'noisy',
+                                                     'arguments': {}})
+        response = server.handle_bytes(json.dumps(request).encode(),
+                                       notify=sent.append)
+        self.assertIsNotNone(response)
+        self.assertEqual(sent, [])
 
 
 class ClacksOverheadTestCase(unittest.TestCase):

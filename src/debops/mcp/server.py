@@ -44,17 +44,56 @@ class RequestCancelled(Exception):
     """
 
 
+class RequestContext(object):
+    """Context of the request being dispatched.
+
+    Carries the request id and the transport-level notification channel
+    (for server-initiated messages such as progress notifications), plus
+    the client's progress token when it asked for progress reports.
+    """
+
+    def __init__(self, request_id, notify=None, progress_token=None):
+        self.request_id = request_id
+        self.notify = notify
+        self.progress_token = progress_token
+
+
 class ToolContext(object):
     """Request-scoped context passed to tools which need it.
 
     'cancelled' is an event which is set when the client cancels the
     request via 'notifications/cancelled'; long-running tools should
-    poll it and stop.
+    poll it and stop. 'progress()' sends a progress notification when
+    the client asked for one with a 'progressToken' in the request
+    '_meta'.
     """
 
-    def __init__(self, request_id, cancelled):
+    def __init__(self, request_id, cancelled, progress_token=None,
+                 notify=None):
         self.request_id = request_id
         self.cancelled = cancelled
+        self.progress_token = progress_token
+        self._notify = notify
+
+    def progress(self, message, progress=None, total=None):
+        """Send a progress notification, if the client asked for them."""
+        if self.progress_token is None or self._notify is None:
+            return
+        params = {'progressToken': self.progress_token,
+                  'message': message}
+        if progress is not None:
+            params['progress'] = progress
+        if total is not None:
+            params['total'] = total
+        try:
+            self._notify({'jsonrpc': '2.0',
+                          'method': 'notifications/progress',
+                          'params': params})
+        except Exception:
+            # Progress reporting must never break the request it
+            # reports on
+            logger.debug('Could not send a progress notification',
+                         exc_info=True)
 
 
 class Tool(object):
@@ -118,7 +157,7 @@ class McpServer(object):
 
     # -- transport entry point ---------------------------------------------
 
-    def handle_bytes(self, data):
+    def handle_bytes(self, data, notify=None):
         """Handle one raw message; return the response or None."""
         try:
             message = rpc.parse_message(data)
@@ -128,12 +167,12 @@ class McpServer(object):
             response = errmsg.to_response()
             response['_meta'] = dict(CLACKS_OVERHEAD)
             return response
-        return self.handle(message)
+        return self.handle(message, notify)
 
-    def handle(self, message):
+    def handle(self, message, notify=None):
         """Handle one parsed message; return the response or None."""
         try:
-            return self._dispatch(message)
+            return self._dispatch(message, notify)
         except rpc.JsonRpcError as errmsg:
             response = errmsg.to_response()
             response['_meta'] = dict(CLACKS_OVERHEAD)
@@ -145,7 +184,7 @@ class McpServer(object):
             response['_meta'] = dict(CLACKS_OVERHEAD)
             return response
 
-    def _dispatch(self, message):
+    def _dispatch(self, message, notify=None):
         """Route one parsed message to its method handler.
 
         Raises JsonRpcError for protocol-level errors; the caller turns
@@ -160,6 +199,12 @@ class McpServer(object):
                                    request_id=request_id)
 
         self._check_protocol_version(message, request_id)
+
+        meta = message.get('_meta')
+        progress_token = (meta.get('progressToken')
+                          if isinstance(meta, dict) else None)
+        context = RequestContext(request_id, notify=notify,
+                                 progress_token=progress_token)
 
         if is_notification:
             logger.info('Notification: %s', method)
@@ -184,7 +229,7 @@ class McpServer(object):
                                    request_id=request_id)
 
         try:
-            result = handler(params, request_id)
+            result = handler(params, context)
         except RequestCancelled:
             # A cancelled request gets no response
             logger.debug('Request %s was cancelled', request_id)
@@ -223,7 +268,7 @@ class McpServer(object):
                           'requested': version},
                     request_id=request_id)
 
-    def _discover(self, params, request_id):
+    def _discover(self, params, context):
         return {
             'protocolVersion': PROTOCOL_VERSION,
             'serverInfo': {'name': self.name, 'version': self.version},
@@ -231,11 +276,11 @@ class McpServer(object):
             'authorization': None,
         }
 
-    def _tools_list(self, params, request_id):
+    def _tools_list(self, params, context):
         return {'tools': [tool.describe() for tool in self.tools.values()],
                 'nextCursor': None}
 
-    def _tools_call(self, params, request_id):
+    def _tools_call(self, params, context):
         name = params.get('name')
         tool = self.tools.get(name)
         if tool is None:
@@ -256,19 +301,23 @@ class McpServer(object):
         if not tool.needs_context:
             return tool.handler(arguments)
 
+        request_id = context.request_id
         cancel_event = threading.Event()
         if request_id is not None:
             with self._active_lock:
                 self._active_requests[request_id] = cancel_event
         try:
-            return tool.handler(arguments,
-                                ToolContext(request_id, cancel_event))
+            tool_context = ToolContext(
+                    request_id, cancel_event,
+                    progress_token=context.progress_token,
+                    notify=context.notify)
+            return tool.handler(arguments, tool_context)
         finally:
             if request_id is not None:
                 with self._active_lock:
                     self._active_requests.pop(request_id, None)
 
-    def _cancelled(self, params, request_id):
+    def _cancelled(self, params, context):
         target = params.get('requestId')
         with self._active_lock:
             event = self._active_requests.get(target)
