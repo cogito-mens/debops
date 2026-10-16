@@ -342,6 +342,27 @@ def test_quote_spaces_leaves_simple_strings_alone(stub_project):
     assert runner._quote_spaces("web") == "web"
 
 
+def test_command_returns_unquoted_argv(stub_project):
+    runner = AnsiblePlaybookRunner(stub_project(),
+                                   ansible_args=["-e", "a=b c", "site.yml"])
+
+    assert runner.command() == ["ansible-playbook", "-e", "a=b c",
+                                "site.yml"]
+
+
+def test_read_only_friday_message_goes_to_stderr(stub_project, monkeypatch,
+                                                 capsys):
+    project = stub_project()
+    project.config.raw["project"] = {"read_only_friday": True}
+    monkeypatch.setattr(runner_module.datetime, "date", Friday)
+
+    AnsiblePlaybookRunner(project, ansible_args=["site.yml"])
+
+    captured = capsys.readouterr()
+    assert "Read-Only Friday" in captured.err
+    assert "Read-Only Friday" not in captured.out
+
+
 def test_get_check_mode_detects_the_short_flag(stub_project):
     runner = AnsiblePlaybookRunner(stub_project(),
                                    ansible_args=["-C", "site.yml"])

@@ -130,7 +130,10 @@ class AnsiblePlaybookRunner(object):
                         '-C' not in self._ansible_command):
                     logger.notice("It's Read-Only Friday, switching to check mode",
                                   extra={'block': 'stderr'})
-                    print("It's Read-Only Friday, switching to check mode")
+                    # The message goes to stderr so that embedders which
+                    # reserve stdout for their own protocol stay intact
+                    print("It's Read-Only Friday, switching to check mode",
+                          file=sys.stderr)
                     self._ansible_command.extend(['--diff', '--check'])
 
     def _quote_spaces(self, string):
@@ -138,6 +141,17 @@ class AnsiblePlaybookRunner(object):
             return '"{}"'.format(string)
         else:
             return string
+
+    def command(self):
+        """The ansible-playbook command as an argument list.
+
+        '_ansible_command' is shell-quoted where needed because execute()
+        runs it through a shell; embedders which spawn the command without
+        a shell need the plain arguments instead.
+        """
+        return [part[1:-1]
+                if part.startswith('"') and part.endswith('"') else part
+                for part in self._ansible_command]
 
     def _expand_playbook_set(self, project, argument):
         logger.debug('Checking if playbook "{}" is a playbook set'
