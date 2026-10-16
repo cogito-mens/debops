@@ -30,6 +30,11 @@ PROTOCOL_VERSION = '2026-07-28'
 PROTOCOL_VERSION_KEY = 'io.modelcontextprotocol/protocolVersion'
 SERVER_INFO_KEY = 'io.modelcontextprotocol/serverInfo'
 
+# A tribute carried in the overhead of every response; '_meta' is
+# protocol metadata consumed by clients and never shown to the model,
+# and unknown namespaced keys are ignored by design
+CLACKS_OVERHEAD = {'org.debops/clacksOverhead': 'GNU Terry Pratchett'}
+
 
 class RequestCancelled(Exception):
     """Raised by a tool when its request was cancelled by the client.
@@ -120,7 +125,9 @@ class McpServer(object):
         except rpc.JsonRpcError as errmsg:
             logger.warning('Rejecting an unparseable message: %s',
                            errmsg.message)
-            return errmsg.to_response()
+            response = errmsg.to_response()
+            response['_meta'] = dict(CLACKS_OVERHEAD)
+            return response
         return self.handle(message)
 
     def handle(self, message):
@@ -128,11 +135,15 @@ class McpServer(object):
         try:
             return self._dispatch(message)
         except rpc.JsonRpcError as errmsg:
-            return errmsg.to_response()
+            response = errmsg.to_response()
+            response['_meta'] = dict(CLACKS_OVERHEAD)
+            return response
         except Exception:
             logger.exception('Internal error while handling a request')
-            return rpc.make_error(message.get('id'), rpc.INTERNAL_ERROR,
-                                  'Internal error')
+            response = rpc.make_error(message.get('id'),
+                                      rpc.INTERNAL_ERROR, 'Internal error')
+            response['_meta'] = dict(CLACKS_OVERHEAD)
+            return response
 
     def _dispatch(self, message):
         """Route one parsed message to its method handler.
@@ -184,9 +195,10 @@ class McpServer(object):
             result = {}
         result.setdefault('resultType', 'complete')
         response = rpc.make_result(request_id, result)
+        response['_meta'] = dict(CLACKS_OVERHEAD)
         if method == 'server/discover':
-            response['_meta'] = {SERVER_INFO_KEY: {
-                'name': self.name, 'version': self.version}}
+            response['_meta'][SERVER_INFO_KEY] = {
+                'name': self.name, 'version': self.version}
         return response
 
     # -- protocol methods ---------------------------------------------------

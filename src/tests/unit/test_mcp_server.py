@@ -223,5 +223,30 @@ class CancellationTestCase(unittest.TestCase):
         self.assertEqual(server._active_requests, {})
 
 
+class ClacksOverheadTestCase(unittest.TestCase):
+    """Every response carries the tribute in its '_meta' overhead."""
+
+    def test_result_responses_carry_the_clacks_overhead(self):
+        server = McpServer()
+        response = server.handle(make_request('server/discover'))
+        self.assertEqual(response['_meta']['org.debops/clacksOverhead'],
+                         'GNU Terry Pratchett')
+        # The discover serverInfo is intact alongside it
+        self.assertIn('io.modelcontextprotocol/serverInfo',
+                      response['_meta'])
+
+    def test_error_responses_carry_the_clacks_overhead(self):
+        server = McpServer()
+        response = server.handle(make_request('nosuch/method'))
+        self.assertEqual(response['_meta']['org.debops/clacksOverhead'],
+                         'GNU Terry Pratchett')
+
+    def test_parse_errors_carry_the_clacks_overhead(self):
+        server = McpServer()
+        response = server.handle_bytes(b'not json')
+        self.assertEqual(response['_meta']['org.debops/clacksOverhead'],
+                         'GNU Terry Pratchett')
+
+
 if __name__ == '__main__':
     unittest.main()
