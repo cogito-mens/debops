@@ -284,9 +284,20 @@ class ExecutionGateTestCase(unittest.TestCase):
     def test_execute_options_accept_flag_spellings(self):
         project = FakeProject(self.tmpdir,
                               {'project': {'mcp': {
-                                  'execute_options': ['-l', '--tags']}}})
+                                  'execute_options': ['-l', '--tags',
+                                                      '--skip-tags']}}})
         policy = McpPolicy(project)
-        self.assertEqual(policy.execute_options, ['limit', 'tags'])
+        self.assertEqual(policy.execute_options, ['limit', 'tags',
+                                                  'skip_tags'])
+
+    def test_execute_options_deduplicate_spellings(self):
+        project = FakeProject(self.tmpdir,
+                              {'project': {'mcp': {
+                                  'execute_options': ['skip_tags',
+                                                      'skip-tags',
+                                                      '--skip_tags']}}})
+        policy = McpPolicy(project)
+        self.assertEqual(policy.execute_options, ['skip_tags'])
 
     def test_execute_options_unknown_entries_ignored(self):
         project = FakeProject(self.tmpdir,

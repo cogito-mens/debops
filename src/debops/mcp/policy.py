@@ -39,16 +39,27 @@ READ_DENY_COMPONENTS = frozenset((
         '.encfs6.xml', '__pycache__', 'venv'))
 
 # ansible-playbook options the execution tools may pass through;
-# 'project.mcp.execute_options' restricts the set. Entries may use the
-# tool names ('limit') or the ansible-playbook flag spellings
-# ('--limit', '-l')
+# 'project.mcp.execute_options' restricts the set
 EXECUTE_OPTIONS = ('limit', 'tags', 'skip_tags')
-EXECUTE_OPTION_ALIASES = {
-    'limit': 'limit', '--limit': 'limit', '-l': 'limit',
-    'tags': 'tags', '--tags': 'tags', '-t': 'tags',
-    'skip_tags': 'skip_tags', '--skip-tags': 'skip_tags',
-    'skip-tags': 'skip_tags',
-}
+
+# Spellings which no normalization rule can produce: the short flags
+EXECUTE_OPTION_ALIASES = {'-l': 'limit', '-t': 'tags'}
+
+
+def _canonical_execute_option(option):
+    """Normalize an execute_options entry to its canonical option name.
+
+    Entries may use the tool name ('limit'), the ansible-playbook flag
+    spellings ('--limit', '--skip-tags') or the short flags ('-l', '-t').
+    Returns None for anything else.
+    """
+    option = str(option)
+    if option in EXECUTE_OPTION_ALIASES:
+        return EXECUTE_OPTION_ALIASES[option]
+    normalized = option.lstrip('-').replace('-', '_')
+    if normalized in EXECUTE_OPTIONS:
+        return normalized
+    return None
 
 
 class McpPolicy(object):
@@ -104,7 +115,7 @@ class McpPolicy(object):
             options = EXECUTE_OPTIONS
         self.execute_options = []
         for option in options:
-            canonical = EXECUTE_OPTION_ALIASES.get(str(option))
+            canonical = _canonical_execute_option(option)
             if canonical is None:
                 logger.warning('Unknown project.mcp.execute_options entry '
                                '%r, ignoring', option)
