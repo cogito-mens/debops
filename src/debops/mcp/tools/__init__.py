@@ -16,6 +16,8 @@ from .collections import (COLLECTION_INDEX_TTL, galaxy_collection_list,
                           tool_collection_playbooks, tool_collection_role_info,
                           tool_collection_role_variables,
                           tool_collection_roles)
+from .files import (tool_config_get, tool_inventory_query,
+                    tool_project_files, tool_project_read)
 from .playbooks import (COLLECTION_PLAYBOOKS, tool_playbook_info,
                         tool_playbooks)
 from .project import tool_project_status
@@ -47,6 +49,56 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
          'infrastructure view, inventory and secrets presence, encryption.',
          {'type': 'object', 'properties': {}},
          lambda arguments: tool_project_status(project, policy, arguments)),
+        ('project_files',
+         'List the files of the DebOps project, minus denied paths '
+         '(secrets, key material, virtual environments). Use this to '
+         'see the project structure before reading specific files.',
+         {'type': 'object',
+          'properties': {'path': {'type': 'string',
+                                  'description': 'Subdirectory to list, '
+                                  'relative to the project directory '
+                                  '(default: the whole project)'},
+                         'filter': {'type': 'string',
+                                    'description': 'Only include paths '
+                                    'containing this string'}}},
+         lambda arguments: tool_project_files(project, policy, arguments)),
+        ('project_read',
+         'Read a file of the DebOps project (inventory, configuration, '
+         'playbooks, ...), minus denied paths (secrets, key material, '
+         'virtual environments). Text files only, size-limited.',
+         {'type': 'object',
+          'properties': {'path': {'type': 'string',
+                                  'description': 'File to read, relative '
+                                  'to the project directory, e.g. '
+                                  '"ansible/inventory/group_vars/all/'
+                                  'nginx.yml"'}},
+          'required': ['path']},
+         lambda arguments: tool_project_read(project, policy, arguments)),
+        ('config_get',
+         'Return the value of a DebOps configuration option, like '
+         '"debops config get" does; the key is a dot-separated path in '
+         'the configuration tree.',
+         {'type': 'object',
+          'properties': {'key': {'type': 'string',
+                                 'description': 'Configuration key, e.g. '
+                                 '"project.default_view"'}},
+          'required': ['key']},
+         lambda arguments: tool_config_get(project, arguments)),
+        ('inventory_query',
+         'Inspect the computed Ansible inventory with '
+         '"ansible-inventory": "graph" shows the group tree, "list" '
+         'dumps all host variables (can be large), "host" shows one '
+         'host\'s variables.',
+         {'type': 'object',
+          'properties': {'action': {'type': 'string',
+                                    'enum': ['graph', 'list', 'host'],
+                                    'description': 'What to inspect '
+                                    '(default: "graph")'},
+                         'host': {'type': 'string',
+                                  'description': 'Host name, required '
+                                  'for the "host" action'}},
+          'required': []},
+         lambda arguments: tool_inventory_query(project, arguments)),
         ('role_info',
          'Describe a DebOps role: purpose, tags, dependencies, and which '
          'parts (defaults, tasks, templates) it provides.',

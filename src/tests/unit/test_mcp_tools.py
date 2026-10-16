@@ -261,8 +261,10 @@ class ToolsTestCase(unittest.TestCase):
         self.assertEqual(sorted(names),
                          ['collection_playbook_info', 'collection_playbooks',
                           'collection_role_info', 'collection_role_variables',
-                          'collection_roles', 'playbook_info', 'playbooks',
-                          'project_status', 'role_info', 'role_variables'])
+                          'collection_roles', 'config_get',
+                          'inventory_query', 'playbook_info', 'playbooks',
+                          'project_files', 'project_read', 'project_status',
+                          'role_info', 'role_variables'])
 
     def test_denied_tool_is_not_registered(self):
         self.project.config.raw['project'] = {'mcp': {'deny': ['role_info']}}

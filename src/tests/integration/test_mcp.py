@@ -151,8 +151,10 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
     assert sorted(names) == ["collection_playbook_info",
                              "collection_playbooks", "collection_role_info",
                              "collection_role_variables", "collection_roles",
-                             "playbook_info", "playbooks", "project_status",
-                             "role_info", "role_variables"]
+                             "config_get", "inventory_query",
+                             "playbook_info", "playbooks", "project_files",
+                             "project_read", "project_status", "role_info",
+                             "role_variables"]
 
 
 def test_role_variables_via_stdio(run_debops, mcp_env, project_dir):
@@ -180,6 +182,49 @@ def test_role_variables_via_stdio(run_debops, mcp_env, project_dir):
     assert "```yaml" not in brief_text
     assert "## elasticsearch__base_packages" in full_text
     assert "```yaml" in full_text
+
+
+def test_project_read_via_stdio(run_debops, mcp_env, project_dir):
+    group_vars = project_dir / "ansible" / "inventory" / "group_vars" / "all"
+    group_vars.mkdir(parents=True)
+    (group_vars / "nginx.yml").write_text("---\nnginx__enabled: True\n")
+
+    request = json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "project_read",
+                   "arguments": {"path": "ansible/inventory/group_vars/"
+                                 "all/nginx.yml"}},
+    }) + "\n"
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=request)
+
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    assert "nginx__enabled: True" in response["result"]["content"][0]["text"]
+
+
+def test_inventory_query_via_stdio(run_debops, mcp_env, project_dir):
+    if shutil.which("ansible-inventory") is None:
+        pytest.skip("ansible-inventory is not installed")
+
+    # A legacy project keeps its ansible.cfg in the project root
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text("[testgroup]\ntesthost\n")
+
+    request = json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "inventory_query", "arguments": {}},
+    }) + "\n"
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=request)
+
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    assert response["result"]["isError"] is False
+    assert "@testgroup" in response["result"]["content"][0]["text"]
 
 
 def test_collection_roles_via_stdio(run_debops, mcp_env, project_dir):
