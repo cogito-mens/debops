@@ -356,8 +356,8 @@ class ToolsTestCase(unittest.TestCase):
                           'config_get', 'inventory_query', 'playbook_info',
                           'playbooks', 'project_files', 'project_pull',
                           'project_push', 'project_read', 'project_status',
-                          'role_defaults', 'role_files', 'role_info',
-                          'role_tasks', 'role_templates',
+                          'role_defaults', 'role_files', 'role_handlers',
+                          'role_info', 'role_tasks', 'role_templates',
                           'role_variables'])
 
     def test_denied_tool_is_not_registered(self):
@@ -875,6 +875,28 @@ class ToolsTestCase(unittest.TestCase):
         response = self.call_tool('role_files', {'name': 'splitrole'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('no files', self.result_text(response))
+
+    # -- role_handlers -------------------------------------------------------
+
+    def test_role_handlers_overview(self):
+        response = self.call_tool('role_handlers', {'name': 'testrole'})
+        text = self.result_text(response)
+        self.assertIn('- `main` — 2 handlers', text)
+        self.assertIn('- `extra` — 1 handler', text)
+        self.assertIn('(3 handlers)', text)
+
+    def test_role_handlers_file_with_listen(self):
+        response = self.call_tool('role_handlers',
+                                  {'name': 'testrole', 'file': 'main'})
+        text = self.result_text(response)
+        self.assertIn('- Restart the test service — '
+                      'ansible.builtin.service (listen: restart testrole)',
+                      text)
+
+    def test_role_handlers_no_handlers_dir(self):
+        response = self.call_tool('role_handlers', {'name': 'splitrole'})
+        self.assertTrue(response['result']['isError'])
+        self.assertIn('no handlers', self.result_text(response))
 
     def test_bundled_content_off_drops_debops_even_project_local(self):
         project_root = os.path.join(self.project.path, 'ansible',

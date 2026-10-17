@@ -359,31 +359,34 @@ def _load_tasks(tasks_file):
     return [task for task in tasks if isinstance(task, dict)]
 
 
-def tool_role_tasks(roles_paths, arguments):
+def _tool_role_tasklist(roles_paths, arguments, subdir):
+    """Shared implementation of role_tasks and role_handlers."""
+    kind = 'handler' if subdir == 'handlers' else 'task'
     resolved = resolve_role(roles_paths, arguments.get('name'))
     if resolved is None:
         return error_result('role not found or invalid: {}'
                             .format(arguments.get('name')))
     name, path = resolved
-    tasks_dir = os.path.join(path, 'tasks')
+    tasks_dir = os.path.join(path, subdir)
     if not os.path.isdir(tasks_dir):
-        return error_result('role {} has no tasks directory'.format(name))
+        return error_result('role {} has no {} directory'.format(
+                name, subdir))
 
     task_file = str(arguments.get('file') or '')
     if not task_file:
         # Overview: the task files and their task counts
-        lines = ['# debops.{} task files'.format(name), '']
+        lines = ['# debops.{} {} files'.format(name, kind), '']
         total = 0
         for entry in sorted(os.listdir(tasks_dir)):
             if (not entry.endswith(('.yml', '.yaml'))
                     or entry.startswith('.')):
                 continue
             tasks = _load_tasks(os.path.join(tasks_dir, entry))
-            lines.append('- `{}` — {} task{}'.format(
-                    os.path.splitext(entry)[0], len(tasks),
+            lines.append('- `{}` — {} {}{}'.format(
+                    os.path.splitext(entry)[0], len(tasks), kind,
                     '' if len(tasks) == 1 else 's'))
             total += len(tasks)
-        lines.insert(1, '({} tasks)'.format(total))
+        lines.insert(1, '({} {}s)'.format(total, kind))
         return text_result('\n'.join(lines) + '\n')
 
     if not task_file.endswith(('.yml', '.yaml')):
@@ -391,23 +394,29 @@ def tool_role_tasks(roles_paths, arguments):
     try:
         target = confine_under(tasks_dir, task_file)
     except ValueError:
-        return error_result('invalid task file: '
-                            + str(arguments.get('file')))
+        return error_result('invalid {} file: {}'.format(
+                kind, arguments.get('file')))
     if not os.path.isfile(target):
-        return error_result('task file not found: ' + task_file)
+        return error_result('{} file not found: {}'.format(kind,
+                                                           task_file))
     tasks = _load_tasks(target)
 
     name_filter = str(arguments.get('filter') or '').lower()
     detail = arguments.get('detail', 'brief')
 
-    lines = ['# debops.{} tasks/{} ({} tasks)'.format(
-            name, task_file, len(tasks)), '']
+    lines = ['# debops.{} {}/{} ({} {}s)'.format(
+            name, subdir, task_file, len(tasks), kind), '']
     shown = 0
     for task in tasks:
         task_name = str(task.get('name', '(unnamed)'))
         if name_filter and name_filter not in task_name.lower():
             continue
         line = '- {} — {}'.format(task_name, _task_module(task))
+        listen = task.get('listen')
+        if listen:
+            if isinstance(listen, list):
+                listen = ', '.join(str(item) for item in listen)
+            line += ' (listen: {})'.format(listen)
         lines.append(line)
         if detail == 'full':
             if 'when' in task:
@@ -419,6 +428,14 @@ def tool_role_tasks(roles_paths, arguments):
     if name_filter:
         lines.insert(1, '({} matching)'.format(shown))
     return text_result('\n'.join(lines) + '\n')
+
+
+def tool_role_tasks(roles_paths, arguments):
+    return _tool_role_tasklist(roles_paths, arguments, 'tasks')
+
+
+def tool_role_handlers(roles_paths, arguments):
+    return _tool_role_tasklist(roles_paths, arguments, 'handlers')
 
 
 def _tool_role_tree(roles_paths, arguments, subdir):

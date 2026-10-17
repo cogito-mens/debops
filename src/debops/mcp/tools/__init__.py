@@ -24,8 +24,9 @@ from .playbooks import (COLLECTION_PLAYBOOKS, tool_playbook_info,
                         tool_playbooks)
 from .project import tool_project_status
 from .roles import (COLLECTION_ROLES, project_role_paths, tool_role_defaults,
-                    tool_role_files, tool_role_info, tool_role_tasks,
-                    tool_role_templates, tool_role_variables)
+                    tool_role_files, tool_role_handlers, tool_role_info,
+                    tool_role_tasks, tool_role_templates,
+                    tool_role_variables)
 from .sync import make_sync_tool
 from ..policy import EXECUTE_OPTIONS
 
@@ -361,6 +362,31 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                         'adds when/tags'}},
               'required': ['name']},
              lambda arguments: tool_role_tasks(roles_paths, arguments)),
+            ('role_handlers',
+             'Inspect the handlers of a role: its handler files, and '
+             'per file the handlers with their modules, listen topics '
+             'and conditions.',
+             {'type': 'object',
+              'properties': {'name': {'type': 'string',
+                                      'description': 'Role name, with or '
+                                      'without the "debops." prefix'},
+                             'file': {'type': 'string',
+                                      'description': 'Handler file to '
+                                      'read, e.g. "main" (default: '
+                                      'overview of all handler files)'},
+                             'filter': {'type': 'string',
+                                        'description': 'Only include '
+                                        'handlers whose name contains '
+                                        'this string'},
+                             'detail': {'type': 'string',
+                                        'enum': ['brief', 'full'],
+                                        'description': '"brief" '
+                                        '(default) shows name, module '
+                                        'and listen topic, "full" adds '
+                                        'when/tags'}},
+              'required': ['name']},
+             lambda arguments: tool_role_handlers(roles_paths,
+                                                  arguments)),
             ('role_templates',
              'List the Jinja2 templates of a role, or print one of '
              'them.',
