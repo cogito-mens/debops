@@ -413,6 +413,45 @@ def test_policy_deny_hides_a_tool(run_debops, mcp_env, project_dir):
     assert "role_variables" in names
 
 
+def test_connect_exits_quietly_on_sigint(debops_source_dir, mcp_env,
+                                         tmp_path):
+    socket_path = str(tmp_path / "server.sock")
+    transport = UnixSocketTransport(socket_path)
+    thread = threading.Thread(target=transport.serve, args=(McpServer(),),
+                              daemon=True)
+    thread.start()
+    try:
+        for _ in range(500):
+            if os.path.exists(socket_path):
+                break
+            time.sleep(0.01)
+
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.pathsep.join(
+                [debops_source_dir,
+                 env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+        env.update(mcp_env)
+        process = subprocess.Popen(
+                [sys.executable, "-m", "debops", "mcp", "connect",
+                 socket_path],
+                cwd=str(tmp_path), env=env, stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            time.sleep(1)
+            process.send_signal(signal.SIGINT)
+            _stdout, stderr = process.communicate(timeout=10)
+        finally:
+            if process.poll() is None:
+                process.kill()
+
+        assert process.returncode == 130
+        assert "Fatal Python error" not in stderr
+        assert "Traceback" not in stderr
+    finally:
+        transport.shutdown()
+        thread.join(timeout=5)
+
+
 def test_connect_to_missing_socket_fails(run_debops, mcp_env, tmp_path):
     result = run_debops("mcp", "connect", str(tmp_path / "missing.sock"),
                         env=mcp_env)

@@ -18,6 +18,7 @@ protocol-level authentication on this transport.
 import json
 import logging
 import os
+import select
 import signal
 import socket
 import stat
@@ -303,7 +304,9 @@ def bridge_stdio_to_unix(path):
     """Bridge stdin/stdout to a UNIX socket ('debops mcp connect').
 
     The bridge is a dumb byte relay; protocol enforcement is entirely the
-    server's job.
+    server's job. A single-threaded poll loop pumps both directions, so
+    there is no thread left blocking on stdin at interpreter shutdown
+    (a daemon thread parked in a buffered read would crash it).
     """
     path = os.path.abspath(os.path.expanduser(path))
     connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -314,31 +317,26 @@ def bridge_stdio_to_unix(path):
                               .format(path, errmsg))
     logger.debug('Bridging stdio to %s', path)
 
-    def pump_stdin():
-        try:
-            while True:
-                chunk = sys.stdin.buffer.read1(65536)
-                if not chunk:
-                    break
-                connection.sendall(chunk)
-        except OSError:
-            pass
-        finally:
-            # Tell the server that no more requests will come
-            try:
-                connection.shutdown(socket.SHUT_WR)
-            except OSError:
-                pass
-
-    thread = threading.Thread(target=pump_stdin, daemon=True)
-    thread.start()
-
+    stdin_fd = sys.stdin.fileno()
+    poll = select.poll()
+    poll.register(stdin_fd, select.POLLIN | select.POLLHUP)
+    poll.register(connection.fileno(), select.POLLIN | select.POLLHUP)
     try:
         while True:
-            chunk = connection.recv(65536)
-            if not chunk:
-                break
-            sys.stdout.buffer.write(chunk)
-            sys.stdout.buffer.flush()
+            for fd, _event in poll.poll():
+                if fd == stdin_fd:
+                    chunk = os.read(stdin_fd, 65536)
+                    if chunk:
+                        connection.sendall(chunk)
+                    else:
+                        # No more input; tell the server, keep reading
+                        poll.unregister(stdin_fd)
+                        connection.shutdown(socket.SHUT_WR)
+                else:
+                    chunk = connection.recv(65536)
+                    if not chunk:
+                        return
+                    sys.stdout.buffer.write(chunk)
+                    sys.stdout.buffer.flush()
     finally:
         connection.close()
