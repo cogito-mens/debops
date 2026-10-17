@@ -412,6 +412,55 @@ class ToolsTestCase(unittest.TestCase):
         response = self.call_tool('role_info', {'name': '../../etc'})
         self.assertTrue(response['result']['isError'])
 
+    # -- documentation pointers ----------------------------------------------
+
+    def test_docs_version_slug(self):
+        from debops.mcp.tools.roles import _docs_version_slug
+        self.assertEqual(_docs_version_slug('3.3.0.dev487+g547727090'),
+                         'master')
+        self.assertEqual(_docs_version_slug('3.3.0'), 'stable-3.3')
+        self.assertEqual(_docs_version_slug('3.2.1'), 'stable-3.2')
+        self.assertEqual(_docs_version_slug('bogus'), 'master')
+        self.assertEqual(_docs_version_slug(None), 'master')
+
+    def test_role_info_has_documentation_for_bundled_roles(self):
+        response = self.call_tool('role_info', {'name': 'testrole'})
+        text = self.result_text(response)
+        self.assertIn('- documentation: https://docs.debops.org/en/master/'
+                      'ansible/roles/testrole/index.html#debops-testrole',
+                      text)
+
+    def test_role_info_no_documentation_for_project_roles(self):
+        response = self.call_tool('role_info', {'name': 'shadowrole'})
+        self.assertNotIn('documentation:', self.result_text(response))
+
+    def test_role_info_documentation_uses_the_server_version(self):
+        server = McpServer(project=self.project,
+                           policy=McpPolicy(self.project),
+                           version='3.2.1')
+        register_project_tools(
+                server, roles_path=self.roles_path,
+                playbooks_path=self.playbooks_path,
+                collection_index_provider=lambda: self.collection_index)
+        response = server.handle({
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'name': 'role_info',
+                           'arguments': {'name': 'testrole'}}})
+        self.assertIn('en/stable-3.2/',
+                      response['result']['content'][0]['text'])
+
+    def test_role_defaults_full_links_to_documentation(self):
+        response = self.call_tool('role_defaults',
+                                  {'name': 'testrole', 'detail': 'full'})
+        text = self.result_text(response)
+        self.assertIn('Detailed documentation: https://docs.debops.org/'
+                      'en/master/ansible/roles/testrole/'
+                      'defaults-detailed.html', text)
+
+    def test_role_defaults_brief_has_no_link(self):
+        response = self.call_tool('role_defaults', {'name': 'testrole'})
+        self.assertNotIn('docs.debops.org', self.result_text(response))
+
     # -- role_defaults --------------------------------------------------
 
     def test_role_defaults_full(self):

@@ -23,6 +23,43 @@ COLLECTION_ROLES = os.path.join(
 # Role directory names are restricted, which also prevents path traversal
 ROLE_NAME_PATTERN = re.compile(r'^[a-z0-9_]+$')
 
+# Role documentation lives on Read the Docs
+DOCS_BASE_URL = 'https://docs.debops.org/en'
+
+
+def _docs_version_slug(version):
+    """The docs.debops.org version slug for a DebOps version.
+
+    Development and local builds get 'master'; a release build gets
+    'stable-<major>.<minor>'.
+    """
+    version = str(version or '')
+    if '.dev' in version or '+' in version:
+        return 'master'
+    parts = version.split('.')
+    if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+        return 'stable-{}.{}'.format(parts[0], parts[1])
+    return 'master'
+
+
+def role_docs_url(role_name, version, page=None):
+    """The documentation URL of a bundled DebOps role."""
+    slug = _docs_version_slug(version)
+    base = '{}/{}/ansible/roles/{}'.format(DOCS_BASE_URL, slug, role_name)
+    if page:
+        return '{}/{}.html'.format(base, page)
+    return '{}/index.html#debops-{}'.format(
+            base, role_name.replace('_', '-'))
+
+
+def _is_bundled_role(path, bundled_path):
+    """Whether the role was resolved from the bundled collection."""
+    if not bundled_path:
+        return False
+    real = os.path.realpath(bundled_path)
+    return os.path.realpath(path).startswith(real + os.sep)
+
+
 # Start of a documented variable: '.. envvar:: <name>', optionally with a
 # fold marker on the same line ('# .. envvar:: <name> [[[')
 _ENVVAR_DIRECTIVE = re.compile(r'^\s*#\s*\.\. envvar::\s*([^\s\[]+)')
@@ -221,7 +258,8 @@ def _count_tasks(directory):
     return total, files
 
 
-def tool_role_info(roles_paths, arguments):
+def tool_role_info(roles_paths, arguments, bundled_path=None,
+                   docs_version=None):
     resolved = resolve_role(roles_paths, arguments.get('name'))
     if resolved is None:
         return error_result('role not found or invalid: {}'
@@ -284,6 +322,9 @@ def tool_role_info(roles_paths, arguments):
     if description:
         lines.extend([description, ''])
     lines.append('- resolved at: {}'.format(path))
+    if _is_bundled_role(path, bundled_path) and docs_version:
+        lines.append('- documentation: {}'.format(
+                role_docs_url(name, docs_version)))
     lines.append(_counted('defaults', len(defaults), defaults_partial))
     lines.append(_counted('vars', len(variables), vars_partial))
     if specs:
@@ -568,7 +609,8 @@ def tool_role_variables(roles_paths, arguments):
     return text_result('\n'.join(lines))
 
 
-def tool_role_defaults(roles_paths, arguments):
+def tool_role_defaults(roles_paths, arguments, bundled_path=None,
+                       docs_version=None):
     resolved = resolve_role(roles_paths, arguments.get('name'))
     if resolved is None:
         return error_result('role not found or invalid: {}'
@@ -653,6 +695,12 @@ def tool_role_defaults(roles_paths, arguments):
     if len(sources) > 1:
         lines[0] += ' ({} files)'.format(len(sources))
     lines.append('')
+    # Point at the detailed external documentation for bundled roles
+    if _is_bundled_role(path, bundled_path) and docs_version:
+        lines.append('Detailed documentation: {}'.format(
+                role_docs_url(name, docs_version,
+                              page='defaults-detailed')))
+        lines.append('')
     for source, _text in sources:
         group = [entry for entry in entries if entry[3] == source]
         if not group:

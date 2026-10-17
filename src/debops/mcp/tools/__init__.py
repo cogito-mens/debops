@@ -285,7 +285,10 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                       'description': 'Role name, with or '
                                       'without the "debops." prefix'}},
               'required': ['name']},
-             lambda arguments: tool_role_info(roles_paths, arguments)),
+             lambda arguments: tool_role_info(
+                 roles_paths, arguments,
+                 bundled_path=roles_path if bundled_content else None,
+                 docs_version=server.version)),
             ('role_variables',
              'List the variables of a role of this project or the '
              'bundled DebOps collection, from its vars/ directory — '
@@ -337,8 +340,10 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                         'default per variable, "full" '
                                         'gives the complete documentation'}},
               'required': ['name']},
-             lambda arguments: tool_role_defaults(roles_paths,
-                                                  arguments)),
+             lambda arguments: tool_role_defaults(
+                 roles_paths, arguments,
+                 bundled_path=roles_path if bundled_content else None,
+                 docs_version=server.version)),
             ('role_tasks',
              'Inspect the tasks of a role: its task files, and per file '
              'the tasks with their modules, conditions and tags. Use '
