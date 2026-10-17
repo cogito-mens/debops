@@ -358,7 +358,7 @@ class ToolsTestCase(unittest.TestCase):
                           'project_push', 'project_read', 'project_status',
                           'role_defaults', 'role_files', 'role_handlers',
                           'role_info', 'role_tasks', 'role_templates',
-                          'role_variables'])
+                          'role_variables', 'secret_paths'])
 
     def test_denied_tool_is_not_registered(self):
         self.project.config.raw['project'] = {'mcp': {'deny': ['role_info']}}

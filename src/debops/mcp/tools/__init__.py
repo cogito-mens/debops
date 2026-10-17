@@ -27,6 +27,7 @@ from .roles import (COLLECTION_ROLES, project_role_paths, tool_role_defaults,
                     tool_role_files, tool_role_handlers, tool_role_info,
                     tool_role_tasks, tool_role_templates,
                     tool_role_variables)
+from .secrets import tool_secret_paths
 from .sync import make_sync_tool
 from ..policy import EXECUTE_OPTIONS
 
@@ -136,6 +137,21 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                   'for the "host" action'}},
           'required': []},
          lambda arguments: tool_inventory_query(project, arguments)),
+        ('secret_paths',
+         'Find the paths of secrets in the project view\'s secret/ '
+         'directory, without reading their contents. Use the paths to '
+         'compose inventory lookups such as lookup("password", '
+         'secret + "/<path>"). Secrets are unlocked and relocked as '
+         'needed, serialized with playbook executions.',
+         {'type': 'object',
+          'properties': {'pattern': {'type': 'string',
+                                     'description': 'Glob pattern '
+                                     'matched against paths relative '
+                                     'to the secret/ directory, e.g. '
+                                     '"pki/**" or "**/password" '
+                                     '(default: all secrets)'}},
+          'required': []},
+         lambda arguments: tool_secret_paths(project, policy, arguments)),
         ('playbooks',
          'List the playbook targets which "run" and "check" can execute '
          'in this project: the project\'s own playbooks, the bundled '

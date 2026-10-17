@@ -158,7 +158,7 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
                              "project_status", "role_defaults",
                              "role_files", "role_handlers", "role_info",
                              "role_tasks", "role_templates",
-                             "role_variables"]
+                             "role_variables", "secret_paths"]
 
 
 def test_role_defaults_via_stdio(run_debops, mcp_env, project_dir):
@@ -347,6 +347,28 @@ def test_check_tool_runs_a_playbook_in_check_mode(run_debops, mcp_env,
     assert response["result"]["isError"] is False
     assert "exit code: 0" in text
     assert "hello from mcp" in text
+
+
+def test_secret_paths_via_stdio(run_debops, mcp_env, project_dir):
+    secret = (project_dir / "ansible" / "secret" / "credentials"
+              / "host1.example.com")
+    secret.mkdir(parents=True)
+    (secret / "password").write_text("the password\n")
+
+    request = json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "secret_paths",
+                   "arguments": {"pattern": "**/password"}},
+    }) + "\n"
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=request)
+
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    text = response["result"]["content"][0]["text"]
+    # The path is served, the content is not
+    assert "credentials/host1.example.com/password" in text
+    assert "the password" not in text
 
 
 def test_kill_switch_flow(run_debops, mcp_env, project_dir):
