@@ -23,6 +23,7 @@ from .playbooks import (COLLECTION_PLAYBOOKS, tool_playbook_info,
                         tool_playbooks)
 from .project import tool_project_status
 from .roles import COLLECTION_ROLES, tool_role_info, tool_role_variables
+from .sync import make_sync_tool
 from ..policy import EXECUTE_OPTIONS
 
 # The schema shared by the execution tools, with options the project
@@ -287,6 +288,23 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                 enabled_check=enabled_check,
                 on_disabled=server.cancel_all),
             True))
+
+    # Git synchronization with the project origin; throttled per
+    # direction by 'project.mcp.sync_interval'
+    sync_state = {'pull': 0.0, 'push': 0.0}
+    tools.extend([
+        ('project_pull',
+         'Pull the latest project state from its git origin '
+         '(fast-forward only). Use this to pick up changes made '
+         'elsewhere before reading or changing the project.',
+         {'type': 'object', 'properties': {}},
+         make_sync_tool(project, policy, sync_state, 'pull')),
+        ('project_push',
+         'Push the project\'s committed state to its git origin. Only '
+         'committed history is sent; the working tree must be clean.',
+         {'type': 'object', 'properties': {}},
+         make_sync_tool(project, policy, sync_state, 'push')),
+    ])
 
     for entry in tools:
         name, description, schema, handler = entry[:4]

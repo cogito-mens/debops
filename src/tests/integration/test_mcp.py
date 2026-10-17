@@ -154,7 +154,8 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
                              "collection_role_variables", "collection_roles",
                              "config_get", "inventory_query",
                              "playbook_info", "playbooks", "project_files",
-                             "project_read", "project_status", "role_info",
+                             "project_pull", "project_push", "project_read",
+                             "project_status", "role_info",
                              "role_variables"]
 
 
@@ -426,6 +427,47 @@ def test_connect_raw_without_ping(run_debops, mcp_env, tmp_path):
                         env=mcp_env)
     assert result.returncode == 2
     assert "--ping" in result.stderr
+
+
+def test_project_sync_via_stdio(run_debops, mcp_env, tmp_path):
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+
+    project_dir = tmp_path / "example"
+    run_debops("project", "init", "--no-requirements", str(project_dir),
+               env=mcp_env, check=True)
+    origin_dir = tmp_path / "origin.git"
+    git_env = {**os.environ, **mcp_env}
+    subprocess.run(["git", "init", "--bare", str(origin_dir)],
+                   env=git_env, check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(project_dir), "remote", "add",
+                    "origin", str(origin_dir)], env=git_env, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "-C", str(project_dir), "push", "-u",
+                    "origin", "HEAD"], env=git_env, check=True,
+                   capture_output=True)
+
+    requests = (
+        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "project_pull",
+                               "arguments": {}}}) + "\n"
+        + json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                      "params": {"name": "project_pull",
+                                 "arguments": {}}}) + "\n"
+    )
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=requests)
+
+    assert result.returncode == 0
+    responses = {response["id"]: response
+                 for response in read_json_lines(result.stdout)}
+    first = responses[1]["result"]
+    assert first["isError"] is False
+    assert "Already up to date" in first["content"][0]["text"]
+    # The second, immediate call is throttled
+    second = responses[2]["result"]
+    assert second["isError"] is True
+    assert "retry in" in second["content"][0]["text"]
 
 
 def test_policy_deny_hides_a_tool(run_debops, mcp_env, project_dir):

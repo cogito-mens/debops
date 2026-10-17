@@ -158,6 +158,13 @@ class McpPolicy(object):
             logger.notice('Playbook execution enabled: %s '
                           '(timeout %ss)', self.execute, self.execute_timeout)
 
+        # Minimum interval between git syncs, so that the tools cannot
+        # be used to hammer the origin
+        try:
+            self.sync_interval = int(mcp_config.get('sync_interval', 60))
+        except (TypeError, ValueError):
+            self.sync_interval = 60
+
         options = mcp_config.get('execute_options')
         if options is None:
             options = EXECUTE_OPTIONS
