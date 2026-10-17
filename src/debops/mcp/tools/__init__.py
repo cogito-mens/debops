@@ -12,7 +12,8 @@ the server at startup. Tool logic errors are reported in the result with
 import time
 
 from .collections import (COLLECTION_INDEX_TTL, galaxy_collection_list,
-                          index_from_galaxy, tool_collection_playbook_info,
+                          index_from_galaxy, restrict_content,
+                          tool_collection_playbook_info,
                           tool_collection_playbooks, tool_collection_role_info,
                           tool_collection_role_variables,
                           tool_collection_roles)
@@ -22,7 +23,8 @@ from .files import (tool_config_get, tool_inventory_query,
 from .playbooks import (COLLECTION_PLAYBOOKS, tool_playbook_info,
                         tool_playbooks)
 from .project import tool_project_status
-from .roles import COLLECTION_ROLES, tool_role_info, tool_role_variables
+from .roles import (COLLECTION_ROLES, project_role_paths, tool_role_info,
+                    tool_role_variables)
 from .sync import make_sync_tool
 from ..policy import EXECUTE_OPTIONS
 
@@ -70,6 +72,11 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                         galaxy_collection_list(project))
                 cache['timestamp'] = time.time()
             return cache['index']
+
+    # The content policy: which collection content the tools may serve
+    bundled_content = policy is None or policy.bundled_content
+    collection_index_provider = restrict_content(
+            collection_index_provider, project, policy)
 
     tools = [
         ('project_status',
@@ -127,39 +134,6 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                   'for the "host" action'}},
           'required': []},
          lambda arguments: tool_inventory_query(project, arguments)),
-        ('role_info',
-         'Describe a DebOps role: purpose, tags, dependencies, and which '
-         'parts (defaults, tasks, templates) it provides.',
-         {'type': 'object',
-          'properties': {'name': {'type': 'string',
-                                  'description': 'Role name, with or '
-                                  'without the "debops." prefix'}},
-          'required': ['name']},
-         lambda arguments: tool_role_info(roles_path, arguments)),
-        ('role_variables',
-         'List the default inventory variables of a DebOps role, with '
-         'their documentation and default values. Use this to learn how '
-         'to configure a role through the Ansible inventory. Survey a role '
-         'with the "brief" or "names" detail level, then use "filter" '
-         'with the "full" detail level to read the complete documentation '
-         'of specific variables.',
-         {'type': 'object',
-          'properties': {'name': {'type': 'string',
-                                  'description': 'Role name, with or '
-                                  'without the "debops." prefix'},
-                         'filter': {'type': 'string',
-                                    'description': 'Only include variables '
-                                    'whose name contains this string'},
-                         'detail': {'type': 'string',
-                                    'enum': ['names', 'brief', 'full'],
-                                    'description': 'Level of detail: '
-                                    '"names" lists variable names only, '
-                                    '"brief" (default) gives a one-line '
-                                    'summary and a truncated default per '
-                                    'variable, "full" gives the complete '
-                                    'documentation'}},
-          'required': ['name']},
-         lambda arguments: tool_role_variables(roles_path, arguments)),
         ('playbooks',
          'List the playbook targets which "run" and "check" can execute '
          'in this project: the project\'s own playbooks, the bundled '
@@ -170,8 +144,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                     'description': 'Only include '
                                     'playbooks whose path contains '
                                     'this string'}}},
-         lambda arguments: tool_playbooks(project, policy, playbooks_path,
-                                          arguments)),
+         lambda arguments: tool_playbooks(
+             project, policy,
+             playbooks_path if bundled_content else None, arguments)),
         ('playbook_info',
          'Describe a project or bundled DebOps playbook: its plays, the '
          'inventory groups it targets, the roles it applies, and the '
@@ -182,8 +157,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                       'description': 'Playbook target, '
                                       'e.g. "service/nginx" or "site"'}},
           'required': ['playbook']},
-         lambda arguments: tool_playbook_info(project, policy,
-                                              playbooks_path, arguments)),
+         lambda arguments: tool_playbook_info(
+             project, policy,
+             playbooks_path if bundled_content else None, arguments)),
         ('collection_playbooks',
          'List the playbooks provided by an Ansible Collection visible '
          'to this project.',
@@ -288,6 +264,54 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                 enabled_check=enabled_check,
                 on_disabled=server.cancel_all),
             True))
+
+    # Role tools search the project's own roles first; the bundled
+    # DebOps collection is included unless the policy disables it. With
+    # neither, there are no roles to serve and the tools are not
+    # registered at all
+    roles_paths = project_role_paths(project)
+    if bundled_content:
+        roles_paths.append(roles_path)
+    if roles_paths:
+        tools.extend([
+            ('role_info',
+             'Describe a role of this project or the bundled DebOps '
+             'collection: purpose, tags, dependencies, and which parts '
+             '(defaults, tasks, templates) it provides.',
+             {'type': 'object',
+              'properties': {'name': {'type': 'string',
+                                      'description': 'Role name, with or '
+                                      'without the "debops." prefix'}},
+              'required': ['name']},
+             lambda arguments: tool_role_info(roles_paths, arguments)),
+            ('role_variables',
+             'List the default inventory variables of a role of this '
+             'project or the bundled DebOps collection, with their '
+             'documentation and default values. Use this to learn how '
+             'to configure a role through the Ansible inventory. Survey '
+             'a role with the "brief" or "names" detail level, then use '
+             '"filter" with the "full" detail level to read the complete '
+             'documentation of specific variables.',
+             {'type': 'object',
+              'properties': {'name': {'type': 'string',
+                                      'description': 'Role name, with or '
+                                      'without the "debops." prefix'},
+                             'filter': {'type': 'string',
+                                        'description': 'Only include '
+                                        'variables whose name contains '
+                                        'this string'},
+                             'detail': {'type': 'string',
+                                        'enum': ['names', 'brief', 'full'],
+                                        'description': 'Level of detail: '
+                                        '"names" lists variable names '
+                                        'only, "brief" (default) gives a '
+                                        'one-line summary and a truncated '
+                                        'default per variable, "full" '
+                                        'gives the complete documentation'}},
+              'required': ['name']},
+             lambda arguments: tool_role_variables(roles_paths,
+                                                   arguments)),
+        ])
 
     # Git synchronization with the project origin; throttled per
     # direction by 'project.mcp.sync_interval'

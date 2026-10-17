@@ -210,6 +210,28 @@ class ToolsTestCase(unittest.TestCase):
                                'custom.yml'), 'w') as fp:
             fp.write(CUSTOM_PLAYBOOK)
 
+        # A project-local loose role, and a project collection role
+        os.makedirs(os.path.join(project_dir, 'ansible', 'playbooks',
+                                 'roles', 'shadowrole', 'meta'))
+        with open(os.path.join(project_dir, 'ansible', 'playbooks',
+                               'roles', 'shadowrole', 'meta', 'main.yml'),
+                  'w') as fp:
+            fp.write('---\ngalaxy_info:\n  description: The project copy\n')
+        project_collection = os.path.join(
+                project_dir, 'ansible', 'collections',
+                'ansible_collections', 'local', 'local')
+        os.makedirs(os.path.join(project_collection, 'roles', 'localrole',
+                                 'defaults'))
+        with open(os.path.join(project_collection, 'roles', 'localrole',
+                               'defaults', 'main.yml'), 'w') as fp:
+            fp.write('---\nlocalrole__enabled: true\n')
+
+        # The same role name also exists in the bundled fixture
+        os.makedirs(os.path.join(self.roles_path, 'shadowrole', 'meta'))
+        with open(os.path.join(self.roles_path, 'shadowrole', 'meta',
+                               'main.yml'), 'w') as fp:
+            fp.write('---\ngalaxy_info:\n  description: The bundled copy\n')
+
         self.playbooks_path = os.path.join(self.tmpdir, 'debops-playbooks')
         os.makedirs(os.path.join(self.playbooks_path, 'service'))
         os.makedirs(os.path.join(self.playbooks_path, 'templates'))
@@ -596,6 +618,104 @@ class ToolsTestCase(unittest.TestCase):
                                   {'collection': 'testns.testcoll',
                                    'playbook': '../roles/plainrole'})
         self.assertTrue(response['result']['isError'])
+
+    # -- content policy -----------------------------------------------------
+
+    def _server_with_policy(self, mcp_config, index=None):
+        self.project.config.raw['project'] = {'mcp': mcp_config}
+        server = McpServer(project=self.project,
+                           policy=McpPolicy(self.project))
+        register_project_tools(
+                server, roles_path=self.roles_path,
+                playbooks_path=self.playbooks_path,
+                collection_index_provider=(
+                        (lambda: index) if index is not None
+                        else (lambda: self.collection_index)))
+        return server
+
+    def test_role_tools_search_project_first(self):
+        response = self.call_tool('role_info', {'name': 'shadowrole'})
+        self.assertIn('The project copy', self.result_text(response))
+
+    def test_bundled_content_off_hides_bundled_roles(self):
+        server = self._server_with_policy({'bundled_content': False})
+        # The project role still works...
+        response = server.handle({
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'name': 'role_info',
+                           'arguments': {'name': 'shadowrole'}}})
+        self.assertIn('The project copy',
+                      response['result']['content'][0]['text'])
+        # ... and the bundled-only role is not found
+        response = server.handle({
+                'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
+                'params': {'name': 'role_info',
+                           'arguments': {'name': 'testrole'}}})
+        self.assertTrue(response['result']['isError'])
+
+    def test_bundled_off_without_project_roles_unregisters_role_tools(self):
+        import shutil as _shutil
+        _shutil.rmtree(os.path.join(self.project.path, 'ansible',
+                                    'playbooks', 'roles'))
+        _shutil.rmtree(os.path.join(self.project.path, 'ansible',
+                                    'collections'))
+        server = self._server_with_policy({'bundled_content': False})
+        self.assertNotIn('role_info', server.tools)
+        self.assertNotIn('role_variables', server.tools)
+
+    def test_bundled_content_off_removes_collection_playbooks(self):
+        server = self._server_with_policy({'bundled_content': False})
+        response = server.handle({
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'name': 'playbooks', 'arguments': {}}})
+        text = response['result']['content'][0]['text']
+        self.assertIn('Project playbooks', text)
+        self.assertNotIn('DebOps collection', text)
+
+    def test_external_content_off_filters_the_index(self):
+        project_root = os.path.join(self.project.path, 'ansible',
+                                    'collections', 'ansible_collections')
+        # The bundled entry needs a real roles/ directory to be listed
+        bundled = os.path.join(self.tmpdir, 'bundled', 'debops', 'debops')
+        os.makedirs(os.path.join(bundled, 'roles', 'testrole'))
+        index = {
+            'debops.debops': {'path': bundled,
+                              'version': '1.0'},
+            'local.local': {'path': os.path.join(project_root, 'local',
+                                                 'local'),
+                            'version': '1.0'},
+            'grafana.grafana': {'path': '/usr/share/grafana/grafana',
+                                'version': '6.0'},
+        }
+        server = self._server_with_policy({'external_content': False},
+                                          index=index)
+        response = server.handle({
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'name': 'collection_roles', 'arguments': {}}})
+        text = response['result']['content'][0]['text']
+        self.assertIn('debops.debops', text)
+        self.assertIn('local.local', text)
+        self.assertNotIn('grafana', text)
+
+    def test_bundled_content_off_drops_debops_even_project_local(self):
+        project_root = os.path.join(self.project.path, 'ansible',
+                                    'collections', 'ansible_collections')
+        index = {
+            'debops.debops': {'path': os.path.join(project_root, 'debops',
+                                                   'debops'),
+                              'version': '1.0'},
+            'local.local': {'path': os.path.join(project_root, 'local',
+                                                 'local'),
+                            'version': '1.0'},
+        }
+        server = self._server_with_policy({'bundled_content': False},
+                                          index=index)
+        response = server.handle({
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'name': 'collection_roles', 'arguments': {}}})
+        text = response['result']['content'][0]['text']
+        self.assertNotIn('debops.debops', text)
+        self.assertIn('local.local', text)
 
 
 if __name__ == '__main__':

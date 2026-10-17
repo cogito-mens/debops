@@ -109,6 +109,31 @@ class ToolAccessTestCase(unittest.TestCase):
         self.assertTrue(policy.is_tool_allowed('role_info'))
 
 
+class ContentPolicyTestCase(unittest.TestCase):
+
+    def _policy(self, mcp_config):
+        return McpPolicy(FakeProject('/srv/projects/example',
+                                     raw_config={'project': {'mcp':
+                                                             mcp_config}}))
+
+    def test_content_allowed_by_default(self):
+        policy = self._policy({})
+        self.assertTrue(policy.bundled_content)
+        self.assertTrue(policy.external_content)
+
+    def test_content_flags(self):
+        policy = self._policy({'bundled_content': False,
+                               'external_content': False})
+        self.assertFalse(policy.bundled_content)
+        self.assertFalse(policy.external_content)
+
+    def test_string_values_parsed(self):
+        policy = self._policy({'bundled_content': 'false',
+                               'external_content': 'yes'})
+        self.assertFalse(policy.bundled_content)
+        self.assertTrue(policy.external_content)
+
+
 class KillSwitchTestCase(unittest.TestCase):
 
     def setUp(self):

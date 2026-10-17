@@ -171,9 +171,10 @@ def resolve_debops_playbook(project, policy, playbooks_path, name):
             candidate = confine_under(directory, name)
             if os.path.isfile(candidate):
                 return candidate, target_form(name)
-        candidate = confine_under(playbooks_path, name)
-        if os.path.isfile(candidate):
-            return candidate, target_form(name)
+        if playbooks_path is not None:
+            candidate = confine_under(playbooks_path, name)
+            if os.path.isfile(candidate):
+                return candidate, target_form(name)
     except ValueError:
         pass
     return None
@@ -223,19 +224,22 @@ def tool_playbooks(project, policy, playbooks_path, arguments):
             sections.append(('Project playbooks ({})'.format(label),
                              entries))
 
-    # The bundled DebOps collection, grouped by subdirectory
-    grouped = {}
-    for relpath in list_playbooks(playbooks_path):
-        if name_filter and name_filter not in relpath.lower():
-            continue
-        group = os.path.dirname(relpath)
-        grouped.setdefault(group, []).append(
-                (relpath,
-                 playbook_summary(os.path.join(playbooks_path, relpath))))
-    for group in sorted(grouped):
-        title = 'DebOps collection' if not group \
-            else 'DebOps collection: {}/'.format(group)
-        sections.append((title, grouped[group]))
+    # The bundled DebOps collection, grouped by subdirectory; absent
+    # when the policy disables bundled content
+    if playbooks_path is not None:
+        grouped = {}
+        for relpath in list_playbooks(playbooks_path):
+            if name_filter and name_filter not in relpath.lower():
+                continue
+            group = os.path.dirname(relpath)
+            grouped.setdefault(group, []).append(
+                    (relpath,
+                     playbook_summary(
+                         os.path.join(playbooks_path, relpath))))
+        for group in sorted(grouped):
+            title = 'DebOps collection' if not group \
+                else 'DebOps collection: {}/'.format(group)
+            sections.append((title, grouped[group]))
 
     lines = []
     total = 0

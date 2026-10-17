@@ -27,16 +27,48 @@ ROLE_NAME_PATTERN = re.compile(r'^[a-z0-9_]+$')
 _ENVVAR_DIRECTIVE = re.compile(r'^\s*#\s*\.\. envvar::\s*([^\s\[]+)')
 
 
-def resolve_role(roles_path, name):
-    """Validate a role name and return (name, path), or None if unknown."""
+def project_role_paths(project):
+    """The project's own role directories, in resolution order.
+
+    Loose roles live in 'ansible/playbooks/roles' (the project roles
+    path in the generated ansible.cfg), collection roles in
+    'ansible/collections/ansible_collections/<namespace>/<name>/roles'.
+    No ansible-galaxy call: a direct scan, so the role tools do not
+    depend on it.
+    """
+    paths = []
+    loose = os.path.join(project.path, 'ansible', 'playbooks', 'roles')
+    if os.path.isdir(loose):
+        paths.append(loose)
+    collections_root = os.path.join(project.path, 'ansible',
+                                    'collections', 'ansible_collections')
+    if os.path.isdir(collections_root):
+        for namespace in sorted(os.listdir(collections_root)):
+            ns_path = os.path.join(collections_root, namespace)
+            if not os.path.isdir(ns_path) or namespace.startswith('.'):
+                continue
+            for collection in sorted(os.listdir(ns_path)):
+                roles = os.path.join(ns_path, collection, 'roles')
+                if os.path.isdir(roles):
+                    paths.append(roles)
+    return paths
+
+
+def resolve_role(roles_paths, name):
+    """Validate a role name and return (name, path), or None if unknown.
+
+    roles_paths is a list of directories searched in order; the first
+    match wins, so earlier paths shadow later ones.
+    """
     # Accept both 'nginx' and the fully qualified 'debops.nginx'
     name = str(name or '').split('.')[-1]
     if not ROLE_NAME_PATTERN.match(name):
         return None
-    path = os.path.join(roles_path, name)
-    if not os.path.isdir(path):
-        return None
-    return name, path
+    for roles_path in roles_paths:
+        path = os.path.join(roles_path, name)
+        if os.path.isdir(path):
+            return name, path
+    return None
 
 
 def load_role_defaults(role_path):
@@ -124,8 +156,8 @@ def extract_envvar_docs(text):
     return entries
 
 
-def tool_role_info(roles_path, arguments):
-    resolved = resolve_role(roles_path, arguments.get('name'))
+def tool_role_info(roles_paths, arguments):
+    resolved = resolve_role(roles_paths, arguments.get('name'))
     if resolved is None:
         return error_result('role not found or invalid: {}'
                             .format(arguments.get('name')))
@@ -175,8 +207,8 @@ def tool_role_info(roles_path, arguments):
     return text_result('\n'.join(lines))
 
 
-def tool_role_variables(roles_path, arguments):
-    resolved = resolve_role(roles_path, arguments.get('name'))
+def tool_role_variables(roles_paths, arguments):
+    resolved = resolve_role(roles_paths, arguments.get('name'))
     if resolved is None:
         return error_result('role not found or invalid: {}'
                             .format(arguments.get('name')))

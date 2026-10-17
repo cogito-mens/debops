@@ -15,6 +15,7 @@ import logging
 import os
 
 from ..config import Configuration
+from ..utils import strtobool
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +165,22 @@ class McpPolicy(object):
             self.sync_interval = int(mcp_config.get('sync_interval', 60))
         except (TypeError, ValueError):
             self.sync_interval = 60
+
+        # Which collection content the tools may serve. Bundled is the
+        # packaged DebOps collection; external is anything else Ansible
+        # can see. The project's own content is always allowed.
+        bundled = mcp_config.get('bundled_content', True)
+        if isinstance(bundled, str):
+            bundled = strtobool(bundled)
+        self.bundled_content = bool(bundled)
+        external = mcp_config.get('external_content', True)
+        if isinstance(external, str):
+            external = strtobool(external)
+        self.external_content = bool(external)
+        if not self.bundled_content or not self.external_content:
+            logger.notice('Collection content restricted by policy: '
+                          'bundled=%s external=%s',
+                          self.bundled_content, self.external_content)
 
         options = mcp_config.get('execute_options')
         if options is None:

@@ -77,6 +77,46 @@ def index_from_galaxy(data):
     return index
 
 
+def restrict_content(provider, project, policy):
+    """Wrap a collection index provider with the content policy.
+
+    With 'bundled_content: false' the DebOps collection is dropped even
+    when it lives inside the project; with 'external_content: false',
+    anything which is neither DebOps nor project-local is dropped. The
+    project's own collections are always visible.
+    """
+    bundled = policy.bundled_content if policy is not None else True
+    external = policy.external_content if policy is not None else True
+    if bundled and external:
+        return provider
+    project_root = os.path.realpath(os.path.join(
+            project.path, 'ansible', 'collections',
+            'ansible_collections'))
+
+    def restricted():
+        index = provider()
+        visible = {}
+        for fqcn, entry in index.items():
+            if fqcn == 'debops.debops':
+                if bundled:
+                    visible[fqcn] = entry
+                continue
+            path = os.path.realpath(entry['path'])
+            if (os.path.commonpath((project_root, path))
+                    == project_root):
+                visible[fqcn] = entry
+                continue
+            if external:
+                visible[fqcn] = entry
+        dropped = len(index) - len(visible)
+        if dropped:
+            logger.debug('Content policy dropped %d collection(s)',
+                         dropped)
+        return visible
+
+    return restricted
+
+
 def list_collection_roles(collection_path):
     """Return the role names of a collection, sorted."""
     roles_dir = os.path.join(collection_path, 'roles')
