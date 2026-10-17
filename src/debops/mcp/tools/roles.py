@@ -72,19 +72,20 @@ def resolve_role(roles_paths, name):
     return None
 
 
-def load_role_defaults(role_path):
-    """Load a role's defaults sources in the order Ansible reads them.
+def load_role_sources(role_path, subdir):
+    """Load a role's data sources in the order Ansible reads them.
 
-    A role defines its defaults in 'defaults/main.yml', in a
-    'defaults/main/' directory whose files are read in alphabetical
-    order, or both. Returns an ordered list of (source_name, text) pairs.
+    A role defines its data in '<subdir>/main.yml', in a
+    '<subdir>/main/' directory whose files are read in alphabetical
+    order, or both. Returns an ordered list of (source_name, text)
+    pairs.
     """
     sources = []
-    main_file = os.path.join(role_path, 'defaults', 'main.yml')
+    main_file = os.path.join(role_path, subdir, 'main.yml')
     if os.path.isfile(main_file):
         with open(main_file) as fp:
             sources.append(('main.yml', fp.read()))
-    main_dir = os.path.join(role_path, 'defaults', 'main')
+    main_dir = os.path.join(role_path, subdir, 'main')
     if os.path.isdir(main_dir):
         for filename in sorted(os.listdir(main_dir)):
             if (filename.endswith(('.yml', '.yaml'))
@@ -94,7 +95,46 @@ def load_role_defaults(role_path):
     return sources
 
 
-def role_default_values(sources):
+def load_argument_specs(role_path):
+    """Load a role's meta/argument_specs.yml, or None when absent."""
+    specs_file = os.path.join(role_path, 'meta', 'argument_specs.yml')
+    if not os.path.isfile(specs_file):
+        return None
+    try:
+        with open(specs_file) as fp:
+            data = yaml.safe_load(fp) or {}
+    except yaml.YAMLError:
+        return None
+    specs = data.get('argument_specs')
+    return specs if isinstance(specs, dict) else None
+
+
+def extract_plain_docs(text):
+    """Associate top-level YAML keys with the comment block above them.
+
+    A comment block documents the key it directly precedes; a blank line
+    breaks the association. Used for roles which do not document their
+    variables with '.. envvar::' directives.
+    """
+    entries = []
+    comments = []
+    for line in text.splitlines():
+        if FOLD_MARKER.match(line):
+            comments = []
+        elif line.startswith('#'):
+            comments.append(re.sub(r'^#\s?', '', line).rstrip())
+        elif not line.strip():
+            comments = []
+        elif re.match(r'^[A-Za-z0-9_]+:', line):
+            entries.append((re.match(r'^([A-Za-z0-9_]+):', line).group(1),
+                            '\n'.join(comments).strip()))
+            comments = []
+        else:
+            comments = []
+    return entries
+
+
+def merge_role_values(sources):
     """Merge the default values of all sources; later files win.
 
     Returns (values, partial): 'partial' marks sources which did not
@@ -157,6 +197,30 @@ def extract_envvar_docs(text):
     return entries
 
 
+def _count_tree_files(directory):
+    """The number of non-hidden files in a directory tree."""
+    count = 0
+    for _base, dirs, files in os.walk(directory):
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        count += len([f for f in files if not f.startswith('.')])
+    return count
+
+
+def _count_tasks(directory):
+    """The number of tasks and task files in a tasks/handlers dir."""
+    total = 0
+    files = 0
+    if not os.path.isdir(directory):
+        return 0, 0
+    for entry in sorted(os.listdir(directory)):
+        if (entry.endswith(('.yml', '.yaml'))
+                and not entry.startswith('.')
+                and os.path.isfile(os.path.join(directory, entry))):
+            files += 1
+            total += len(_load_tasks(os.path.join(directory, entry)))
+    return total, files
+
+
 def tool_role_info(roles_paths, arguments):
     resolved = resolve_role(roles_paths, arguments.get('name'))
     if resolved is None:
@@ -167,6 +231,10 @@ def tool_role_info(roles_paths, arguments):
     description = ''
     tags = []
     dependencies = []
+    author = ''
+    license_name = ''
+    min_ansible = ''
+    platforms = []
     meta_file = os.path.join(path, 'meta', 'main.yml')
     if os.path.isfile(meta_file):
         try:
@@ -175,30 +243,80 @@ def tool_role_info(roles_paths, arguments):
             galaxy_info = meta.get('galaxy_info', {})
             description = galaxy_info.get('description', '')
             tags = galaxy_info.get('galaxy_tags', [])
+            author = galaxy_info.get('author', '')
+            license_name = galaxy_info.get('license', '')
+            min_ansible = str(galaxy_info.get('min_ansible_version', ''))
+            for platform in galaxy_info.get('platforms', []) or []:
+                platforms.append('{} ({})'.format(
+                        platform.get('name', ''),
+                        ', '.join(str(v)
+                                  for v in platform.get('versions', []))))
             dependencies = meta.get('dependencies', [])
         except yaml.YAMLError as errmsg:
             logger.warning('Cannot parse %s: %s', meta_file, errmsg)
 
-    variables, partial = role_default_values(load_role_defaults(path))
+    defaults, defaults_partial = merge_role_values(
+            load_role_sources(path, 'defaults'))
+    variables, vars_partial = merge_role_values(
+            load_role_sources(path, 'vars'))
+    specs = load_argument_specs(path)
+    task_count, task_files = _count_tasks(os.path.join(path, 'tasks'))
+    handler_count, handler_files = _count_tasks(os.path.join(path,
+                                                             'handlers'))
+    templates = _count_tree_files(os.path.join(path, 'templates'))
+    files = _count_tree_files(os.path.join(path, 'files'))
+
+    def _counted(label, count, partial=False):
+        if not count and not partial:
+            return '- {}: none'.format(label)
+        if not count:
+            return '- {}: unparseable'.format(label)
+        return '- {}: {} variable{}'.format(
+                label, count, '' if count == 1 else 's')
+
+    def _across(count, files):
+        if not count:
+            return 'none'
+        return '{} across {} file{}'.format(
+                count, files, '' if files == 1 else 's')
 
     lines = ['# debops.{}'.format(name), '']
     if description:
         lines.extend([description, ''])
-    variables_line = str(len(variables))
-    if partial:
-        variables_line += ' (partial, a defaults file did not parse)'
-    lines.extend([
-            '- variables: {}'.format(variables_line),
-            '- tasks: {}'.format(
-                'yes' if os.path.isfile(os.path.join(
-                    path, 'tasks', 'main.yml')) else 'no'),
-            '- templates: {}'.format(
-                'yes' if os.path.isdir(os.path.join(
-                    path, 'templates')) else 'no'),
-            '- handlers: {}'.format(
-                'yes' if os.path.isfile(os.path.join(
-                    path, 'handlers', 'main.yml')) else 'no'),
-    ])
+    lines.append('- resolved at: {}'.format(path))
+    lines.append(_counted('defaults', len(defaults), defaults_partial))
+    lines.append(_counted('vars', len(variables), vars_partial))
+    if specs:
+        options = sum(len((spec or {}).get('options') or {})
+                      for spec in specs.values())
+        lines.append('- argument specs: {} ({} option{})'.format(
+                ', '.join(sorted(specs)), options,
+                '' if options == 1 else 's'))
+    else:
+        lines.append('- argument specs: none')
+    lines.append('- tasks: {}'.format(_across(task_count, task_files)))
+    lines.append('- handlers: {}'.format(
+            _across(handler_count, handler_files)))
+    lines.append('- templates: {}'.format(
+            '{} file{}'.format(templates, '' if templates == 1 else 's')
+            if templates else 'none'))
+    lines.append('- files: {}'.format(
+            '{} file{}'.format(files, '' if files == 1 else 's')
+            if files else 'none'))
+    lines.append('- README: {}'.format(
+            'yes' if os.path.isfile(os.path.join(path, 'README.md'))
+            else 'no'))
+    lines.append('- COPYRIGHT: {}'.format(
+            'yes' if os.path.isfile(os.path.join(path, 'COPYRIGHT'))
+            else 'no'))
+    if author:
+        lines.append('- author: {}'.format(author))
+    if license_name:
+        lines.append('- license: {}'.format(license_name))
+    if min_ansible:
+        lines.append('- min ansible version: {}'.format(min_ansible))
+    if platforms:
+        lines.append('- platforms: {}'.format('; '.join(platforms)))
     if tags:
         lines.append('- galaxy tags: {}'.format(', '.join(tags)))
     if dependencies:
@@ -359,13 +477,88 @@ def tool_role_files(roles_paths, arguments):
 
 
 def tool_role_variables(roles_paths, arguments):
+    """The role's own variables from vars/ (higher precedence than
+    defaults, not meant to be overridden from the inventory)."""
     resolved = resolve_role(roles_paths, arguments.get('name'))
     if resolved is None:
         return error_result('role not found or invalid: {}'
                             .format(arguments.get('name')))
     name, path = resolved
 
-    sources = load_role_defaults(path)
+    sources = load_role_sources(path, 'vars')
+    if not sources:
+        return error_result('role debops.{} has no variables '
+                            '(vars/main.yml)'.format(name))
+
+    values, _partial = merge_role_values(sources)
+    entries = []
+    seen = set()
+    for _source, text in sources:
+        for var_name, description in extract_plain_docs(text):
+            if var_name in seen:
+                continue
+            entries.append((var_name, description))
+            seen.add(var_name)
+    for var_name in values:
+        if var_name not in seen:
+            entries.append((var_name, ''))
+            seen.add(var_name)
+
+    name_filter = str(arguments.get('filter') or '').lower()
+    if name_filter:
+        entries = [entry for entry in entries
+                   if name_filter in entry[0].lower()]
+    if not entries:
+        return text_result('no matching variables in debops.{} vars'
+                           .format(name))
+
+    detail = arguments.get('detail', 'brief')
+    if detail not in ('names', 'brief', 'full'):
+        return error_result('invalid detail level: {}'.format(detail))
+
+    header = '# debops.{} variables ({})'.format(name, len(entries))
+    if detail == 'names':
+        return text_result('\n'.join([header, '']
+                                     + [entry[0] for entry in entries]))
+
+    lines = [header, '']
+    for var_name, description in entries:
+        if detail == 'brief':
+            summary = ''
+            for description_line in description.splitlines():
+                if description_line.strip():
+                    summary = description_line.strip()
+                    break
+            default = ''
+            if var_name in values:
+                default = dump_default(values[var_name], flow=True)
+                if len(default) > 100:
+                    default = default[:97] + '…'
+            line = '- **{}**'.format(var_name)
+            if summary:
+                line += ' — {}'.format(summary)
+            if default:
+                line += ' (default: `{}`)'.format(default)
+            lines.append(line)
+        else:
+            lines.append('## {}'.format(var_name))
+            lines.append('')
+            if description:
+                lines.extend([description, ''])
+            if var_name in values:
+                lines.extend(['```yaml', dump_default(values[var_name]),
+                              '```', ''])
+    return text_result('\n'.join(lines))
+
+
+def tool_role_defaults(roles_paths, arguments):
+    resolved = resolve_role(roles_paths, arguments.get('name'))
+    if resolved is None:
+        return error_result('role not found or invalid: {}'
+                            .format(arguments.get('name')))
+    name, path = resolved
+
+    sources = load_role_sources(path, 'defaults')
     if not sources:
         return error_result('role debops.{} has no defaults'.format(name))
 

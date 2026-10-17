@@ -155,21 +155,21 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
                              "config_get", "inventory_query",
                              "playbook_info", "playbooks", "project_files",
                              "project_pull", "project_push", "project_read",
-                             "project_status", "role_files", "role_info",
-                             "role_tasks", "role_templates",
-                             "role_variables"]
+                             "project_status", "role_defaults",
+                             "role_files", "role_info", "role_tasks",
+                             "role_templates", "role_variables"]
 
 
-def test_role_variables_via_stdio(run_debops, mcp_env, project_dir):
+def test_role_defaults_via_stdio(run_debops, mcp_env, project_dir):
     brief = json.dumps({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "role_variables",
+        "params": {"name": "role_defaults",
                    "arguments": {"name": "elasticsearch",
                                  "filter": "base_packages"}},
     })
     full = json.dumps({
         "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-        "params": {"name": "role_variables",
+        "params": {"name": "role_defaults",
                    "arguments": {"name": "elasticsearch",
                                  "filter": "base_packages",
                                  "detail": "full"}},

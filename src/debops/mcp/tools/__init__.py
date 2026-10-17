@@ -23,9 +23,9 @@ from .files import (tool_config_get, tool_inventory_query,
 from .playbooks import (COLLECTION_PLAYBOOKS, tool_playbook_info,
                         tool_playbooks)
 from .project import tool_project_status
-from .roles import (COLLECTION_ROLES, project_role_paths, tool_role_files,
-                    tool_role_info, tool_role_tasks, tool_role_templates,
-                    tool_role_variables)
+from .roles import (COLLECTION_ROLES, project_role_paths, tool_role_defaults,
+                    tool_role_files, tool_role_info, tool_role_tasks,
+                    tool_role_templates, tool_role_variables)
 from .sync import make_sync_tool
 from ..policy import EXECUTE_OPTIONS
 
@@ -286,13 +286,11 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
               'required': ['name']},
              lambda arguments: tool_role_info(roles_paths, arguments)),
             ('role_variables',
-             'List the default inventory variables of a role of this '
-             'project or the bundled DebOps collection, with their '
-             'documentation and default values. Use this to learn how '
-             'to configure a role through the Ansible inventory. Survey '
-             'a role with the "brief" or "names" detail level, then use '
-             '"filter" with the "full" detail level to read the complete '
-             'documentation of specific variables.',
+             'List the variables of a role of this project or the '
+             'bundled DebOps collection, from its vars/ directory — '
+             'higher-precedence, internal state, not meant to be '
+             'overridden from the inventory. For the overridable '
+             'defaults, use the role_defaults tool.',
              {'type': 'object',
               'properties': {'name': {'type': 'string',
                                       'description': 'Role name, with or '
@@ -312,6 +310,34 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
               'required': ['name']},
              lambda arguments: tool_role_variables(roles_paths,
                                                    arguments)),
+            ('role_defaults',
+             'List the default inventory variables of a role of this '
+             'project or the bundled DebOps collection, from its '
+             'defaults/ directory, with their documentation. Use this to '
+             'learn how to configure a role through the Ansible '
+             'inventory. Survey a role with the "brief" or "names" '
+             'detail level, then use "filter" with the "full" detail '
+             'level to read the complete documentation of specific '
+             'variables.',
+             {'type': 'object',
+              'properties': {'name': {'type': 'string',
+                                      'description': 'Role name, with or '
+                                      'without the "debops." prefix'},
+                             'filter': {'type': 'string',
+                                        'description': 'Only include '
+                                        'variables whose name contains '
+                                        'this string'},
+                             'detail': {'type': 'string',
+                                        'enum': ['names', 'brief', 'full'],
+                                        'description': 'Level of detail: '
+                                        '"names" lists variable names '
+                                        'only, "brief" (default) gives a '
+                                        'one-line summary and a truncated '
+                                        'default per variable, "full" '
+                                        'gives the complete documentation'}},
+              'required': ['name']},
+             lambda arguments: tool_role_defaults(roles_paths,
+                                                  arguments)),
             ('role_tasks',
              'Inspect the tasks of a role: its task files, and per file '
              'the tasks with their modules, conditions and tags. Use '

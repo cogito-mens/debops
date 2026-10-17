@@ -21,7 +21,8 @@ from ..policy import confine_under
 from .common import (FOLD_MARKER, dump_default, error_result, text_result)
 from .playbooks import (list_playbooks, parse_playbook, playbook_summary,
                         render_playbook_info, target_form)
-from .roles import load_role_defaults, role_default_values
+from .roles import (extract_plain_docs, load_argument_specs,
+                    load_role_sources, merge_role_values)
 
 logger = logging.getLogger(__name__)
 
@@ -150,45 +151,6 @@ def resolve_collection(index, fqcn):
     return index.get(fqcn)
 
 
-def load_argument_specs(role_path):
-    """Load a role's meta/argument_specs.yml, or None when absent."""
-    specs_file = os.path.join(role_path, 'meta', 'argument_specs.yml')
-    if not os.path.isfile(specs_file):
-        return None
-    try:
-        with open(specs_file) as fp:
-            data = yaml.safe_load(fp) or {}
-    except yaml.YAMLError:
-        return None
-    specs = data.get('argument_specs')
-    return specs if isinstance(specs, dict) else None
-
-
-def extract_plain_docs(text):
-    """Associate top-level YAML keys with the comment block above them.
-
-    A comment block documents the key it directly precedes; a blank line
-    breaks the association. Used for roles which do not document their
-    variables with '.. envvar::' directives.
-    """
-    entries = []
-    comments = []
-    for line in text.splitlines():
-        if FOLD_MARKER.match(line):
-            comments = []
-        elif line.startswith('#'):
-            comments.append(re.sub(r'^#\s?', '', line).rstrip())
-        elif not line.strip():
-            comments = []
-        elif re.match(r'^[A-Za-z0-9_]+:', line):
-            entries.append((re.match(r'^([A-Za-z0-9_]+):', line).group(1),
-                            '\n'.join(comments).strip()))
-            comments = []
-        else:
-            comments = []
-    return entries
-
-
 def tool_collection_roles(index_provider, arguments):
     try:
         index = index_provider()
@@ -243,7 +205,8 @@ def tool_collection_role_info(index_provider, arguments):
             logger.warning('Cannot parse %s: %s', meta_file, errmsg)
 
     specs = load_argument_specs(role_path)
-    values, partial = role_default_values(load_role_defaults(role_path))
+    values, partial = merge_role_values(load_role_sources(
+            role_path, 'defaults'))
 
     lines = ['# {}'.format(fqcn_role), '']
     if description:
@@ -370,8 +333,8 @@ def tool_collection_role_variables(index_provider, arguments):
             seen.add(opt_name)
 
     # Defaults cover the rest, with their comment blocks as documentation
-    sources = load_role_defaults(role_path)
-    values, _partial = role_default_values(sources)
+    sources = load_role_sources(role_path, 'defaults')
+    values, _partial = merge_role_values(sources)
     for _source, text in sources:
         for var_name, description in extract_plain_docs(text):
             if var_name in seen:

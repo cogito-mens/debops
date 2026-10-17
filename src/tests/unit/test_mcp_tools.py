@@ -74,6 +74,35 @@ ROLE_TASKS_EXTRA = '''---
     msg: 'extra'
 '''
 
+ROLE_VARS = '''---
+# Internal state directory of the test role.
+testrole__state_dir: '/run/testrole'
+
+testrole__internal: true
+'''
+
+ROLE_HANDLERS = '''---
+- name: Restart the test service
+  ansible.builtin.service:
+    name: 'testrole'
+    state: 'restarted'
+  listen: 'restart testrole'
+
+- name: Reload the test service
+  ansible.builtin.service:
+    name: 'testrole'
+    state: 'reloaded'
+  listen: 'reload testrole'
+'''
+
+ROLE_HANDLERS_EXTRA = '''---
+- name: Reload the extra service
+  ansible.builtin.service:
+    name: 'extra'
+    state: 'reloaded'
+  listen: 'reload extra'
+'''
+
 # A role with split defaults in a 'defaults/main/' directory; files are
 # read in alphabetical order and later files win per variable
 SPLIT_DEFAULTS_A = '''---
@@ -191,10 +220,18 @@ class ToolsTestCase(unittest.TestCase):
         os.makedirs(os.path.join(role, 'tasks'))
         os.makedirs(os.path.join(role, 'templates', 'etc', 'testrole'))
         os.makedirs(os.path.join(role, 'files', 'etc'))
+        os.makedirs(os.path.join(role, 'vars'))
+        os.makedirs(os.path.join(role, 'handlers'))
         with open(os.path.join(role, 'defaults', 'main.yml'), 'w') as fp:
             fp.write(ROLE_DEFAULTS)
         with open(os.path.join(role, 'meta', 'main.yml'), 'w') as fp:
             fp.write(ROLE_META)
+        with open(os.path.join(role, 'vars', 'main.yml'), 'w') as fp:
+            fp.write(ROLE_VARS)
+        with open(os.path.join(role, 'handlers', 'main.yml'), 'w') as fp:
+            fp.write(ROLE_HANDLERS)
+        with open(os.path.join(role, 'handlers', 'extra.yml'), 'w') as fp:
+            fp.write(ROLE_HANDLERS_EXTRA)
         with open(os.path.join(role, 'tasks', 'main.yml'), 'w') as fp:
             fp.write(ROLE_TASKS)
         with open(os.path.join(role, 'tasks', 'extra.yml'), 'w') as fp:
@@ -319,8 +356,9 @@ class ToolsTestCase(unittest.TestCase):
                           'config_get', 'inventory_query', 'playbook_info',
                           'playbooks', 'project_files', 'project_pull',
                           'project_push', 'project_read', 'project_status',
-                          'role_files', 'role_info', 'role_tasks',
-                          'role_templates', 'role_variables'])
+                          'role_defaults', 'role_files', 'role_info',
+                          'role_tasks', 'role_templates',
+                          'role_variables'])
 
     def test_denied_tool_is_not_registered(self):
         self.project.config.raw['project'] = {'mcp': {'deny': ['role_info']}}
@@ -352,8 +390,13 @@ class ToolsTestCase(unittest.TestCase):
         text = self.result_text(response)
         self.assertIn('# debops.testrole', text)
         self.assertIn('A test role', text)
-        self.assertIn('variables: 4', text)
-        self.assertIn('dependencies: debops.otherrole', text)
+        self.assertIn('resolved at:', text)
+        self.assertIn('- defaults: 4 variables', text)
+        self.assertIn('- vars: 2 variables', text)
+        self.assertIn('- argument specs: none', text)
+        self.assertIn('- tasks: 4 across 2 files', text)
+        self.assertIn('- handlers: 3 across 2 files', text)
+        self.assertIn('- dependencies: debops.otherrole', text)
 
     def test_role_info_accepts_qualified_name(self):
         response = self.call_tool('role_info',
@@ -369,10 +412,10 @@ class ToolsTestCase(unittest.TestCase):
         response = self.call_tool('role_info', {'name': '../../etc'})
         self.assertTrue(response['result']['isError'])
 
-    # -- role_variables --------------------------------------------------
+    # -- role_defaults --------------------------------------------------
 
-    def test_role_variables_full(self):
-        response = self.call_tool('role_variables',
+    def test_role_defaults_full(self):
+        response = self.call_tool('role_defaults',
                                   {'name': 'testrole', 'detail': 'full'})
         text = self.result_text(response)
         # Documented variables carry their description and default value
@@ -386,8 +429,8 @@ class ToolsTestCase(unittest.TestCase):
         # Undocumented variables are listed too
         self.assertIn('## testrole__extra', text)
 
-    def test_role_variables_names_detail(self):
-        response = self.call_tool('role_variables',
+    def test_role_defaults_names_detail(self):
+        response = self.call_tool('role_defaults',
                                   {'name': 'testrole', 'detail': 'names'})
         text = self.result_text(response)
         self.assertIn('(4)', text)
@@ -396,8 +439,8 @@ class ToolsTestCase(unittest.TestCase):
         self.assertNotIn('##', text)
         self.assertNotIn('```', text)
 
-    def test_role_variables_brief_is_the_default(self):
-        response = self.call_tool('role_variables', {'name': 'testrole'})
+    def test_role_defaults_brief_is_the_default(self):
+        response = self.call_tool('role_defaults', {'name': 'testrole'})
         text = self.result_text(response)
         # One compact line per variable, no full documentation
         self.assertIn('- **testrole__enabled** — Enable or disable the '
@@ -405,8 +448,8 @@ class ToolsTestCase(unittest.TestCase):
         self.assertNotIn('```yaml', text)
         self.assertNotIn('## testrole__enabled', text)
 
-    def test_role_variables_brief_truncates_long_defaults(self):
-        response = self.call_tool('role_variables',
+    def test_role_defaults_brief_truncates_long_defaults(self):
+        response = self.call_tool('role_defaults',
                                   {'name': 'testrole',
                                    'filter': 'long_list'})
         text = self.result_text(response)
@@ -415,32 +458,54 @@ class ToolsTestCase(unittest.TestCase):
         self.assertLess(len(line), 140)
         self.assertTrue(line.endswith('…`)'))
 
-    def test_role_variables_invalid_detail(self):
-        response = self.call_tool('role_variables',
+    def test_role_defaults_invalid_detail(self):
+        response = self.call_tool('role_defaults',
                                   {'name': 'testrole', 'detail': 'everything'})
         self.assertTrue(response['result']['isError'])
 
-    def test_role_variables_filter(self):
-        response = self.call_tool('role_variables',
+    def test_role_defaults_filter(self):
+        response = self.call_tool('role_defaults',
                                   {'name': 'testrole', 'filter': 'port',
                                    'detail': 'full'})
         text = self.result_text(response)
         self.assertIn('testrole__port', text)
         self.assertNotIn('testrole__enabled', text)
 
-    def test_role_variables_no_match(self):
-        response = self.call_tool('role_variables',
+    def test_role_defaults_no_match(self):
+        response = self.call_tool('role_defaults',
                                   {'name': 'testrole', 'filter': 'zzz'})
         self.assertIn('no matching variables', self.result_text(response))
 
-    def test_role_variables_unknown_role(self):
-        response = self.call_tool('role_variables', {'name': 'nosuch'})
+    def test_role_defaults_unknown_role(self):
+        response = self.call_tool('role_defaults', {'name': 'nosuch'})
         self.assertTrue(response['result']['isError'])
+
+    # -- role_variables (vars/) ----------------------------------------------
+
+    def test_role_variables_reads_vars(self):
+        response = self.call_tool('role_variables', {'name': 'testrole'})
+        text = self.result_text(response)
+        self.assertIn('- **testrole__state_dir** — Internal state '
+                      'directory of the test role. (default: '
+                      '`/run/testrole`)', text)
+        self.assertIn('- **testrole__internal** (default: `true`)', text)
+
+    def test_role_variables_full(self):
+        response = self.call_tool('role_variables',
+                                  {'name': 'testrole', 'detail': 'full'})
+        text = self.result_text(response)
+        self.assertIn('## testrole__state_dir', text)
+        self.assertIn('```yaml\n/run/testrole\n```', text)
+
+    def test_role_variables_no_vars(self):
+        response = self.call_tool('role_variables', {'name': 'splitrole'})
+        self.assertTrue(response['result']['isError'])
+        self.assertIn('no variables', self.result_text(response))
 
     # -- split defaults files ----------------------------------------------
 
-    def test_role_variables_split_defaults(self):
-        response = self.call_tool('role_variables',
+    def test_role_defaults_split_defaults(self):
+        response = self.call_tool('role_defaults',
                                   {'name': 'splitrole', 'detail': 'full'})
         text = self.result_text(response)
         self.assertFalse(response['result']['isError'])
@@ -458,7 +523,7 @@ class ToolsTestCase(unittest.TestCase):
     def test_role_info_counts_split_defaults(self):
         response = self.call_tool('role_info', {'name': 'splitrole'})
         text = self.result_text(response)
-        self.assertIn('variables: 3', text)
+        self.assertIn('- defaults: 3 variables', text)
 
     # -- collection_roles --------------------------------------------------
 
