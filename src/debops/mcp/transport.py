@@ -15,6 +15,7 @@ Access to the socket is controlled by filesystem permissions; there is no
 protocol-level authentication on this transport.
 """
 
+import json
 import logging
 import os
 import signal
@@ -26,6 +27,7 @@ import threading
 import time
 
 from . import rpc
+from . import server as _server
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +252,51 @@ class UnixSocketTransport(object):
         finally:
             self._semaphore.release()
             connection.close()
+
+
+def ping_unix(path, timeout=5):
+    """Probe an MCP server on a UNIX socket with 'server/discover'.
+
+    Returns the raw response line. Raises ConnectionError when the
+    socket cannot be connected, EOFError when the server closes the
+    connection without a response (for example because of the kill
+    switch), and TimeoutError when no response arrives in time.
+    """
+    path = os.path.abspath(os.path.expanduser(path))
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection.settimeout(timeout)
+    try:
+        connection.connect(path)
+    except OSError as errmsg:
+        connection.close()
+        raise ConnectionError('cannot connect to {}: {}'
+                              .format(path, errmsg))
+
+    request = json.dumps({
+        'jsonrpc': '2.0', 'id': 0, 'method': 'server/discover',
+        'params': {},
+        '_meta': {
+            'io.modelcontextprotocol/protocolVersion':
+                _server.PROTOCOL_VERSION,
+            'io.modelcontextprotocol/clientInfo': {
+                'name': 'debops', 'version': _server.__version__,
+            },
+        },
+    }).encode('utf-8') + b'\n'
+    try:
+        connection.sendall(request)
+        data = rpc.read_message(connection.makefile('rb'))
+    except socket.timeout:
+        raise TimeoutError('no response within {} seconds'.format(timeout))
+    except ConnectionResetError:
+        raise EOFError('the server closed the connection without '
+                       'a response')
+    finally:
+        connection.close()
+    if data is None:
+        raise EOFError('the server closed the connection without '
+                       'a response')
+    return data
 
 
 def bridge_stdio_to_unix(path):

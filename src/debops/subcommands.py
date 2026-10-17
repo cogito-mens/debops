@@ -424,6 +424,12 @@ Commands:
                 usage='debops mcp connect [<args>] <socket>')
         parser.add_argument('socket', type=str,
                             help='path of the MCP server UNIX socket')
+        parser.add_argument('--ping', dest='ping', action='store_true',
+                            help='probe the server with a server/discover '
+                                 'request and print the result')
+        parser.add_argument('--raw', dest='raw', action='store_true',
+                            help='print the server response as received '
+                                 '(only with --ping)')
         self.args = parser.parse_args(self.args[3:])
 
     def do_mcp_skills(self):

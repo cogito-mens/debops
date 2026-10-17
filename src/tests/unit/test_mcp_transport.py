@@ -10,7 +10,7 @@ dependencies.
 
 from debops.mcp import rpc
 from debops.mcp.server import McpServer
-from debops.mcp.transport import UnixSocketTransport
+from debops.mcp.transport import UnixSocketTransport, ping_unix
 import json
 import os
 import shutil
@@ -233,6 +233,57 @@ class UnixSocketTransportTestCase(unittest.TestCase):
         transport = UnixSocketTransport(self.path)
         with self.assertRaises(FileExistsError):
             transport._prepare_socket_path()
+
+    def test_ping_unix_round_trip(self):
+        response = json.loads(ping_unix(self.path))
+        self.assertEqual(response['result']['serverInfo']['name'],
+                         'debops')
+        self.assertEqual(response['result']['protocolVersion'],
+                         '2026-07-28')
+        # The clacks overhead rides along
+        self.assertEqual(
+                response['_meta']['org.debops/clacksOverhead'],
+                'GNU Terry Pratchett')
+
+    def test_ping_unix_missing_socket(self):
+        with self.assertRaises(ConnectionError):
+            ping_unix(os.path.join(self.tmpdir, 'nosuch.sock'))
+
+    def test_ping_unix_refused_by_kill_switch(self):
+        disabled = type('Switch', (),
+                        {'is_enabled': lambda self: False})()
+        server = McpServer(killswitch=disabled)
+        path = os.path.join(self.tmpdir, 'killed-ping.sock')
+        transport = UnixSocketTransport(path)
+        thread = threading.Thread(target=transport.serve, args=(server,),
+                                  daemon=True)
+        thread.start()
+        try:
+            for _ in range(500):
+                if os.path.exists(path):
+                    break
+                time.sleep(0.01)
+            with self.assertRaises(EOFError):
+                ping_unix(path)
+        finally:
+            transport.shutdown()
+            thread.join(timeout=5)
+
+    def test_ping_unix_timeout(self):
+        silent = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        silent_path = os.path.join(self.tmpdir, 'silent.sock')
+        silent.bind(silent_path)
+        silent.listen()
+        self.addCleanup(silent.close)
+
+        def hold():
+            connection, _ = silent.accept()
+            time.sleep(3)
+            connection.close()
+
+        threading.Thread(target=hold, daemon=True).start()
+        with self.assertRaises(TimeoutError):
+            ping_unix(silent_path, timeout=1)
 
     def test_kill_switch_refuses_connections(self):
         disabled = type('Switch', (),

@@ -15,13 +15,15 @@ from .mcp.policy import McpPolicy, KillSwitch
 from .mcp.skills import SkillLibrary
 from .mcp.tools import register_project_tools
 from .mcp.transport import StdioTransport, UnixSocketTransport
-from .mcp.transport import bridge_stdio_to_unix
+from .mcp.transport import bridge_stdio_to_unix, ping_unix
 from xdg.BaseDirectory import xdg_config_home
+import json
 import logging
 import getpass
 import sys
 import os
 import textwrap
+import time
 
 # The kill switch file written by 'debops mcp disable'
 KILLSWITCH_FILENAME = 'mcp-killswitch.toml'
@@ -299,13 +301,60 @@ class Interpreter(object):
 
     def do_mcp_connect(self, args):
         self._mcp_refuse_if_disabled()
+        if args.raw and not args.ping:
+            print('Error: --raw only makes sense with --ping',
+                  file=sys.stderr)
+            sys.exit(2)
+        if not args.ping:
+            try:
+                bridge_stdio_to_unix(args.socket)
+            except (ConnectionError, OSError) as errmsg:
+                print('Error:', errmsg, file=sys.stderr)
+                sys.exit(1)
+            except KeyboardInterrupt:
+                sys.exit(130)
+            return
+
+        started = time.monotonic()
         try:
-            bridge_stdio_to_unix(args.socket)
-        except (ConnectionError, OSError) as errmsg:
+            raw = ping_unix(args.socket)
+        except ConnectionError as errmsg:
             print('Error:', errmsg, file=sys.stderr)
             sys.exit(1)
-        except KeyboardInterrupt:
-            sys.exit(130)
+        except EOFError:
+            print('Error: the server closed the connection without '
+                  'a response (the kill switch may be active)',
+                  file=sys.stderr)
+            sys.exit(1)
+        except TimeoutError as errmsg:
+            print('Error:', errmsg, file=sys.stderr)
+            sys.exit(1)
+        rtt = time.monotonic() - started
+
+        if args.raw:
+            sys.stdout.write(raw.decode('utf-8') + '\n')
+            return
+
+        try:
+            response = json.loads(raw)
+        except ValueError:
+            print('Error: the server response is not JSON: {}'.format(
+                    raw[:200]), file=sys.stderr)
+            sys.exit(1)
+        if 'error' in response:
+            print('Error: the server returned an error: {}'.format(
+                    response['error'].get('message')), file=sys.stderr)
+            sys.exit(1)
+        result = response.get('result', {})
+        server_info = result.get('serverInfo', {})
+        capabilities = ', '.join(sorted(result.get('capabilities', {})))
+        print('debops mcp server at {}:'.format(args.socket))
+        print('    name: {}'.format(server_info.get('name', '?')))
+        print('    version: {}'.format(server_info.get('version', '?')))
+        print('    protocol: {}'.format(result.get('protocolVersion',
+                                                   '?')))
+        print('    capabilities: {}'.format(capabilities or '(none)'))
+        print('    round-trip: {:.0f} ms'.format(rtt * 1000))
 
     def do_mcp_skills(self, args):
         self._mcp_refuse_if_disabled()

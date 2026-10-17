@@ -339,7 +339,8 @@ def test_kill_switch_flow(run_debops, mcp_env, project_dir):
     assert "enabled = false" in killswitch.read_text()
 
     # Now the server and the other commands refuse to run
-    for args in (("mcp", "serve"), ("mcp", "skills")):
+    for args in (("mcp", "serve"), ("mcp", "skills"),
+                 ("mcp", "connect", "nosuch.sock")):
         result = run_debops(*args, cwd=str(project_dir), env=mcp_env,
                             input_text="")
         assert result.returncode == 1
@@ -350,6 +351,49 @@ def test_kill_switch_flow(run_debops, mcp_env, project_dir):
                         env=mcp_env)
     assert result.returncode == 0
     assert "already disabled" in result.stdout
+
+
+def test_connect_ping(run_debops, mcp_env, tmp_path):
+    socket_path = str(tmp_path / "server.sock")
+    transport = UnixSocketTransport(socket_path)
+    thread = threading.Thread(target=transport.serve, args=(McpServer(),),
+                              daemon=True)
+    thread.start()
+    try:
+        for _ in range(500):
+            if os.path.exists(socket_path):
+                break
+            time.sleep(0.01)
+
+        result = run_debops("mcp", "connect", socket_path, "--ping",
+                            env=mcp_env)
+        assert result.returncode == 0
+        assert "name: debops" in result.stdout
+        assert "protocol: 2026-07-28" in result.stdout
+        assert "capabilities: tools" in result.stdout
+
+        result = run_debops("mcp", "connect", socket_path, "--ping",
+                            "--raw", env=mcp_env)
+        assert result.returncode == 0
+        response = json.loads(result.stdout)
+        assert response["result"]["serverInfo"]["name"] == "debops"
+    finally:
+        transport.shutdown()
+        thread.join(timeout=5)
+
+
+def test_connect_ping_missing_socket(run_debops, mcp_env, tmp_path):
+    result = run_debops("mcp", "connect", str(tmp_path / "nosuch.sock"),
+                        "--ping", env=mcp_env)
+    assert result.returncode == 1
+    assert "cannot connect" in result.stderr
+
+
+def test_connect_raw_without_ping(run_debops, mcp_env, tmp_path):
+    result = run_debops("mcp", "connect", "nosuch.sock", "--raw",
+                        env=mcp_env)
+    assert result.returncode == 2
+    assert "--ping" in result.stderr
 
 
 def test_policy_deny_hides_a_tool(run_debops, mcp_env, project_dir):
