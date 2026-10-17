@@ -116,6 +116,15 @@ class SyncTestCase(unittest.TestCase):
         self.assertTrue(response['result']['isError'])
         self.assertIn('no origin', self.result_text(response))
 
+    def test_project_without_git_is_an_error_result(self):
+        self.fail_with = ValueError('the project directory is not a git '
+                                    'repository')
+        for name in ('project_pull', 'project_push'):
+            response = self.call_tool(name)
+            self.assertTrue(response['result']['isError'], name)
+            self.assertIn('not a git repository',
+                          self.result_text(response))
+
     def test_push_can_be_denied_alone(self):
         self.project.config.raw['project'] = {'mcp': {'deny':
                                                       ['project_push']}}

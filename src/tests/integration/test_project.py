@@ -116,6 +116,17 @@ def test_project_pull_without_origin(run_debops, tmp_path, debops_env):
     assert "no 'origin' remote" in result.stdout
 
 
+def test_project_pull_push_without_git(run_debops, tmp_path, debops_env):
+    project_dir = tmp_path / "example-nogit"
+    run_debops("project", "init", "--no-git", "--no-requirements",
+               str(project_dir), env=debops_env, check=True)
+    for command in ("pull", "push"):
+        result = run_debops("project", command, str(project_dir),
+                            env=debops_env)
+        assert result.returncode == 1
+        assert "not a git repository" in result.stdout
+
+
 def test_init_creates_a_legacy_project(run_debops, tmp_path, debops_env):
     project_dir = tmp_path / "example-legacy"
 
