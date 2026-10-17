@@ -124,7 +124,7 @@ class McpServer(object):
     """Dispatch MCP requests to their handlers."""
 
     def __init__(self, name='debops', version=None, project=None,
-                 policy=None, skills=None):
+                 policy=None, skills=None, killswitch=None):
         self.name = name
         self.version = version or __version__
         # The project directory the server is confined to; tools resolve
@@ -133,6 +133,8 @@ class McpServer(object):
         self.policy = policy
         # The skill library served as resources; None when absent
         self.skills = skills
+        # The kill switch; None means always enabled
+        self.killswitch = killswitch
         self.tools = {}
         # Cancellation registry: request id -> cancel event, for the
         # requests currently being handled
@@ -160,6 +162,12 @@ class McpServer(object):
             events = list(self._active_requests.values())
         for event in events:
             event.set()
+
+    def accepting(self):
+        """Whether the server currently accepts work (kill switch)."""
+        if self.killswitch is None:
+            return True
+        return self.killswitch.is_enabled()
 
     # -- transport entry point ---------------------------------------------
 

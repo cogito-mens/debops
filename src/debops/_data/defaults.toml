@@ -88,3 +88,13 @@ facility = "user"
 # at the command line increases log level. Supported levels are:
 # DEBUG, INFO, NOTICE, WARNING, ERROR, CRITICAL
 level = "WARNING"
+
+# Configuration for the DebOps MCP server
+[mcp]
+
+# The kill switch: when false, the 'debops mcp' commands refuse to run,
+# the daemon refuses new connections, and in-flight executions are
+# terminated. Evaluated from the ambient configuration (package
+# defaults, system and user configuration); a project cannot override
+# it. See 'debops mcp disable'.
+enabled = true

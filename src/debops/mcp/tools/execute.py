@@ -86,7 +86,8 @@ def _build_ansible_args(arguments, check, allowed_options=EXECUTE_OPTIONS):
     return args
 
 
-def _execute_playbook(project, policy, arguments, context, check):
+def _execute_playbook(project, policy, arguments, context, check,
+                      enabled_check=None, on_disabled=None):
     mode = 'check' if check else 'run'
 
     with _EXECUTION_LOCK:
@@ -156,7 +157,18 @@ def _execute_playbook(project, policy, arguments, context, check):
             deadline = time.monotonic() + policy.execute_timeout
             cancelled = False
             timed_out = False
+            disabled = False
             while process.poll() is None:
+                if enabled_check is not None and not enabled_check():
+                    # The kill switch flipped mid-run: terminate this
+                    # execution and cancel everything else in flight
+                    disabled = True
+                    logger.warning('MCP functionality disabled mid-run; '
+                                   'terminating the execution')
+                    if on_disabled is not None:
+                        on_disabled()
+                    process.terminate()
+                    break
                 if context.cancelled.is_set():
                     cancelled = True
                     process.terminate()
@@ -181,15 +193,18 @@ def _execute_playbook(project, policy, arguments, context, check):
     run_hooks(project.path, 'post-' + mode,
               extra_env={'DEBOPS_RETURN_CODE': returncode})
 
-    if cancelled:
-        raise RequestCancelled()
-
     if len(output) > EXECUTE_OUTPUT_LIMIT:
         output = ('… (earlier output truncated)\n'
                   + output[-EXECUTE_OUTPUT_LIMIT:])
 
     header = '# debops {} {}\n\nexit code: {}\n\n'.format(
             mode, args[0], returncode)
+    if disabled:
+        return error_result(header + 'terminated: the MCP functionality '
+                            'was disabled mid-run (the kill switch)\n\n'
+                            + output)
+    if cancelled:
+        raise RequestCancelled()
     if timed_out:
         return error_result(header + 'timed out after {} seconds\n\n{}'
                             .format(policy.execute_timeout, output))
@@ -198,11 +213,15 @@ def _execute_playbook(project, policy, arguments, context, check):
     return text_result(header + output)
 
 
-def tool_check(project, policy, arguments, context):
+def tool_check(project, policy, arguments, context, enabled_check=None,
+               on_disabled=None):
     return _execute_playbook(project, policy, arguments, context,
-                             check=True)
+                             check=True, enabled_check=enabled_check,
+                             on_disabled=on_disabled)
 
 
-def tool_run(project, policy, arguments, context):
+def tool_run(project, policy, arguments, context, enabled_check=None,
+             on_disabled=None):
     return _execute_playbook(project, policy, arguments, context,
-                             check=False)
+                             check=False, enabled_check=enabled_check,
+                             on_disabled=on_disabled)

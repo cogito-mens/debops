@@ -14,7 +14,55 @@ Tool access can be restricted with the 'project.mcp.allow' and
 import logging
 import os
 
+from ..config import Configuration
+
 logger = logging.getLogger(__name__)
+
+
+class KillSwitch(object):
+    """The MCP kill switch: the global 'mcp.enabled' configuration option.
+
+    The value is read from the ambient configuration (package defaults,
+    system and user configuration) — never from the project, so that
+    a project cannot re-enable a server an administrator disabled. The
+    configuration is reloaded when its files change on disk, so
+    'debops mcp disable' takes effect without a restart.
+    """
+
+    def __init__(self, config_factory=None):
+        self._factory = config_factory or Configuration
+        self._config = None
+        self._config_dirs = []
+        self._fingerprint = None
+
+    def _fingerprint_now(self):
+        """A fingerprint of the ambient configuration files on disk."""
+        fingerprint = []
+        for config_dir in self._config_dirs:
+            if not os.path.isdir(config_dir):
+                fingerprint.append(None)
+                continue
+            entries = []
+            for name in sorted(os.listdir(config_dir)):
+                path = os.path.join(config_dir, name)
+                if os.path.isfile(path):
+                    entries.append((name, os.stat(path).st_mtime_ns))
+            fingerprint.append(tuple(entries))
+        return tuple(fingerprint)
+
+    def _reload(self):
+        config = self._factory()
+        self._config_dirs = list(config._config_dirs)
+        self._config = config
+        self._fingerprint = self._fingerprint_now()
+
+    def is_enabled(self):
+        if self._config is None:
+            self._reload()
+        elif self._fingerprint_now() != self._fingerprint:
+            logger.notice('MCP configuration changed, reloading')
+            self._reload()
+        return bool(self._config.raw.get('mcp', {}).get('enabled', True))
 
 
 def confine_under(root, path):

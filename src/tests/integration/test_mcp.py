@@ -323,6 +323,35 @@ def test_check_tool_runs_a_playbook_in_check_mode(run_debops, mcp_env,
     assert "hello from mcp" in text
 
 
+def test_kill_switch_flow(run_debops, mcp_env, project_dir):
+    # Enabled by default
+    result = run_debops("config", "get", "mcp.enabled",
+                        cwd=str(project_dir), env=mcp_env)
+    assert result.stdout.strip() == "true"
+
+    # The disable command writes the kill switch at the user level
+    result = run_debops("mcp", "disable", cwd=str(project_dir),
+                        env=mcp_env)
+    assert result.returncode == 0
+    killswitch = (project_dir / "config" / "debops" / "conf.d"
+                  / "mcp-killswitch.toml")
+    assert killswitch.is_file()
+    assert "enabled = false" in killswitch.read_text()
+
+    # Now the server and the other commands refuse to run
+    for args in (("mcp", "serve"), ("mcp", "skills")):
+        result = run_debops(*args, cwd=str(project_dir), env=mcp_env,
+                            input_text="")
+        assert result.returncode == 1
+        assert "disabled" in result.stderr
+
+    # Disabling again is idempotent
+    result = run_debops("mcp", "disable", cwd=str(project_dir),
+                        env=mcp_env)
+    assert result.returncode == 0
+    assert "already disabled" in result.stdout
+
+
 def test_policy_deny_hides_a_tool(run_debops, mcp_env, project_dir):
     conf_d = project_dir / ".debops" / "conf.d"
     conf_d.mkdir(parents=True)

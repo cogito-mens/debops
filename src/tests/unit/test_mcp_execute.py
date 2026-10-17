@@ -161,6 +161,28 @@ class ExecuteTestCase(unittest.TestCase):
         # Nothing reached the real stdout
         self.assertEqual(real_stdout.getvalue(), '')
 
+    def test_kill_switch_terminates_mid_run(self):
+        from debops.mcp.tools.execute import _execute_playbook
+        on_disabled = mock.Mock()
+        with mock.patch(
+                'debops.mcp.tools.execute.AnsiblePlaybookRunner'), \
+                mock.patch('debops.mcp.tools.execute.AnsibleInventory'), \
+                mock.patch('debops.mcp.tools.execute.run_hooks',
+                           return_value=True), \
+                mock.patch(
+                'debops.mcp.tools.execute.subprocess.Popen') as popen:
+            popen.return_value = make_process(returncode=-15,
+                                              poll=[None, None])
+            result = _execute_playbook(self.project, self.policy,
+                                       {'playbook': 'site'}, self.context,
+                                       check=True,
+                                       enabled_check=lambda: False,
+                                       on_disabled=on_disabled)
+        popen.return_value.terminate.assert_called_once()
+        on_disabled.assert_called_once()
+        self.assertTrue(result['isError'])
+        self.assertIn('kill switch', result['content'][0]['text'])
+
     def test_hook_abort_prevents_execution(self):
         from debops.mcp.tools.execute import _execute_playbook
         with mock.patch(

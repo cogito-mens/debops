@@ -52,7 +52,8 @@ def execution_schema(policy):
 
 def register_project_tools(server, roles_path=COLLECTION_ROLES,
                            playbooks_path=COLLECTION_PLAYBOOKS,
-                           collection_index_provider=None):
+                           collection_index_provider=None,
+                           enabled_check=None):
     """Register the built-in tools, honoring the server policy."""
     project = server.project
     policy = server.policy
@@ -268,8 +269,10 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
             'live from the managed hosts. Accepts a playbook target '
             '(see the playbooks tool) and optional limit/tags.',
             execution_schema(policy),
-            lambda arguments, context: tool_check(project, policy,
-                                                  arguments, context),
+            lambda arguments, context: tool_check(
+                project, policy, arguments, context,
+                enabled_check=enabled_check,
+                on_disabled=server.cancel_all),
             True))
     if execute_mode == 'all':
         tools.append((
@@ -279,8 +282,10 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
             'playbook target (see the playbooks tool) and optional '
             'limit/tags.',
             execution_schema(policy),
-            lambda arguments, context: tool_run(project, policy,
-                                                arguments, context),
+            lambda arguments, context: tool_run(
+                project, policy, arguments, context,
+                enabled_check=enabled_check,
+                on_disabled=server.cancel_all),
             True))
 
     for entry in tools:

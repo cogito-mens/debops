@@ -8,10 +8,11 @@ Written with 'unittest' so that the suite runs under pytest without extra
 dependencies.
 """
 
-from debops.mcp.policy import McpPolicy
+from debops.mcp.policy import McpPolicy, KillSwitch
 import os
 import shutil
 import tempfile
+import toml
 import unittest
 
 
@@ -106,6 +107,45 @@ class ToolAccessTestCase(unittest.TestCase):
                 '/srv/projects/example',
                 raw_config={'project': {'mcp': 'bogus'}}))
         self.assertTrue(policy.is_tool_allowed('role_info'))
+
+
+class KillSwitchTestCase(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-kill-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        self.conf_d = os.path.join(self.tmpdir, 'conf.d')
+        os.makedirs(self.conf_d)
+        self.marker = os.path.join(self.conf_d, 'mcp-killswitch.toml')
+
+    def _factory(self):
+        def factory():
+            raw = {}
+            if os.path.isfile(self.marker):
+                with open(self.marker) as fp:
+                    raw = toml.loads(fp.read())
+            return type('Config', (), {'raw': raw,
+                                       '_config_dirs': [self.conf_d]})()
+        return factory
+
+    def test_enabled_by_default(self):
+        switch = KillSwitch(config_factory=self._factory())
+        self.assertTrue(switch.is_enabled())
+
+    def test_disabled_by_configuration(self):
+        with open(self.marker, 'w') as fp:
+            fp.write('[mcp]\nenabled = false\n')
+        switch = KillSwitch(config_factory=self._factory())
+        self.assertFalse(switch.is_enabled())
+
+    def test_reloads_when_configuration_changes(self):
+        switch = KillSwitch(config_factory=self._factory())
+        self.assertTrue(switch.is_enabled())
+        with open(self.marker, 'w') as fp:
+            fp.write('[mcp]\nenabled = false\n')
+        self.assertFalse(switch.is_enabled())
+        os.unlink(self.marker)
+        self.assertTrue(switch.is_enabled())
 
 
 if __name__ == '__main__':

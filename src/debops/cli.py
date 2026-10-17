@@ -11,16 +11,26 @@ from .ansiblerunner import AnsibleRunner
 from .ansibleplaybookrunner import AnsiblePlaybookRunner
 from .envrunner import EnvRunner
 from .mcp.server import McpServer
-from .mcp.policy import McpPolicy
+from .mcp.policy import McpPolicy, KillSwitch
 from .mcp.skills import SkillLibrary
 from .mcp.tools import register_project_tools
 from .mcp.transport import StdioTransport, UnixSocketTransport
 from .mcp.transport import bridge_stdio_to_unix
+from xdg.BaseDirectory import xdg_config_home
 import logging
 import getpass
 import sys
 import os
 import textwrap
+
+# The kill switch file written by 'debops mcp disable'
+KILLSWITCH_FILENAME = 'mcp-killswitch.toml'
+KILLSWITCH_CONTENT = '''\
+# Written by 'debops mcp disable'. Remove this file to re-enable the
+# MCP functionality.
+[mcp]
+enabled = false
+'''
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +82,8 @@ class Interpreter(object):
                 self.do_mcp_connect(self.parsed_args.args)
             elif self.parsed_args.command == 'skills':
                 self.do_mcp_skills(self.parsed_args.args)
+            elif self.parsed_args.command == 'disable':
+                self.do_mcp_disable(self.parsed_args.args)
 
     def do_project_init(self, args):
         try:
@@ -234,7 +246,22 @@ class Interpreter(object):
         else:
             sys.exit(runner.show_env(scope=args.scope))
 
+    def _mcp_enabled(self):
+        """Check the MCP kill switch against the ambient configuration.
+
+        The project configuration is not loaded yet at this point, which
+        is what keeps a project from re-enabling a disabled server.
+        """
+        return bool(self.config.raw.get('mcp', {}).get('enabled', True))
+
+    def _mcp_refuse_if_disabled(self):
+        if not self._mcp_enabled():
+            print('Error: the DebOps MCP functionality is disabled '
+                  '(mcp.enabled is false)', file=sys.stderr)
+            sys.exit(1)
+
     def do_mcp_serve(self, args):
+        self._mcp_refuse_if_disabled()
         # The server is confined to a project directory; refuse to start
         # outside of one
         try:
@@ -246,10 +273,12 @@ class Interpreter(object):
 
         logger.notice('Serving project \'%s\' at %s, view \'%s\'',
                       project.name, project.path, project.view)
+        killswitch = KillSwitch()
         policy = McpPolicy(project)
         server = McpServer(project=project, policy=policy,
-                           skills=SkillLibrary())
-        register_project_tools(server)
+                           skills=SkillLibrary(), killswitch=killswitch)
+        register_project_tools(server,
+                               enabled_check=killswitch.is_enabled)
         try:
             if args.socket:
                 transport = UnixSocketTransport(
@@ -269,6 +298,7 @@ class Interpreter(object):
             sys.exit(130)
 
     def do_mcp_connect(self, args):
+        self._mcp_refuse_if_disabled()
         try:
             bridge_stdio_to_unix(args.socket)
         except (ConnectionError, OSError) as errmsg:
@@ -278,6 +308,7 @@ class Interpreter(object):
             sys.exit(130)
 
     def do_mcp_skills(self, args):
+        self._mcp_refuse_if_disabled()
         # Skills are shipped with the package and do not depend on
         # a project directory
         library = SkillLibrary()
@@ -302,6 +333,60 @@ class Interpreter(object):
                 print(textwrap.fill(skill['description'], width=79,
                                     initial_indent='    ',
                                     subsequent_indent='    '))
+
+    def _killswitch_writable(self, path):
+        """Check if a configuration directory is writable (or can be
+        created)."""
+        if os.path.isdir(path):
+            return os.access(path, os.W_OK)
+        parent = os.path.dirname(path)
+        return os.path.isdir(parent) and os.access(parent, os.W_OK)
+
+    def do_mcp_disable(self, args):
+        # Deliberately not gated by the kill switch itself: disabling
+        # must always be possible, and it is idempotent
+        etc_conf = os.path.join('/etc', 'debops', 'conf.d')
+        user_conf = os.path.join(xdg_config_home, 'debops', 'conf.d')
+        if self._killswitch_writable(etc_conf):
+            target_dir, level = etc_conf, 'system'
+        else:
+            target_dir, level = user_conf, 'user'
+        target = os.path.join(target_dir, KILLSWITCH_FILENAME)
+
+        if not self._mcp_enabled():
+            if os.path.isfile(target):
+                print('The DebOps MCP functionality is already disabled '
+                      '(via {})'.format(target))
+            else:
+                print('The DebOps MCP functionality is already disabled '
+                      'by the configuration (see debops config list)')
+            return
+
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            with open(target, 'w') as fp:
+                fp.write(KILLSWITCH_CONTENT)
+        except OSError as errmsg:
+            print('Error: cannot write the kill switch:', errmsg,
+                  file=sys.stderr)
+            sys.exit(1)
+
+        print('The DebOps MCP functionality is now disabled '
+              '({} level: {})'.format(level, target))
+        print('Running servers refuse new connections immediately and '
+              'terminate in-flight executions within a second.')
+        print('To re-enable it, remove the file.')
+
+        # A later configuration layer (the user level is read after
+        # /etc) could still override the kill switch
+        if self._mcp_enabled_after_write():
+            print('Warning: a later configuration layer still enables '
+                  'the MCP functionality; see debops config list',
+                  file=sys.stderr)
+
+    def _mcp_enabled_after_write(self):
+        return bool(Configuration().raw.get('mcp', {})
+                    .get('enabled', True))
 
     def do_config_list(self, args):
         try:

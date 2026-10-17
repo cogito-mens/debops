@@ -384,7 +384,9 @@ Commands:
 Commands:
     serve    run an MCP server over stdio or a UNIX socket
     connect  bridge stdio to an MCP server UNIX socket
-    skills   list or print the DebOps skills shipped with the package''')
+    skills   list or print the DebOps skills shipped with the package
+    disable  disable the MCP functionality on this host or account
+             (the kill switch)''')
         parser.add_argument('command', help='MCP command to run')
         self._command = parser.parse_args(self.args[2:3])
         self.command = self._command.command
@@ -432,6 +434,14 @@ Commands:
                 usage='debops mcp skills [<args>] [<skill>]')
         parser.add_argument('skill', type=str, nargs='?',
                             help='print this skill instead of listing')
+        self.args = parser.parse_args(self.args[3:])
+
+    def do_mcp_disable(self):
+        parser = argparse.ArgumentParser(
+                parents=[self.global_parser],
+                description='disable the DebOps MCP functionality on this '
+                            'host or account (the kill switch)',
+                usage='debops mcp disable [<args>]')
         self.args = parser.parse_args(self.args[3:])
 
     def do_config_list(self):

@@ -234,6 +234,37 @@ class UnixSocketTransportTestCase(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             transport._prepare_socket_path()
 
+    def test_kill_switch_refuses_connections(self):
+        disabled = type('Switch', (),
+                        {'is_enabled': lambda self: False})()
+        server = McpServer(killswitch=disabled)
+        path = os.path.join(self.tmpdir, 'killed.sock')
+        transport = UnixSocketTransport(path)
+        thread = threading.Thread(target=transport.serve, args=(server,),
+                                  daemon=True)
+        thread.start()
+        try:
+            for _ in range(500):
+                if os.path.exists(path):
+                    break
+                time.sleep(0.01)
+
+            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            connection.connect(path)
+            connection.sendall(make_discover_request(1).encode('utf-8')
+                               + b'\n')
+            reader = connection.makefile('rb')
+            # The connection was closed without a response; pending
+            # unread data can turn that into a reset instead of an EOF
+            try:
+                self.assertIsNone(rpc.read_message(reader))
+            except ConnectionResetError:
+                pass
+            connection.close()
+        finally:
+            transport.shutdown()
+            thread.join(timeout=5)
+
 
 if __name__ == '__main__':
     unittest.main()

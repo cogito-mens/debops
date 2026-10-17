@@ -183,6 +183,12 @@ class UnixSocketTransport(object):
                     connection, _ = listener.accept()
                 except socket.timeout:
                     continue
+                if not server.accepting():
+                    # The kill switch is active: refuse the connection
+                    logger.notice('Connection refused: the MCP '
+                                  'functionality is disabled')
+                    connection.close()
+                    continue
                 if not self._semaphore.acquire(blocking=False):
                     logger.warning('Connection limit reached, rejecting '
                                    'a connection')
