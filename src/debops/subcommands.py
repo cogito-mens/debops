@@ -73,6 +73,8 @@ Commands:
     init    initialize new project directory
     mkview  create a new infrastructure view
     commit  commit current changes in git repository
+    pull    pull project updates from the git origin
+    push    push project commits to the git origin
     refresh refresh existing project directory
     unlock  decrypt secrets in project directory
     lock    encrypt secrets in project directory
@@ -219,6 +221,30 @@ Commands:
         parser = argparse.ArgumentParser(
                 description='commit current changes in git repository',
                 usage='debops project commit [<args>] <project_dir>')
+        parser.add_argument('-v', '--verbose', action="count",
+                            help='increase output verbosity '
+                                 '(e.g., -vv is more than -v)')
+        parser.add_argument('project_dir', type=str, nargs='?',
+                            default=os.getcwd(),
+                            help='path to the project directory')
+        self.args = parser.parse_args(self.args[3:])
+
+    def do_project_pull(self):
+        parser = argparse.ArgumentParser(
+                description='pull project updates from the git origin',
+                usage='debops project pull [<args>] <project_dir>')
+        parser.add_argument('-v', '--verbose', action="count",
+                            help='increase output verbosity '
+                                 '(e.g., -vv is more than -v)')
+        parser.add_argument('project_dir', type=str, nargs='?',
+                            default=os.getcwd(),
+                            help='path to the project directory')
+        self.args = parser.parse_args(self.args[3:])
+
+    def do_project_push(self):
+        parser = argparse.ArgumentParser(
+                description='push project commits to the git origin',
+                usage='debops project push [<args>] <project_dir>')
         parser.add_argument('-v', '--verbose', action="count",
                             help='increase output verbosity '
                                  '(e.g., -vv is more than -v)')

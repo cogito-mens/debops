@@ -59,6 +59,10 @@ class Interpreter(object):
                 self.do_project_mkview(self.parsed_args.args)
             elif self.parsed_args.command == 'commit':
                 self.do_project_commit(self.parsed_args.args)
+            elif self.parsed_args.command == 'pull':
+                self.do_project_pull(self.parsed_args.args)
+            elif self.parsed_args.command == 'push':
+                self.do_project_push(self.parsed_args.args)
             elif self.parsed_args.command == 'venv':
                 self.do_project_venv(self.parsed_args.args)
 
@@ -159,6 +163,41 @@ class Interpreter(object):
                 PermissionError) as errmsg:
             print('Error:', errmsg)
             sys.exit(1)
+
+    def do_project_pull(self, args):
+        try:
+            project = ProjectDir(path=args.project_dir, config=self.config)
+            report = project.pull()
+        except (IsADirectoryError, NotADirectoryError,
+                PermissionError, ValueError) as errmsg:
+            print('Error:', errmsg)
+            sys.exit(1)
+
+        if not report['changed']:
+            print('Already up to date.')
+            return
+        print('Updated {} → {}'.format(report['before'][:12],
+                                       report['after'][:12]))
+        print('Files changed: {}'.format(report['files_changed']))
+        for subject in report['commits']:
+            print('- {}'.format(subject))
+
+    def do_project_push(self, args):
+        try:
+            project = ProjectDir(path=args.project_dir, config=self.config)
+            report = project.push()
+        except (IsADirectoryError, NotADirectoryError,
+                PermissionError, ValueError) as errmsg:
+            print('Error:', errmsg)
+            sys.exit(1)
+
+        if not report['pushed']:
+            print('Nothing to push, the project is up to date with '
+                  'the origin.')
+            return
+        print('Pushed {} commit(s):'.format(len(report['commits'])))
+        for subject in report['commits']:
+            print('- {}'.format(subject))
 
     def do_project_venv(self, args):
         try:

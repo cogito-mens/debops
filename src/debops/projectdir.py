@@ -1599,6 +1599,105 @@ class ProjectDir(object):
 
         run_hooks(self.path, 'post-commit')
 
+    def _sync_precheck(self):
+        """Shared guards for pull() and push().
+
+        Returns (repo, branch). The project must be a clean git working
+        tree with an 'origin' remote and an upstream for the current
+        branch; anything else is a ValueError for the caller to show.
+        """
+        if not self._is_git_repo(self.path):
+            raise ValueError('the project directory is not a git '
+                             'repository')
+        repo = git.Repo(self.path)
+        if repo.is_dirty(untracked_files=True):
+            raise ValueError('the project directory has uncommitted '
+                             'changes; commit or stash them first')
+        try:
+            repo.remote('origin')
+        except ValueError:
+            raise ValueError("the project has no 'origin' remote "
+                             "configured")
+        try:
+            branch = repo.active_branch
+        except TypeError:
+            raise ValueError('the project repository is in a detached '
+                             'HEAD state')
+        if branch.tracking_branch() is None:
+            raise ValueError('the current branch has no upstream '
+                             'configured')
+        return repo, branch
+
+    def _git_env(self):
+        """Environment for non-interactive git invocations."""
+        env = os.environ.copy()
+        env['GIT_TERMINAL_PROMPT'] = '0'
+        env['GIT_SSH_COMMAND'] = 'ssh -oBatchMode=yes'
+        return env
+
+    def pull(self):
+        """Pull the latest project state from the configured origin.
+
+        Only fast-forward merges are accepted; anything else means the
+        origin was rewritten and needs a human to look at it. Returns
+        a dict describing what changed.
+        """
+        repo, branch = self._sync_precheck()
+        git_cmd = self.config.raw['binaries']['git']
+        before = repo.head.commit.hexsha
+        try:
+            result = subprocess.run(
+                    [git_cmd, 'pull', '--ff-only'],
+                    cwd=self.path, env=self._git_env(),
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    universal_newlines=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            raise ValueError('git pull timed out')
+        if result.returncode != 0:
+            raise ValueError('git pull failed: '
+                             + result.stdout.strip()[-1000:])
+
+        # Re-read the repository state after the pull
+        repo = git.Repo(self.path)
+        after = repo.head.commit.hexsha
+        report = {'action': 'pull', 'before': before, 'after': after,
+                  'changed': before != after, 'commits': [],
+                  'files_changed': 0}
+        if report['changed']:
+            log = repo.git.log('--format=%s', '{}..{}'.format(before,
+                                                              after))
+            report['commits'] = log.splitlines() if log else []
+            diff = repo.git.diff('--name-only', before, after)
+            report['files_changed'] = len(diff.splitlines()) if diff else 0
+        return report
+
+    def push(self):
+        """Push the project's committed state to the configured origin.
+
+        Only already-committed history is sent; the working tree must be
+        clean. Returns a dict describing what was pushed.
+        """
+        repo, branch = self._sync_precheck()
+        git_cmd = self.config.raw['binaries']['git']
+        upstream = branch.tracking_branch().name
+        ahead = repo.git.log('--format=%s', '{}..{}'.format(upstream,
+                                                            branch.name))
+        commits = ahead.splitlines() if ahead else []
+        if not commits:
+            return {'action': 'push', 'pushed': False, 'commits': []}
+        try:
+            result = subprocess.run(
+                    [git_cmd, 'push'],
+                    cwd=self.path, env=self._git_env(),
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    universal_newlines=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            raise ValueError('git push timed out')
+        if result.returncode != 0:
+            raise ValueError('git push failed: '
+                             + result.stdout.strip()[-1000:])
+        return {'action': 'push', 'pushed': True, 'commits': commits}
+
     def refresh(self):
         logger.debug("Refresing project directory")
 

@@ -4,6 +4,7 @@
 
 """End-to-end tests for the project directory lifecycle."""
 
+import os
 import re
 import shutil
 import socket
@@ -30,6 +31,89 @@ def _has_network():
 
 network = pytest.mark.skipif(not _has_network(),
                              reason="network is not available")
+
+
+def git_env(debops_env):
+    """Environment for direct git calls: the test identity is provided
+    through the environment, and global/system git configuration is off."""
+    return {**os.environ, **debops_env}
+
+
+def test_project_pull_and_push(run_debops, tmp_path, debops_env):
+    env = git_env(debops_env)
+
+    # A bare repository acts as the origin
+    origin_dir = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", str(origin_dir)],
+                   env=env, check=True, capture_output=True)
+
+    # The project, with the origin configured
+    project_dir = tmp_path / "example"
+    run_debops("project", "init", "--no-requirements", str(project_dir),
+               env=debops_env, check=True)
+    subprocess.run(["git", "-C", str(project_dir), "remote", "add",
+                    "origin", str(origin_dir)], env=env, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "-C", str(project_dir), "push", "-u",
+                    "origin", "HEAD"], env=env, check=True,
+                   capture_output=True)
+
+    # Nothing to push right away
+    result = run_debops("project", "push", str(project_dir),
+                        env=debops_env)
+    assert result.returncode == 0
+    assert "Nothing to push" in result.stdout
+
+    # A commit in the project becomes pushable
+    (project_dir / "note.txt").write_text("a change\n")
+    subprocess.run(["git", "-C", str(project_dir), "add", "note.txt"],
+                   env=env, check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(project_dir), "commit", "-m",
+                    "A project change"], env=env, check=True,
+                   capture_output=True)
+    result = run_debops("project", "push", str(project_dir),
+                        env=debops_env)
+    assert result.returncode == 0
+    assert "Pushed 1 commit(s)" in result.stdout
+    assert "A project change" in result.stdout
+
+    # A change elsewhere arrives via pull
+    other_dir = tmp_path / "other"
+    subprocess.run(["git", "clone", str(origin_dir), str(other_dir)],
+                   env=env, check=True, capture_output=True)
+    (other_dir / "elsewhere.txt").write_text("from elsewhere\n")
+    subprocess.run(["git", "-C", str(other_dir), "add",
+                    "elsewhere.txt"], env=env, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "-C", str(other_dir), "commit", "-m",
+                    "A change elsewhere"], env=env, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "-C", str(other_dir), "push"], env=env,
+                   check=True, capture_output=True)
+
+    result = run_debops("project", "pull", str(project_dir),
+                        env=debops_env)
+    assert result.returncode == 0
+    assert "Updated" in result.stdout
+    assert "A change elsewhere" in result.stdout
+    assert (project_dir / "elsewhere.txt").is_file()
+
+    # A dirty project refuses to pull
+    (project_dir / "note.txt").write_text("uncommitted\n")
+    result = run_debops("project", "pull", str(project_dir),
+                        env=debops_env)
+    assert result.returncode == 1
+    assert "uncommitted changes" in result.stdout
+
+
+def test_project_pull_without_origin(run_debops, tmp_path, debops_env):
+    project_dir = tmp_path / "example-noorigin"
+    run_debops("project", "init", "--no-requirements", str(project_dir),
+               env=debops_env, check=True)
+    result = run_debops("project", "pull", str(project_dir),
+                        env=debops_env)
+    assert result.returncode == 1
+    assert "no 'origin' remote" in result.stdout
 
 
 def test_init_creates_a_legacy_project(run_debops, tmp_path, debops_env):
