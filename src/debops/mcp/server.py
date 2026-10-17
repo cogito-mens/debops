@@ -14,6 +14,7 @@ import logging
 import threading
 
 from . import rpc
+from .skills import SKILL_URI_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -123,13 +124,15 @@ class McpServer(object):
     """Dispatch MCP requests to their handlers."""
 
     def __init__(self, name='debops', version=None, project=None,
-                 policy=None):
+                 policy=None, skills=None):
         self.name = name
         self.version = version or __version__
         # The project directory the server is confined to; tools resolve
         # all paths against it
         self.project = project
         self.policy = policy
+        # The skill library served as resources; None when absent
+        self.skills = skills
         self.tools = {}
         # Cancellation registry: request id -> cancel event, for the
         # requests currently being handled
@@ -141,6 +144,9 @@ class McpServer(object):
             'tools/call': self._tools_call,
             'notifications/cancelled': self._cancelled,
         }
+        if self.skills is not None:
+            self._methods['resources/list'] = self._resources_list
+            self._methods['resources/read'] = self._resources_read
 
     def register_tool(self, name, description, input_schema, handler,
                       output_schema=None, needs_context=False):
@@ -234,6 +240,11 @@ class McpServer(object):
             # A cancelled request gets no response
             logger.debug('Request %s was cancelled', request_id)
             return None
+        except rpc.JsonRpcError as errmsg:
+            # Handler errors must echo the request id
+            if errmsg.request_id is None:
+                errmsg.request_id = request_id
+            raise
         if is_notification:
             return None
         if result is None:
@@ -269,10 +280,13 @@ class McpServer(object):
                     request_id=request_id)
 
     def _discover(self, params, context):
+        capabilities = {'tools': {}}
+        if self.skills is not None:
+            capabilities['resources'] = {}
         return {
             'protocolVersion': PROTOCOL_VERSION,
             'serverInfo': {'name': self.name, 'version': self.version},
-            'capabilities': {'tools': {}},
+            'capabilities': capabilities,
             'authorization': None,
         }
 
@@ -316,6 +330,28 @@ class McpServer(object):
             if request_id is not None:
                 with self._active_lock:
                     self._active_requests.pop(request_id, None)
+
+    def _resources_list(self, params, context):
+        return {'resources': self.skills.list(), 'nextCursor': None}
+
+    def _resources_read(self, params, context):
+        uri = params.get('uri')
+        if not isinstance(uri, str) or not uri.startswith(SKILL_URI_PREFIX):
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_PARAMS, 'Invalid params',
+                    data={'details': 'unsupported URI scheme; '
+                          'expected {}...'.format(SKILL_URI_PREFIX)})
+        try:
+            content = self.skills.read(uri)
+        except ValueError as errmsg:
+            raise rpc.JsonRpcError(rpc.INVALID_PARAMS, 'Invalid params',
+                                   data={'details': str(errmsg)})
+        if content is None:
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_PARAMS, 'Invalid params',
+                    data={'details': 'resource not found: {}'.format(uri)})
+        return {'contents': [{'uri': uri, 'mimeType': 'text/markdown',
+                              'text': content}]}
 
     def _cancelled(self, params, context):
         target = params.get('requestId')

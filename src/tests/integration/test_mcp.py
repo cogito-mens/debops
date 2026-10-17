@@ -82,7 +82,8 @@ def test_serve_stdio_reports_parse_errors(run_debops, mcp_env,
 
 def test_serve_stdio_reports_unknown_methods(run_debops, mcp_env,
                                              project_dir):
-    request = ('{"jsonrpc": "2.0", "id": 5, "method": "resources/list"}\n')
+    # prompts/* are not implemented (skills are served as resources)
+    request = ('{"jsonrpc": "2.0", "id": 5, "method": "prompts/list"}\n')
     result = run_debops("mcp", "serve", cwd=str(project_dir),
                         env=mcp_env, input_text=request)
 

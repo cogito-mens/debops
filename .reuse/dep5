@@ -98,3 +98,8 @@ Files: lib/tests/inventory/tinc/gateway/tinc-gateway.json
 Copyright: 2018, Maciej Delmanowski <drybjed@gmail.com>
            2018, DebOps <https://debops.org/>
 License: GPL-3.0-or-later
+
+Files: src/debops/_data/skills/*
+Copyright: 2026 Maciej Delmanowski <drybjed@gmail.com>
+           2026 DebOps <https://debops.org/>
+License: GPL-3.0-or-later

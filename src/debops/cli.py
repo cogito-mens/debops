@@ -12,6 +12,7 @@ from .ansibleplaybookrunner import AnsiblePlaybookRunner
 from .envrunner import EnvRunner
 from .mcp.server import McpServer
 from .mcp.policy import McpPolicy
+from .mcp.skills import SkillLibrary
 from .mcp.tools import register_project_tools
 from .mcp.transport import StdioTransport, UnixSocketTransport
 from .mcp.transport import bridge_stdio_to_unix
@@ -19,6 +20,7 @@ import logging
 import getpass
 import sys
 import os
+import textwrap
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,8 @@ class Interpreter(object):
                 self.do_mcp_serve(self.parsed_args.args)
             elif self.parsed_args.command == 'connect':
                 self.do_mcp_connect(self.parsed_args.args)
+            elif self.parsed_args.command == 'skills':
+                self.do_mcp_skills(self.parsed_args.args)
 
     def do_project_init(self, args):
         try:
@@ -243,7 +247,8 @@ class Interpreter(object):
         logger.notice('Serving project \'%s\' at %s, view \'%s\'',
                       project.name, project.path, project.view)
         policy = McpPolicy(project)
-        server = McpServer(project=project, policy=policy)
+        server = McpServer(project=project, policy=policy,
+                           skills=SkillLibrary())
         register_project_tools(server)
         try:
             if args.socket:
@@ -271,6 +276,32 @@ class Interpreter(object):
             sys.exit(1)
         except KeyboardInterrupt:
             sys.exit(130)
+
+    def do_mcp_skills(self, args):
+        # Skills are shipped with the package and do not depend on
+        # a project directory
+        library = SkillLibrary()
+        if args.skill:
+            try:
+                content = library.read('skill://' + args.skill)
+            except ValueError as errmsg:
+                print('Error:', errmsg, file=sys.stderr)
+                sys.exit(1)
+            if content is None:
+                print('Error: skill not found:', args.skill,
+                      file=sys.stderr)
+                sys.exit(1)
+            print(content, end='')
+        else:
+            first = True
+            for skill in library.list():
+                if not first:
+                    print()
+                first = False
+                print(skill['name'])
+                print(textwrap.fill(skill['description'], width=79,
+                                    initial_indent='    ',
+                                    subsequent_indent='    '))
 
     def do_config_list(self, args):
         try:

@@ -383,7 +383,8 @@ Commands:
 
 Commands:
     serve    run an MCP server over stdio or a UNIX socket
-    connect  bridge stdio to an MCP server UNIX socket''')
+    connect  bridge stdio to an MCP server UNIX socket
+    skills   list or print the DebOps skills shipped with the package''')
         parser.add_argument('command', help='MCP command to run')
         self._command = parser.parse_args(self.args[2:3])
         self.command = self._command.command
@@ -421,6 +422,16 @@ Commands:
                 usage='debops mcp connect [<args>] <socket>')
         parser.add_argument('socket', type=str,
                             help='path of the MCP server UNIX socket')
+        self.args = parser.parse_args(self.args[3:])
+
+    def do_mcp_skills(self):
+        parser = argparse.ArgumentParser(
+                parents=[self.global_parser],
+                description='list or print the DebOps skills shipped '
+                            'with the package',
+                usage='debops mcp skills [<args>] [<skill>]')
+        parser.add_argument('skill', type=str, nargs='?',
+                            help='print this skill instead of listing')
         self.args = parser.parse_args(self.args[3:])
 
     def do_config_list(self):
