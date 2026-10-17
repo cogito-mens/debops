@@ -36,6 +36,11 @@ SERVER_INFO_KEY = 'io.modelcontextprotocol/serverInfo'
 # and unknown namespaced keys are ignored by design
 CLACKS_OVERHEAD = {'org.debops/clacksOverhead': 'GNU Terry Pratchett'}
 
+# The project the server is confined to, so that clients can tell
+# multiple instances apart
+PROJECT_META_KEY = 'org.debops/project'
+VIEW_META_KEY = 'org.debops/view'
+
 
 class RequestCancelled(Exception):
     """Raised by a tool when its request was cancelled by the client.
@@ -171,6 +176,19 @@ class McpServer(object):
 
     # -- transport entry point ---------------------------------------------
 
+    def _base_meta(self):
+        """The '_meta' carried by every response.
+
+        Besides the clacks overhead it identifies the project and the
+        infrastructure view the server is confined to, so that clients
+        can tell multiple instances apart.
+        """
+        meta = dict(CLACKS_OVERHEAD)
+        if self.project is not None:
+            meta[PROJECT_META_KEY] = self.project.name
+            meta[VIEW_META_KEY] = self.project.view
+        return meta
+
     def handle_bytes(self, data, notify=None):
         """Handle one raw message; return the response or None."""
         try:
@@ -179,7 +197,7 @@ class McpServer(object):
             logger.warning('Rejecting an unparseable message: %s',
                            errmsg.message)
             response = errmsg.to_response()
-            response['_meta'] = dict(CLACKS_OVERHEAD)
+            response['_meta'] = self._base_meta()
             return response
         return self.handle(message, notify)
 
@@ -189,13 +207,13 @@ class McpServer(object):
             return self._dispatch(message, notify)
         except rpc.JsonRpcError as errmsg:
             response = errmsg.to_response()
-            response['_meta'] = dict(CLACKS_OVERHEAD)
+            response['_meta'] = self._base_meta()
             return response
         except Exception:
             logger.exception('Internal error while handling a request')
             response = rpc.make_error(message.get('id'),
                                       rpc.INTERNAL_ERROR, 'Internal error')
-            response['_meta'] = dict(CLACKS_OVERHEAD)
+            response['_meta'] = self._base_meta()
             return response
 
     def _dispatch(self, message, notify=None):
@@ -259,7 +277,7 @@ class McpServer(object):
             result = {}
         result.setdefault('resultType', 'complete')
         response = rpc.make_result(request_id, result)
-        response['_meta'] = dict(CLACKS_OVERHEAD)
+        response['_meta'] = self._base_meta()
         if method == 'server/discover':
             response['_meta'][SERVER_INFO_KEY] = {
                 'name': self.name, 'version': self.version}

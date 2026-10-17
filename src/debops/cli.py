@@ -347,9 +347,14 @@ class Interpreter(object):
             sys.exit(1)
         result = response.get('result', {})
         server_info = result.get('serverInfo', {})
+        meta = response.get('_meta', {})
         capabilities = ', '.join(sorted(result.get('capabilities', {})))
         print('debops mcp server at {}:'.format(args.socket))
         print('    name: {}'.format(server_info.get('name', '?')))
+        if meta.get('org.debops/project') is not None:
+            print('    project: {}'.format(meta['org.debops/project']))
+        if meta.get('org.debops/view') is not None:
+            print('    view: {}'.format(meta['org.debops/view']))
         print('    version: {}'.format(server_info.get('version', '?')))
         print('    protocol: {}'.format(result.get('protocolVersion',
                                                    '?')))

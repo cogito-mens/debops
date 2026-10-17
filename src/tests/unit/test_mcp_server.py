@@ -290,6 +290,21 @@ class ClacksOverheadTestCase(unittest.TestCase):
         self.assertEqual(response['_meta']['org.debops/clacksOverhead'],
                          'GNU Terry Pratchett')
 
+    def test_project_and_view_in_meta_when_present(self):
+        project = type('Project', (), {'name': 'containers',
+                                       'view': 'system'})()
+        server = McpServer(project=project)
+        response = server.handle(make_request('server/discover'))
+        self.assertEqual(response['_meta']['org.debops/project'],
+                         'containers')
+        self.assertEqual(response['_meta']['org.debops/view'], 'system')
+
+    def test_no_project_no_project_meta(self):
+        server = McpServer()
+        response = server.handle(make_request('server/discover'))
+        self.assertNotIn('org.debops/project', response['_meta'])
+        self.assertNotIn('org.debops/view', response['_meta'])
+
 
 if __name__ == '__main__':
     unittest.main()

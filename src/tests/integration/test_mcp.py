@@ -371,6 +371,8 @@ def test_connect_ping(run_debops, mcp_env, tmp_path):
         assert "name: debops" in result.stdout
         assert "protocol: 2026-07-28" in result.stdout
         assert "capabilities: tools" in result.stdout
+        # The test server is not confined to a project
+        assert "project:" not in result.stdout
 
         result = run_debops("mcp", "connect", socket_path, "--ping",
                             "--raw", env=mcp_env)
@@ -380,6 +382,36 @@ def test_connect_ping(run_debops, mcp_env, tmp_path):
     finally:
         transport.shutdown()
         thread.join(timeout=5)
+
+
+def test_connect_ping_shows_project_and_view(run_debops,
+                                             debops_source_dir, mcp_env,
+                                             project_dir, tmp_path):
+    socket_path = str(tmp_path / "project.sock")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+            [debops_source_dir,
+             env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    env.update(mcp_env)
+    server = subprocess.Popen(
+            [sys.executable, "-m", "debops", "mcp", "serve",
+             "--socket", socket_path],
+            cwd=str(project_dir), env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(500):
+            if os.path.exists(socket_path):
+                break
+            time.sleep(0.01)
+
+        result = run_debops("mcp", "connect", socket_path, "--ping",
+                            env=mcp_env)
+        assert result.returncode == 0
+        assert "project: " + project_dir.name in result.stdout
+        assert "view: system" in result.stdout
+    finally:
+        server.terminate()
+        server.wait(timeout=10)
 
 
 def test_connect_ping_missing_socket(run_debops, mcp_env, tmp_path):
