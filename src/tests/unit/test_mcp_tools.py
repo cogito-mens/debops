@@ -51,6 +51,29 @@ dependencies:
   - debops.otherrole
 '''
 
+ROLE_TASKS = '''---
+- name: Install the test packages
+  ansible.builtin.apt:
+    name: testrole
+  when: testrole__enabled | bool
+  tags: [ 'role::testrole', 'skip::testrole' ]
+
+- name: Configure the test service
+  ansible.builtin.template:
+    src: 'etc/testrole/config.j2'
+    dest: '/etc/testrole/config'
+  tags: [ 'role::testrole' ]
+
+- name: Internal helper tasks
+  ansible.builtin.include_tasks: 'extra.yml'
+'''
+
+ROLE_TASKS_EXTRA = '''---
+- name: Extra helper task
+  ansible.builtin.debug:
+    msg: 'extra'
+'''
+
 # A role with split defaults in a 'defaults/main/' directory; files are
 # read in alphabetical order and later files win per variable
 SPLIT_DEFAULTS_A = '''---
@@ -166,13 +189,22 @@ class ToolsTestCase(unittest.TestCase):
         os.makedirs(os.path.join(role, 'defaults'))
         os.makedirs(os.path.join(role, 'meta'))
         os.makedirs(os.path.join(role, 'tasks'))
-        os.makedirs(os.path.join(role, 'templates'))
+        os.makedirs(os.path.join(role, 'templates', 'etc', 'testrole'))
+        os.makedirs(os.path.join(role, 'files', 'etc'))
         with open(os.path.join(role, 'defaults', 'main.yml'), 'w') as fp:
             fp.write(ROLE_DEFAULTS)
         with open(os.path.join(role, 'meta', 'main.yml'), 'w') as fp:
             fp.write(ROLE_META)
         with open(os.path.join(role, 'tasks', 'main.yml'), 'w') as fp:
-            fp.write('---\n[]\n')
+            fp.write(ROLE_TASKS)
+        with open(os.path.join(role, 'tasks', 'extra.yml'), 'w') as fp:
+            fp.write(ROLE_TASKS_EXTRA)
+        with open(os.path.join(role, 'templates', 'etc', 'testrole',
+                               'config.j2'), 'w') as fp:
+            fp.write('# {{ ansible_managed }}\n')
+        with open(os.path.join(role, 'files', 'etc', 'motd.txt'),
+                  'w') as fp:
+            fp.write('A static file\n')
 
         splitrole = os.path.join(self.roles_path, 'splitrole')
         os.makedirs(os.path.join(splitrole, 'defaults', 'main'))
@@ -287,7 +319,8 @@ class ToolsTestCase(unittest.TestCase):
                           'config_get', 'inventory_query', 'playbook_info',
                           'playbooks', 'project_files', 'project_pull',
                           'project_push', 'project_read', 'project_status',
-                          'role_info', 'role_variables'])
+                          'role_files', 'role_info', 'role_tasks',
+                          'role_templates', 'role_variables'])
 
     def test_denied_tool_is_not_registered(self):
         self.project.config.raw['project'] = {'mcp': {'deny': ['role_info']}}
@@ -696,6 +729,87 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('debops.debops', text)
         self.assertIn('local.local', text)
         self.assertNotIn('grafana', text)
+
+    # -- role_tasks / role_templates / role_files ----------------------------
+
+    def test_role_tasks_overview(self):
+        response = self.call_tool('role_tasks', {'name': 'testrole'})
+        text = self.result_text(response)
+        self.assertIn('- `main` — 3 tasks', text)
+        self.assertIn('- `extra` — 1 task', text)
+        self.assertIn('(4 tasks)', text)
+
+    def test_role_tasks_file_brief(self):
+        response = self.call_tool('role_tasks',
+                                  {'name': 'testrole', 'file': 'main'})
+        text = self.result_text(response)
+        self.assertIn('- Install the test packages — ansible.builtin.apt',
+                      text)
+        self.assertIn('- Internal helper tasks — '
+                      'ansible.builtin.include_tasks', text)
+        self.assertNotIn('when:', text)
+
+    def test_role_tasks_file_full(self):
+        response = self.call_tool('role_tasks',
+                                  {'name': 'testrole', 'file': 'main',
+                                   'detail': 'full'})
+        text = self.result_text(response)
+        self.assertIn('when: testrole__enabled | bool', text)
+        self.assertIn('tags: role::testrole, skip::testrole', text)
+
+    def test_role_tasks_filter(self):
+        response = self.call_tool('role_tasks',
+                                  {'name': 'testrole', 'file': 'main',
+                                   'filter': 'configure'})
+        text = self.result_text(response)
+        self.assertIn('Configure the test service', text)
+        self.assertNotIn('Install the test packages', text)
+
+    def test_role_tasks_unknown_file(self):
+        response = self.call_tool('role_tasks',
+                                  {'name': 'testrole', 'file': 'nosuch'})
+        self.assertTrue(response['result']['isError'])
+
+    def test_role_tasks_traversal_rejected(self):
+        response = self.call_tool('role_tasks',
+                                  {'name': 'testrole',
+                                   'file': '../defaults/main'})
+        self.assertTrue(response['result']['isError'])
+
+    def test_role_tasks_no_tasks_dir(self):
+        response = self.call_tool('role_tasks', {'name': 'splitrole'})
+        self.assertTrue(response['result']['isError'])
+        self.assertIn('no tasks', self.result_text(response))
+
+    def test_role_templates(self):
+        response = self.call_tool('role_templates', {'name': 'testrole'})
+        text = self.result_text(response)
+        self.assertIn('- etc/testrole/config.j2', text)
+
+        response = self.call_tool('role_templates',
+                                  {'name': 'testrole',
+                                   'path': 'etc/testrole/config.j2'})
+        self.assertIn('ansible_managed', self.result_text(response))
+
+    def test_role_templates_traversal_rejected(self):
+        response = self.call_tool('role_templates',
+                                  {'name': 'testrole',
+                                   'path': '../../defaults/main.yml'})
+        self.assertTrue(response['result']['isError'])
+
+    def test_role_files(self):
+        response = self.call_tool('role_files', {'name': 'testrole'})
+        self.assertIn('- etc/motd.txt', self.result_text(response))
+
+        response = self.call_tool('role_files',
+                                  {'name': 'testrole',
+                                   'path': 'etc/motd.txt'})
+        self.assertIn('A static file', self.result_text(response))
+
+    def test_role_files_missing(self):
+        response = self.call_tool('role_files', {'name': 'splitrole'})
+        self.assertTrue(response['result']['isError'])
+        self.assertIn('no files', self.result_text(response))
 
     def test_bundled_content_off_drops_debops_even_project_local(self):
         project_root = os.path.join(self.project.path, 'ansible',

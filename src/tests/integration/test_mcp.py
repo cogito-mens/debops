@@ -155,7 +155,8 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
                              "config_get", "inventory_query",
                              "playbook_info", "playbooks", "project_files",
                              "project_pull", "project_push", "project_read",
-                             "project_status", "role_info",
+                             "project_status", "role_files", "role_info",
+                             "role_tasks", "role_templates",
                              "role_variables"]
 
 
@@ -229,6 +230,29 @@ def test_inventory_query_via_stdio(run_debops, mcp_env, project_dir):
     (response,) = read_json_lines(result.stdout)
     assert response["result"]["isError"] is False
     assert "@testgroup" in response["result"]["content"][0]["text"]
+
+
+def test_role_inspection_via_stdio(run_debops, mcp_env, project_dir):
+    requests = (
+        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "role_tasks",
+                               "arguments": {"name": "nginx",
+                                             "file": "main"}}}) + "\n"
+        + json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                      "params": {"name": "role_templates",
+                                 "arguments": {"name": "nginx"}}}) + "\n"
+    )
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=requests)
+
+    assert result.returncode == 0
+    responses = {response["id"]: response
+                 for response in read_json_lines(result.stdout)}
+    tasks_text = responses[1]["result"]["content"][0]["text"]
+    assert "# debops.nginx tasks/main.yml" in tasks_text
+    assert "ansible.builtin.import_role" in tasks_text
+    templates_text = responses[2]["result"]["content"][0]["text"]
+    assert "etc/nginx/" in templates_text
 
 
 def test_collection_roles_via_stdio(run_debops, mcp_env, project_dir):

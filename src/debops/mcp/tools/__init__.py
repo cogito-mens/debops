@@ -23,7 +23,8 @@ from .files import (tool_config_get, tool_inventory_query,
 from .playbooks import (COLLECTION_PLAYBOOKS, tool_playbook_info,
                         tool_playbooks)
 from .project import tool_project_status
-from .roles import (COLLECTION_ROLES, project_role_paths, tool_role_info,
+from .roles import (COLLECTION_ROLES, project_role_paths, tool_role_files,
+                    tool_role_info, tool_role_tasks, tool_role_templates,
                     tool_role_variables)
 from .sync import make_sync_tool
 from ..policy import EXECUTE_OPTIONS
@@ -311,6 +312,55 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
               'required': ['name']},
              lambda arguments: tool_role_variables(roles_paths,
                                                    arguments)),
+            ('role_tasks',
+             'Inspect the tasks of a role: its task files, and per file '
+             'the tasks with their modules, conditions and tags. Use '
+             'this to understand what a role does before applying it.',
+             {'type': 'object',
+              'properties': {'name': {'type': 'string',
+                                      'description': 'Role name, with or '
+                                      'without the "debops." prefix'},
+                             'file': {'type': 'string',
+                                      'description': 'Task file to read, '
+                                      'e.g. "main" (default: overview of '
+                                      'all task files)'},
+                             'filter': {'type': 'string',
+                                        'description': 'Only include '
+                                        'tasks whose name contains this '
+                                        'string'},
+                             'detail': {'type': 'string',
+                                        'enum': ['brief', 'full'],
+                                        'description': '"brief" (default) '
+                                        'shows name and module, "full" '
+                                        'adds when/tags'}},
+              'required': ['name']},
+             lambda arguments: tool_role_tasks(roles_paths, arguments)),
+            ('role_templates',
+             'List the Jinja2 templates of a role, or print one of '
+             'them.',
+             {'type': 'object',
+              'properties': {'name': {'type': 'string',
+                                      'description': 'Role name, with or '
+                                      'without the "debops." prefix'},
+                             'path': {'type': 'string',
+                                      'description': 'Template to print, '
+                                      'relative to the role\'s '
+                                      'templates/ directory'}},
+              'required': ['name']},
+             lambda arguments: tool_role_templates(roles_paths,
+                                                   arguments)),
+            ('role_files',
+             'List the static files of a role, or print one of them.',
+             {'type': 'object',
+              'properties': {'name': {'type': 'string',
+                                      'description': 'Role name, with or '
+                                      'without the "debops." prefix'},
+                             'path': {'type': 'string',
+                                      'description': 'File to print, '
+                                      'relative to the role\'s files/ '
+                                      'directory'}},
+              'required': ['name']},
+             lambda arguments: tool_role_files(roles_paths, arguments)),
         ])
 
     # Git synchronization with the project origin; throttled per

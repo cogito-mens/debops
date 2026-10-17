@@ -10,6 +10,7 @@ import re
 import yaml
 
 from ...constants import DEBOPS_PACKAGE_DATA
+from ..policy import confine_under
 from .common import (FOLD_MARKER, dump_default, error_result, text_result)
 
 logger = logging.getLogger(__name__)
@@ -205,6 +206,156 @@ def tool_role_info(roles_paths, arguments):
                 dep if isinstance(dep, str) else dep.get('role', '?')
                 for dep in dependencies)))
     return text_result('\n'.join(lines))
+
+
+# Task keys which are not the module invocation; the module is the
+# first key not in this set ('action', 'shell' and 'local_action' are
+# module invocations and stay out of the set on purpose)
+_TASK_ATTRIBUTES = frozenset((
+    'name', 'when', 'tags', 'register', 'become', 'vars', 'notify',
+    'loop', 'loop_control', 'changed_when', 'failed_when', 'check_mode',
+    'delegate_to', 'delegate_facts', 'run_once', 'environment', 'args',
+    'ignore_errors', 'ignore_unreachable', 'no_log', 'until', 'retries',
+    'delay', 'async', 'poll', 'timeout', 'connection', 'remote_user',
+    'any_errors_fatal', 'debugger', 'diff', 'force_handlers',
+    'max_fail_percentage', 'serial', 'strategy', 'throttle', 'order',
+    'listen', 'collections', 'module_defaults', 'static',
+    'import_playbook'))
+
+
+def _task_module(task):
+    """The module a task invokes: the first key which is not a known
+    task attribute."""
+    for key in task:
+        if key not in _TASK_ATTRIBUTES:
+            return key
+    return ''
+
+
+def _load_tasks(tasks_file):
+    """Parse a tasks file, returning a list of task dicts."""
+    with open(tasks_file) as fp:
+        tasks = yaml.safe_load(fp)
+    if not isinstance(tasks, list):
+        return []
+    return [task for task in tasks if isinstance(task, dict)]
+
+
+def tool_role_tasks(roles_paths, arguments):
+    resolved = resolve_role(roles_paths, arguments.get('name'))
+    if resolved is None:
+        return error_result('role not found or invalid: {}'
+                            .format(arguments.get('name')))
+    name, path = resolved
+    tasks_dir = os.path.join(path, 'tasks')
+    if not os.path.isdir(tasks_dir):
+        return error_result('role {} has no tasks directory'.format(name))
+
+    task_file = str(arguments.get('file') or '')
+    if not task_file:
+        # Overview: the task files and their task counts
+        lines = ['# debops.{} task files'.format(name), '']
+        total = 0
+        for entry in sorted(os.listdir(tasks_dir)):
+            if (not entry.endswith(('.yml', '.yaml'))
+                    or entry.startswith('.')):
+                continue
+            tasks = _load_tasks(os.path.join(tasks_dir, entry))
+            lines.append('- `{}` — {} task{}'.format(
+                    os.path.splitext(entry)[0], len(tasks),
+                    '' if len(tasks) == 1 else 's'))
+            total += len(tasks)
+        lines.insert(1, '({} tasks)'.format(total))
+        return text_result('\n'.join(lines) + '\n')
+
+    if not task_file.endswith(('.yml', '.yaml')):
+        task_file += '.yml'
+    try:
+        target = confine_under(tasks_dir, task_file)
+    except ValueError:
+        return error_result('invalid task file: '
+                            + str(arguments.get('file')))
+    if not os.path.isfile(target):
+        return error_result('task file not found: ' + task_file)
+    tasks = _load_tasks(target)
+
+    name_filter = str(arguments.get('filter') or '').lower()
+    detail = arguments.get('detail', 'brief')
+
+    lines = ['# debops.{} tasks/{} ({} tasks)'.format(
+            name, task_file, len(tasks)), '']
+    shown = 0
+    for task in tasks:
+        task_name = str(task.get('name', '(unnamed)'))
+        if name_filter and name_filter not in task_name.lower():
+            continue
+        line = '- {} — {}'.format(task_name, _task_module(task))
+        lines.append(line)
+        if detail == 'full':
+            if 'when' in task:
+                lines.append('    when: {}'.format(task['when']))
+            if 'tags' in task:
+                lines.append('    tags: {}'.format(
+                        ', '.join(str(tag) for tag in task['tags'])))
+        shown += 1
+    if name_filter:
+        lines.insert(1, '({} matching)'.format(shown))
+    return text_result('\n'.join(lines) + '\n')
+
+
+def _tool_role_tree(roles_paths, arguments, subdir):
+    """List or read files of a role's 'templates/' or 'files/' tree."""
+    resolved = resolve_role(roles_paths, arguments.get('name'))
+    if resolved is None:
+        return error_result('role not found or invalid: {}'
+                            .format(arguments.get('name')))
+    name, path = resolved
+    tree_dir = os.path.join(path, subdir)
+    if not os.path.isdir(tree_dir):
+        return error_result('role {} has no {} directory'.format(name,
+                                                                 subdir))
+
+    relative = str(arguments.get('path') or '').strip('/')
+    if not relative:
+        lines = ['# debops.{} {}'.format(name, subdir), '']
+        for base, dirs, files in os.walk(tree_dir):
+            dirs[:] = sorted(directory for directory in dirs
+                             if not directory.startswith('.'))
+            for filename in sorted(files):
+                if filename.startswith('.'):
+                    continue
+                lines.append('- {}'.format(os.path.relpath(
+                        os.path.join(base, filename), tree_dir)))
+        if len(lines) == 2:
+            return text_result('role {} has an empty {} directory'
+                               .format(name, subdir))
+        return text_result('\n'.join(lines) + '\n')
+
+    try:
+        target = confine_under(tree_dir, relative)
+    except ValueError:
+        return error_result('invalid path: ' + relative)
+    if not os.path.isfile(target):
+        return error_result('file not found: ' + relative)
+    if os.path.getsize(target) > 256 * 1024:
+        return error_result('file is larger than {} bytes: {}'.format(
+                256 * 1024, relative))
+    try:
+        with open(target, 'rb') as fp:
+            content = fp.read().decode('utf-8')
+    except UnicodeDecodeError:
+        return error_result('not a UTF-8 text file: ' + relative)
+    if content and not content.endswith('\n'):
+        content += '\n'
+    return text_result('# {}\n\n```\n{}```'.format(relative, content))
+
+
+def tool_role_templates(roles_paths, arguments):
+    return _tool_role_tree(roles_paths, arguments, 'templates')
+
+
+def tool_role_files(roles_paths, arguments):
+    return _tool_role_tree(roles_paths, arguments, 'files')
 
 
 def tool_role_variables(roles_paths, arguments):
