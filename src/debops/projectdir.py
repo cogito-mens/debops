@@ -1550,7 +1550,7 @@ class ProjectDir(object):
                   file=self._status_stream())
         return True
 
-    def auto_commit(self):
+    def auto_commit(self, message=None):
         """Commit the current changes if automatic commits are enabled.
 
         A no-op when the 'project.git.auto_commit' configuration option is
@@ -1559,12 +1559,15 @@ class ProjectDir(object):
         """
         try:
             if self.config.raw['project']['git']['auto_commit']:
-                self.commit()
+                if message is None:
+                    self.commit()
+                else:
+                    self.commit(message=message)
         except KeyError:
             # The configuration option might not exist at this time
             pass
 
-    def commit(self, interactive=False):
+    def commit(self, interactive=False, message=None):
         """Commit the current contents of the project directory to the git
         repository automatically."""
         if not self._is_git_repo(self.path):
@@ -1580,20 +1583,23 @@ class ProjectDir(object):
         # the index. If there are, we need to commit them.
         diff_list = repo.head.commit.diff()
         if diff_list:
-            try:
+            if message is None:
+                try:
+                    message = (self.config
+                               .raw['project']['git']['auto_commit_message'])
+                except KeyError:
+                    # There was an issue in the configuration, unstage any
+                    # changes in git index
+                    logger.warning('Issue in DebOps configuration, '
+                                   'unstaging changes in git index')
+                    repo.git.reset()
+                    if interactive:
+                        print('The "project.git.auto_commit_message" option '
+                              'is not defined. Not committing any changes.')
+            if message is not None:
                 logger.debug('New changes detected, committing')
-                repo.index.commit(
-                    self.config.raw['project']['git']['auto_commit_message'])
+                repo.index.commit(message)
                 logger.debug('New changes committed in git repository')
-            except KeyError:
-                # There was an issue in the configuration, unstage any
-                # changes in git index
-                logger.warning('Issue in DebOps configuration, unstaging '
-                               'changes in git index')
-                repo.git.reset()
-                if interactive:
-                    print('The "project.git.auto_commit_message" option is '
-                          'not defined. Not committing any changes.')
         else:
             logger.debug('No new changes detected, nothing to commit')
 

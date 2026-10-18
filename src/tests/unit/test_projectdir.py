@@ -469,6 +469,15 @@ def test_auto_commit_tolerates_a_missing_option():
     project.commit.assert_not_called()
 
 
+def test_auto_commit_with_a_message():
+    project = make_project({"project": {"git": {"auto_commit": True}}})
+    project.commit = mock.Mock()
+
+    project.auto_commit(message="DebOps MCP: run site")
+
+    project.commit.assert_called_once_with(message="DebOps MCP: run site")
+
+
 def test_enable_venv_collections_requirements_without_the_comment(tmp_path):
     project = make_project_at(tmp_path)
     requirements = write_collections_requirements(
