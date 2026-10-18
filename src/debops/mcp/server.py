@@ -375,7 +375,11 @@ class McpServer(object):
                 'configuration, run playbooks within the project '
                 'policy, and synchronize the project with its git '
                 'origin. Reusable DebOps workflows are available as '
-                'skill:// resources.',
+                'skill:// resources. Calls in one batch run '
+                'concurrently, without ordering; when a call depends '
+                'on the effect of an earlier one (write, then list or '
+                'check), wait for its response before sending the '
+                'next.',
             'ttlMs': 60000, 'cacheScope': 'private',
         }
 

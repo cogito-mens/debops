@@ -186,7 +186,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
          'Write a file in the current infrastructure view, in allowed '
          'locations only ("resources/" and "playbooks/" by default; the '
          'project.mcp.write_allow policy). One file per call; the '
-         'change is committed to git automatically.',
+         'change is committed to git automatically. The change is '
+         'complete when this call returns; a dependent call must wait '
+         'for it (batched requests run concurrently).',
          {'type': 'object',
           'properties': {'path': {'type': 'string',
                                   'description': 'File to write, '
@@ -209,7 +211,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
          'Delete a file from the current infrastructure view, in '
          'allowed locations only (the project.mcp.write_allow policy). '
          'Regular files only, one per call; the deletion is committed '
-         'to git automatically.',
+         'to git automatically. The change is complete when this call '
+         'returns; a dependent call must wait for it (batched requests '
+         'run concurrently).',
          {'type': 'object',
           'properties': {'path': {'type': 'string',
                                   'description': 'File to delete, '
@@ -331,7 +335,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
             'made), reporting what would change. Facts are gathered '
             'live from the managed hosts. Accepts a playbook target '
             'or a list of targets (see the playbooks tool), run in '
-            'order, and optional limit/tags.',
+            'order, and optional limit/tags. The change is complete '
+            'when this call returns; a dependent call must wait for '
+            'it (batched requests run concurrently).',
             execution_schema(policy),
             lambda arguments, context: tool_check(
                 project, policy, arguments, context,
@@ -344,7 +350,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
             'Run Ansible playbooks, changing the managed hosts. Use '
             'the "check" tool first to preview the changes. Accepts a '
             'playbook target or a list of targets (see the playbooks '
-            'tool), run in order, and optional limit/tags.',
+            'tool), run in order, and optional limit/tags. The change '
+            'is complete when this call returns; a dependent call '
+            'must wait for it (batched requests run concurrently).',
             execution_schema(policy),
             lambda arguments, context: tool_run(
                 project, policy, arguments, context,
@@ -586,13 +594,17 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
         ('project_pull',
          'Pull the latest project state from its git origin '
          '(fast-forward only). Use this to pick up changes made '
-         'elsewhere before reading or changing the project.',
+         'elsewhere before reading or changing the project. The '
+         'change is complete when this call returns; a dependent call '
+         'must wait for it (batched requests run concurrently).',
          {'type': 'object', 'properties': {},
           'additionalProperties': False},
          make_sync_tool(project, policy, sync_state, 'pull')),
         ('project_push',
          'Push the project\'s committed state to its git origin. Only '
-         'committed history is sent; the working tree must be clean.',
+         'committed history is sent; the working tree must be clean. '
+         'The change is complete when this call returns; a dependent '
+         'call must wait for it (batched requests run concurrently).',
          {'type': 'object', 'properties': {},
           'additionalProperties': False},
          make_sync_tool(project, policy, sync_state, 'push')),

@@ -42,7 +42,11 @@ class DiscoverTestCase(unittest.TestCase):
         self.assertEqual(result['resultType'], 'complete')
         self.assertEqual(result['supportedVersions'], [PROTOCOL_VERSION])
         self.assertIn('tools', result['capabilities'])
-        self.assertTrue(result['instructions'])
+        # The ordering guarantee (or lack of it) is documented for
+        # agents; regressions here silently break write-then-read
+        # workflows
+        self.assertIn('concurrently', result['instructions'])
+        self.assertIn('wait for its response', result['instructions'])
         self.assertEqual(result['ttlMs'], 60000)
         self.assertEqual(result['cacheScope'], 'private')
 
