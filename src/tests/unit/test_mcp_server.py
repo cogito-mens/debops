@@ -190,6 +190,17 @@ class ToolsTestCase(unittest.TestCase):
         self.assertEqual(result['content'],
                          [{'type': 'text', 'text': 'hello'}])
 
+    def test_tool_meta_listed(self):
+        server = McpServer()
+        server.register_tool(
+                'gated', 'Gated thing', {'type': 'object'},
+                lambda arguments: {'content': [], 'isError': False},
+                meta={'org.debops/confirm': True})
+
+        response = server.handle(make_request('tools/list'))
+        (tool,) = response['result']['tools']
+        self.assertEqual(tool['_meta'], {'org.debops/confirm': True})
+
     def test_tool_annotations_listed(self):
         server = McpServer()
         server.register_tool(

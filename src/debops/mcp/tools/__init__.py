@@ -610,12 +610,22 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
          make_sync_tool(project, policy, sync_state, 'push')),
     ])
 
+    # Tools the policy gates on user confirmation carry the marker and
+    # say so in their description; an ungated tool never mentions it
+    confirm = set(policy.confirm) if policy is not None else set()
+
     for entry in tools:
         name, description, schema, handler = entry[:4]
         needs_context = entry[4] if len(entry) > 4 else False
         if name in READ_LOCKED_TOOLS:
             handler = _wrap_shared_lock(project, policy, handler)
         if policy is None or policy.is_tool_allowed(name):
+            meta = None
+            if name in confirm:
+                description += (' The server asks the user to confirm '
+                                'before this runs.')
+                meta = {'org.debops/confirm': True}
             server.register_tool(name, description, schema, handler,
                                  needs_context=needs_context,
-                                 annotations=TOOL_ANNOTATIONS.get(name))
+                                 annotations=TOOL_ANNOTATIONS.get(name),
+                                 meta=meta)

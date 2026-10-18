@@ -139,7 +139,7 @@ class Tool(object):
 
     def __init__(self, name, description, input_schema, handler,
                  output_schema=None, needs_context=False,
-                 annotations=None):
+                 annotations=None, meta=None):
         self.name = name
         self.description = description
         self.input_schema = input_schema
@@ -147,6 +147,7 @@ class Tool(object):
         self.handler = handler
         self.needs_context = needs_context
         self.annotations = annotations
+        self.meta = meta
 
     def describe(self):
         description = {
@@ -158,6 +159,8 @@ class Tool(object):
             description['outputSchema'] = self.output_schema
         if self.annotations is not None:
             description['annotations'] = self.annotations
+        if self.meta is not None:
+            description['_meta'] = self.meta
         return description
 
 
@@ -193,10 +196,11 @@ class McpServer(object):
 
     def register_tool(self, name, description, input_schema, handler,
                       output_schema=None, needs_context=False,
-                      annotations=None):
+                      annotations=None, meta=None):
         """Register a tool exposed via tools/list and tools/call."""
         self.tools[name] = Tool(name, description, input_schema, handler,
-                                output_schema, needs_context, annotations)
+                                output_schema, needs_context, annotations,
+                                meta)
 
     def cancel_all(self):
         """Cancel every in-flight request (transport teardown)."""

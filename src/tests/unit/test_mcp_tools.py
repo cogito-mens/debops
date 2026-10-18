@@ -659,6 +659,46 @@ class ToolsTestCase(unittest.TestCase):
         self.assertTrue(annotations['project_push']['destructiveHint'])
         self.assertFalse(annotations['check']['destructiveHint'])
 
+    def _tools_by_name(self, mcp_config):
+        self.project.config.raw['project'] = {'mcp': mcp_config}
+        server = McpServer(project=self.project,
+                           policy=McpPolicy(self.project))
+        register_project_tools(server, roles_path=self.roles_path)
+        response = server.handle({
+                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
+                'method': 'tools/list', 'params': {}})
+        return {tool['name']: tool
+                for tool in response['result']['tools']}
+
+    def test_confirm_gated_tools_carry_the_marker(self):
+        tools = self._tools_by_name({'execute': 'all'})
+        # The default confirm list gates 'run' and 'project_push'
+        self.assertEqual(tools['run']['_meta'],
+                         {'org.debops/confirm': True})
+        self.assertEqual(tools['project_push']['_meta'],
+                         {'org.debops/confirm': True})
+        self.assertIn('asks the user to confirm',
+                      tools['run']['description'])
+        # Ungated tools say nothing about confirmation
+        self.assertNotIn('_meta', tools['check'])
+        self.assertNotIn('confirm', tools['check']['description'])
+        self.assertNotIn('_meta', tools['view_write'])
+
+    def test_confirm_disabled_marks_nothing(self):
+        tools = self._tools_by_name({'execute': 'all', 'confirm': []})
+        for tool in tools.values():
+            self.assertNotIn('_meta', tool, tool['name'])
+            self.assertNotIn('asks the user to confirm',
+                             tool['description'], tool['name'])
+
+    def test_confirm_without_execution_is_consistent(self):
+        # 'run' is not registered at all; its confirm entry is inert
+        tools = self._tools_by_name({'execute': 'check',
+                                     'confirm': ['run']})
+        self.assertNotIn('run', tools)
+        for tool in tools.values():
+            self.assertNotIn('_meta', tool, tool['name'])
+
     def test_denied_tool_is_not_registered(self):
         self.project.config.raw['project'] = {'mcp': {'deny': ['role_info']}}
         server = McpServer(project=self.project,
