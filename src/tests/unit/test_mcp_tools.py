@@ -250,6 +250,10 @@ COLLECTION_PLAYBOOK = '''---
 '''
 
 
+def _auto_commit_noop(self, message=None):
+    pass
+
+
 class ToolsTestCase(unittest.TestCase):
 
     def setUp(self):
@@ -264,6 +268,7 @@ class ToolsTestCase(unittest.TestCase):
             'name': 'project',
             'project_type': 'legacy',
             'view': 'system',
+            'auto_commit': _auto_commit_noop,
             'config': type('Config', (), {'raw': {}})(),
         })()
 

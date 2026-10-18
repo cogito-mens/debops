@@ -20,6 +20,10 @@ import threading
 import unittest
 
 
+def _auto_commit_noop(self, message=None):
+    pass
+
+
 class SecretPathsTestCase(unittest.TestCase):
 
     def setUp(self):
@@ -55,6 +59,7 @@ class SecretPathsTestCase(unittest.TestCase):
             'name': 'project',
             'project_type': 'legacy',
             'view': 'system',
+            'auto_commit': _auto_commit_noop,
             'config': type('Config', (), {'raw': {}})(),
         })()
         self.server = McpServer(project=self.project,
@@ -168,6 +173,7 @@ class NoSecretsTestCase(unittest.TestCase):
         project = type('Project', (), {
             'path': tmpdir, 'name': 'project', 'project_type': 'legacy',
             'view': 'system',
+            'auto_commit': _auto_commit_noop,
             'config': type('Config', (), {'raw': {}})(),
         })()
         server = McpServer(project=project, policy=McpPolicy(project))

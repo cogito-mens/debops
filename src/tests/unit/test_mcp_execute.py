@@ -24,6 +24,10 @@ import threading
 import unittest
 
 
+def _auto_commit_noop(self, message=None):
+    pass
+
+
 class FakeProject(object):
 
     def __init__(self, path, raw_config=None):
@@ -35,6 +39,9 @@ class FakeProject(object):
             '_env_vars': {},
             'raw': raw_config or {},
         })()
+
+    def auto_commit(self, message=None):
+        pass
 
 
 def make_process(returncode=0, output='play recap\n', poll=None):

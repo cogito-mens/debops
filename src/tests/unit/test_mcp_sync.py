@@ -30,6 +30,10 @@ PUSH_DONE = {'action': 'push', 'pushed': True, 'commits': ['Add a thing']}
 PUSH_CLEAN = {'action': 'push', 'pushed': False, 'commits': []}
 
 
+def _auto_commit_noop(self, message=None):
+    pass
+
+
 class SyncTestCase(unittest.TestCase):
 
     def setUp(self):
@@ -44,6 +48,7 @@ class SyncTestCase(unittest.TestCase):
             'name': 'project',
             'project_type': 'legacy',
             'view': 'system',
+            'auto_commit': _auto_commit_noop,
             'config': type('Config', (), {'raw': {}})(),
         })()
         case = self

@@ -19,6 +19,10 @@ import time
 import unittest
 
 
+def _auto_commit_noop(self, message=None):
+    pass
+
+
 class ReadWriteLockTestCase(unittest.TestCase):
 
     def setUp(self):
@@ -99,6 +103,7 @@ class FlockTestCase(unittest.TestCase):
         self.project = type('Project', (), {
             'path': self.tmpdir, 'name': 'project',
             'project_type': 'legacy', 'view': 'system',
+            'auto_commit': _auto_commit_noop,
             'config': type('Config', (), {'raw': {}})(),
         })()
         self.policy = type('Policy', (), {
@@ -150,6 +155,7 @@ class ProjectLockTestCase(unittest.TestCase):
         self.project = type('Project', (), {
             'path': self.tmpdir, 'name': 'project',
             'project_type': 'legacy', 'view': 'system',
+            'auto_commit': _auto_commit_noop,
             'config': type('Config', (), {'raw': {}})(),
         })()
         self.policy = type('Policy', (), {
@@ -176,6 +182,21 @@ class ProjectLockTestCase(unittest.TestCase):
             pass
         self.assertTrue(os.path.isfile(
                 os.path.join(self.tmpdir, '.git', 'mcp.lock')))
+
+    def test_exclusive_commits_on_exit_with_the_note(self):
+        calls = []
+        project = type('Project', (), {
+            'path': self.tmpdir, 'name': 'project',
+            'project_type': 'legacy', 'view': 'system',
+            'config': type('Config', (), {'raw': {}})(),
+            'auto_commit': lambda self, message=None: calls.append(message),
+        })()
+        policy = type('Policy', (), {
+            'view_root': os.path.join(self.tmpdir, 'ansible'),
+        })()
+        with exclusive_project(project, policy, note='run site'):
+            pass
+        self.assertEqual(calls, ['DebOps MCP: run site'])
 
 
 if __name__ == '__main__':

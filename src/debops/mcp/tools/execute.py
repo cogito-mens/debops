@@ -192,7 +192,9 @@ def _execute_playbook(project, policy, arguments, context, check,
                       enabled_check=None, on_disabled=None):
     mode = 'check' if check else 'run'
 
-    with exclusive_project(project, policy):
+    with exclusive_project(project, policy,
+                           note='{} {}'.format(
+                                   mode, arguments.get('playbook', ''))):
         try:
             args = _build_ansible_args(arguments, check,
                                        policy.execute_options)

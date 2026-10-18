@@ -180,12 +180,19 @@ def project_flock(project, policy, exclusive):
 
 
 @contextlib.contextmanager
-def exclusive_project(project, policy):
+def exclusive_project(project, policy, note=''):
     """Hold the in-process write lock and the cross-process exclusive
-    lock, in that order."""
+    lock, in that order. On exit, pending changes are committed (when
+    the project has automatic commits enabled, which is the default),
+    so the tree stays clean by construction.
+    """
     with PROJECT_LOCK.write():
         with project_flock(project, policy, exclusive=True):
-            yield
+            try:
+                yield
+            finally:
+                project.auto_commit(message='DebOps MCP: ' + note
+                                    if note else 'DebOps MCP operation')
 
 
 @contextlib.contextmanager

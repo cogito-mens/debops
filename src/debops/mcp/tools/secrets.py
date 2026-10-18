@@ -49,7 +49,7 @@ def tool_secret_paths(project, policy, arguments):
     # not already unlocked, and lock again only in that case. The
     # execution lock serializes this with playbook runs, so secrets are
     # never closed mid-run.
-    with exclusive_project(project, policy):
+    with exclusive_project(project, policy, note='secret_paths'):
         inventory = AnsibleInventory(project, name=project.view)
         unlocked = False
         try:

@@ -35,6 +35,10 @@ def make_process(returncode=0, output='', poll=None):
     return process
 
 
+def _auto_commit_noop(self, message=None):
+    pass
+
+
 class HostsTestCase(unittest.TestCase):
 
     def setUp(self):
@@ -45,6 +49,7 @@ class HostsTestCase(unittest.TestCase):
             'name': 'project',
             'project_type': 'legacy',
             'view': 'system',
+            'auto_commit': _auto_commit_noop,
             'config': type('Config', (), {'_env_vars': {},
                                           'raw': {}})(),
         })()

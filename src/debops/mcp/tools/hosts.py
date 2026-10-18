@@ -123,7 +123,8 @@ def _exec(project, policy, arguments, context, module, module_filter):
                                 'only): {!r}'.format(module_filter))
         command.extend(['-a', 'filter=' + module_filter])
 
-    with exclusive_project(project, policy):
+    with exclusive_project(project, policy,
+                           note='{} {}'.format(module, hosts)):
         inventory = AnsibleInventory(project, name=project.view)
         unlocked = False
         try:

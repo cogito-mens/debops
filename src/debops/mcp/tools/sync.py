@@ -50,7 +50,7 @@ def make_sync_tool(project, policy, sync_state, direction):
         interval = policy.sync_interval if policy is not None else 60
         # The throttle check and the mark must be atomic with the sync,
         # hence inside the exclusive section
-        with exclusive_project(project, policy):
+        with exclusive_project(project, policy, note=direction):
             now = time.monotonic()
             remaining = interval - (now - sync_state.get(direction, 0.0))
             if remaining > 0:
