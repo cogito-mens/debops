@@ -144,11 +144,10 @@ def parse_call_arguments(pairs):
             raise ValueError('not a KEY=VALUE pair: ' + pair)
         if value.lower() in ('true', 'false'):
             value = value.lower() == 'true'
-        else:
-            try:
-                value = int(value)
-            except ValueError:
-                pass
+        elif re.fullmatch(r'-?(0|[1-9][0-9]*)', value):
+            # A leading zero marks a non-decimal convention (an octal
+            # file mode, ...), not an integer
+            value = int(value)
         arguments[key] = value
     return arguments
 
@@ -160,6 +159,8 @@ TOOL_CALL_EXAMPLES = {
     'project_status': [''],
     'project_files': ['path=ansible/inventory'],
     'project_read': ['path=ansible/inventory/hosts'],
+    'view_write': ['path=resources/scripts/hello.sh '
+                   'content="#!/bin/sh" mode=0755'],
     'config_get': ['key=project.default_view'],
     'inventory_query': ['action=graph',
                         'action=host host=web1.example.com'],

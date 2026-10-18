@@ -143,6 +143,19 @@ class McpPolicy(object):
         for entry in self.read_deny:
             logger.notice('Path denied to read tools by policy: %s', entry)
 
+        # Paths the write tools may touch, as fnmatch globs relative to
+        # the view root. The default covers the debops.resources drop-in
+        # directory and the local playbook tree (including its roles).
+        # The built-in deny list (secrets, key material, ...) always wins
+        write_allow = mcp_config.get('write_allow',
+                                     ['resources/**', 'playbooks/**'])
+        if isinstance(write_allow, str):
+            write_allow = [write_allow]
+        self.write_allow = [str(entry).strip('/')
+                            for entry in write_allow or []]
+        if not self.write_allow:
+            logger.notice('All project writes disabled by policy')
+
         # Playbook execution gate: 'none' registers no execution tools,
         # 'check' (default) allows check mode only, 'all' allows changes
         self.execute = str(mcp_config.get('execute', 'check'))

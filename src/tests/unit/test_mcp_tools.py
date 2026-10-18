@@ -15,6 +15,8 @@ from debops.mcp.tools import register_project_tools
 from debops.mcp.tools.playbooks import playbook_summary
 import os
 import shutil
+import stat
+import subprocess
 import tempfile
 import unittest
 
@@ -262,6 +264,150 @@ REQUEST_META = {
 }
 
 
+class ViewWriteTestCase(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-write-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        subprocess.run(['git', 'init', '-q'], cwd=self.tmpdir,
+                       check=True)
+        # The tool commits explicitly; the stub records the messages
+        self.commits = []
+
+        def _record_commit(instance, message=None):
+            self.commits.append(message)
+
+        self.project = type('Project', (), {
+            'path': self.tmpdir, 'name': 'project',
+            'project_type': 'legacy', 'view': 'system',
+            'auto_commit': _auto_commit_noop,
+            'commit': _record_commit,
+            'config': type('Config', (), {'raw': {}})(),
+        })()
+        self.policy = McpPolicy(self.project)
+        self.view_root = os.path.join(self.tmpdir, 'ansible')
+
+    def result_text(self, result):
+        # The tool is called directly, so the result has no envelope
+        content = result['content']
+        self.assertEqual(len(content), 1)
+        self.assertEqual(content[0]['type'], 'text')
+        return content[0]['text']
+
+    def write(self, path, content='x\n', mode=None):
+        from debops.mcp.tools.files import tool_view_write
+        arguments = {'path': path, 'content': content}
+        if mode is not None:
+            arguments['mode'] = mode
+        return tool_view_write(self.project, self.policy, arguments)
+
+    def written(self, relative):
+        with open(os.path.join(self.view_root, relative)) as fp:
+            return fp.read()
+
+    def written_mode(self, relative):
+        return stat.S_IMODE(os.stat(
+                os.path.join(self.view_root, relative)).st_mode)
+
+    def test_create(self):
+        response = self.write('resources/scripts/hello.sh',
+                              content='#!/bin/sh\n', mode='0755')
+        text = self.result_text(response)
+        self.assertIn('created: resources/scripts/hello.sh', text)
+        self.assertEqual(self.written('resources/scripts/hello.sh'),
+                         '#!/bin/sh\n')
+        self.assertEqual(self.written_mode('resources/scripts/hello.sh'),
+                         0o755)
+        # The commit is part of the write
+        self.assertEqual(self.commits,
+                         ['DebOps MCP: view_write '
+                          'resources/scripts/hello.sh'])
+
+    def test_unchanged_content_commits_nothing(self):
+        self.write('playbooks/deploy.yml')
+        self.write('playbooks/deploy.yml')
+        self.assertEqual(len(self.commits), 1)
+
+    def test_default_mode_for_new_files(self):
+        response = self.write('playbooks/deploy.yml')
+        self.assertIn('mode 0644', self.result_text(response))
+        self.assertEqual(self.written_mode('playbooks/deploy.yml'),
+                         0o644)
+
+    def test_overwrite_preserves_the_mode(self):
+        self.write('resources/hello.sh', content='#!/bin/sh\n',
+                   mode='0750')
+        response = self.write('resources/hello.sh',
+                              content='#!/bin/sh\ntrue\n')
+        self.assertIn('overwritten:', self.result_text(response))
+        self.assertEqual(self.written_mode('resources/hello.sh'), 0o750)
+        self.assertEqual(self.written('resources/hello.sh'),
+                         '#!/bin/sh\ntrue\n')
+
+    def test_unchanged_short_circuit(self):
+        self.write('playbooks/deploy.yml')
+        response = self.write('playbooks/deploy.yml')
+        self.assertIn('unchanged:', self.result_text(response))
+
+    def test_mode_change_on_identical_content(self):
+        self.write('resources/hello.sh', content='#!/bin/sh\n')
+        response = self.write('resources/hello.sh',
+                              content='#!/bin/sh\n', mode='0700')
+        self.assertIn('mode changed:', self.result_text(response))
+        self.assertEqual(self.written_mode('resources/hello.sh'), 0o700)
+
+    def test_escape_is_rejected(self):
+        for path in ('../outside.yml', '/etc/passwd',
+                     'playbooks/../../outside.yml'):
+            response = self.write(path)
+            self.assertTrue(response['isError'], path)
+
+    def test_secret_is_never_writable(self):
+        self.project.config.raw['project'] = {
+                'mcp': {'write_allow': ['secret/**', 'resources/**']}}
+        policy = McpPolicy(self.project)
+        from debops.mcp.tools.files import tool_view_write
+        response = tool_view_write(
+                self.project, policy,
+                {'path': 'secret/password', 'content': 'x'})
+        self.assertTrue(response['isError'])
+        self.assertIn('denied by policy',
+                      response['content'][0]['text'])
+
+    def test_path_outside_the_allowlist_is_rejected(self):
+        response = self.write('inventory/hosts')
+        self.assertTrue(response['isError'])
+        self.assertIn('not writable', response['content'][0]
+                      ['text'])
+
+    def test_symlink_escape_is_rejected(self):
+        outside = os.path.join(self.tmpdir, 'outside')
+        os.makedirs(outside)
+        os.makedirs(os.path.join(self.view_root, 'playbooks'))
+        os.symlink(outside, os.path.join(self.view_root, 'playbooks',
+                                         'link'))
+        response = self.write('playbooks/link/file.yml')
+        self.assertTrue(response['isError'])
+
+    def test_mode_validation(self):
+        for bad in ('755', '7777', '04755', 'abc', '01777'):
+            response = self.write('playbooks/x.yml', mode=bad)
+            self.assertTrue(response['isError'], bad)
+
+    def test_non_git_project_is_refused(self):
+        os.unlink(os.path.join(self.tmpdir, '.git', 'HEAD'))
+        shutil.rmtree(os.path.join(self.tmpdir, '.git'))
+        response = self.write('playbooks/deploy.yml')
+        self.assertTrue(response['isError'])
+        self.assertIn('not a git repository',
+                      response['content'][0]['text'])
+
+    def test_directory_is_not_a_file(self):
+        os.makedirs(os.path.join(self.view_root, 'playbooks', 'sub'))
+        response = self.write('playbooks/sub')
+        self.assertTrue(response['isError'])
+
+
 class ToolsTestCase(unittest.TestCase):
 
     def setUp(self):
@@ -438,7 +584,7 @@ class ToolsTestCase(unittest.TestCase):
                           'role_argspec', 'role_defaults', 'role_files',
                           'role_handlers', 'role_info', 'role_tasks',
                           'role_templates', 'role_variables',
-                          'secret_paths'])
+                          'secret_paths', 'view_write'])
 
     def test_tool_annotations(self):
         # 'run' is only registered when the policy allows changes

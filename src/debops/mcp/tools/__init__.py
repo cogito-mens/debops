@@ -17,7 +17,8 @@ from .collections import (COLLECTION_INDEX_TTL, galaxy_collection_list,
                           tool_collection_roles)
 from .execute import tool_check, tool_run
 from .files import (tool_config_get, tool_inventory_query,
-                    tool_project_files, tool_project_read)
+                    tool_project_files, tool_project_read,
+                    tool_view_write)
 from .hosts import tool_ansible_facts, tool_ansible_ping
 from .playbooks import (COLLECTION_PLAYBOOKS, tool_playbook_info,
                         tool_playbooks)
@@ -101,6 +102,9 @@ TOOL_ANNOTATIONS = {
     # Secrets are mounted and unmounted; the project may be committed
     'secret_paths': {'destructiveHint': False, 'idempotentHint': True,
                      'openWorldHint': False},
+    # Writes change the project (recoverable via the auto-commit)
+    'view_write': {'destructiveHint': True, 'idempotentHint': True,
+                   'openWorldHint': False},
     # A check run changes nothing on the managed hosts, but the local
     # auto-commit may commit the project
     'check': {'destructiveHint': False, 'idempotentHint': True},
@@ -175,6 +179,29 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                   'nginx.yml"'}},
           'required': ['path']},
          lambda arguments: tool_project_read(project, policy, arguments)),
+        ('view_write',
+         'Write a file in the current infrastructure view, in allowed '
+         'locations only ("resources/" and "playbooks/" by default; the '
+         'project.mcp.write_allow policy). One file per call; the '
+         'change is committed to git automatically.',
+         {'type': 'object',
+          'properties': {'path': {'type': 'string',
+                                  'description': 'File to write, '
+                                  'relative to the view root, e.g. '
+                                  '"playbooks/deploy.yml" or '
+                                  '"resources/scripts/backup.sh"'},
+                         'content': {'type': 'string',
+                                     'description': 'The complete file '
+                                     'content (UTF-8 text)'},
+                         'mode': {'type': 'string',
+                                  'description': 'Octal file mode, e.g. '
+                                  '"0755", for scripts which need the '
+                                  'executable bit; permission bits '
+                                  'only. Omit to keep the mode of an '
+                                  'existing file, or 0644 for a new '
+                                  'one'}},
+          'required': ['path', 'content']},
+         lambda arguments: tool_view_write(project, policy, arguments)),
         ('config_get',
          'Return the value of a DebOps configuration option, like '
          '"debops config get" does; the key is a dot-separated path in '

@@ -28,6 +28,12 @@ class CallArgumentsTestCase(unittest.TestCase):
                 {'playbook': 'site', 'become': True, 'count': 3,
                  'name': 'a=b'})
 
+    def test_leading_zero_stays_a_string(self):
+        # An octal file mode is not an integer
+        self.assertEqual(client.parse_call_arguments(
+                ['mode=0755', 'count=0', 'offset=-3']),
+                {'mode': '0755', 'count': 0, 'offset': -3})
+
     def test_bad_pairs_rejected(self):
         with self.assertRaises(ValueError):
             client.parse_call_arguments(['no-separator'])
