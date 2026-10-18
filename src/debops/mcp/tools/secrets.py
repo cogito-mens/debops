@@ -16,7 +16,7 @@ import os
 
 from ...ansible.inventory import AnsibleInventory
 from .common import error_result, text_result
-from .execute import _EXECUTION_LOCK
+from .common import exclusive_project
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ def tool_secret_paths(project, policy, arguments):
     # not already unlocked, and lock again only in that case. The
     # execution lock serializes this with playbook runs, so secrets are
     # never closed mid-run.
-    with _EXECUTION_LOCK:
+    with exclusive_project(project, policy):
         inventory = AnsibleInventory(project, name=project.view)
         unlocked = False
         try:

@@ -31,7 +31,7 @@ from ...ansibleplaybookrunner import AnsiblePlaybookRunner
 from ...hooks import run_hooks
 from ..policy import EXECUTE_OPTIONS
 from ..server import RequestCancelled
-from .common import error_result, text_result
+from .common import error_result, exclusive_project, text_result
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +41,6 @@ EXECUTE_OUTPUT_LIMIT = 128 * 1024
 # Grace period between SIGTERM and SIGKILL for a cancelled or timed out
 # ansible-playbook process
 TERMINATION_GRACE = 5  # seconds
-
-# One execution at a time: inventory (un)locking and hook execution
-# cannot race
-_EXECUTION_LOCK = threading.Lock()
 
 # Play and task headers in ansible-playbook output drive progress
 # notifications; the play recap and host result lines do not
@@ -196,7 +192,7 @@ def _execute_playbook(project, policy, arguments, context, check,
                       enabled_check=None, on_disabled=None):
     mode = 'check' if check else 'run'
 
-    with _EXECUTION_LOCK:
+    with exclusive_project(project, policy):
         try:
             args = _build_ansible_args(arguments, check,
                                        policy.execute_options)

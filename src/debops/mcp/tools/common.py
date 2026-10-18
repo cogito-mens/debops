@@ -4,7 +4,11 @@
 
 """Shared helpers for the DebOps MCP tools."""
 
+import contextlib
+import fcntl
+import os
 import re
+import threading
 import yaml
 
 # Fold markers used in DebOps defaults files
@@ -76,3 +80,118 @@ def render_task(task, detail='brief'):
             lines.append('    tags: {}'.format(
                     ', '.join(str(tag) for tag in task['tags'])))
     return lines
+
+
+class ReadWriteLock(object):
+    """A readers-writer lock (writer-preferring), from the standard
+    library alone.
+
+    Any number of readers may hold the read side; a writer waits for
+    them to drain, and new readers queue behind a waiting writer so
+    writers do not starve.
+    """
+
+    def __init__(self):
+        self._condition = threading.Condition()
+        self._readers = 0
+        self._writer = False
+        self._writers_waiting = 0
+
+    def acquire_read(self):
+        with self._condition:
+            while self._writer or self._writers_waiting:
+                self._condition.wait()
+            self._readers += 1
+
+    def release_read(self):
+        with self._condition:
+            self._readers -= 1
+            if not self._readers:
+                self._condition.notify_all()
+
+    def acquire_write(self):
+        with self._condition:
+            self._writers_waiting += 1
+            try:
+                while self._writer or self._readers:
+                    self._condition.wait()
+                self._writer = True
+            finally:
+                self._writers_waiting -= 1
+
+    def release_write(self):
+        with self._condition:
+            self._writer = False
+            self._condition.notify_all()
+
+    @contextlib.contextmanager
+    def read(self):
+        self.acquire_read()
+        try:
+            yield
+        finally:
+            self.release_read()
+
+    @contextlib.contextmanager
+    def write(self):
+        self.acquire_write()
+        try:
+            yield
+        finally:
+            self.release_write()
+
+
+# The project-wide lock: writers (executions, syncs, secrets) are
+# exclusive; readers share
+PROJECT_LOCK = ReadWriteLock()
+
+
+def _project_lock_path(project, policy):
+    """The flock file for cross-process exclusion on this project."""
+    git_dir = os.path.join(project.path, '.git')
+    if os.path.isdir(git_dir):
+        return os.path.join(git_dir, 'mcp.lock')
+    return os.path.join(policy.view_root, '.mcp.lock')
+
+
+@contextlib.contextmanager
+def project_flock(project, policy, exclusive):
+    """Hold an flock(2) on the project's lock file.
+
+    Exclusive holders fail fast when another process holds the lock;
+    readers share it. The kernel releases the lock when the process
+    dies, so a crashed daemon never wedges the project.
+    """
+    path = _project_lock_path(project, policy)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fp = open(path, 'a')
+    try:
+        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        if exclusive:
+            mode |= fcntl.LOCK_NB
+        try:
+            fcntl.flock(fp.fileno(), mode)
+        except BlockingIOError:
+            raise RuntimeError('another process is working on this '
+                               'project ({} is locked)'.format(path))
+        yield
+    finally:
+        fp.close()
+
+
+@contextlib.contextmanager
+def exclusive_project(project, policy):
+    """Hold the in-process write lock and the cross-process exclusive
+    lock, in that order."""
+    with PROJECT_LOCK.write():
+        with project_flock(project, policy, exclusive=True):
+            yield
+
+
+@contextlib.contextmanager
+def shared_project(project, policy):
+    """Hold the in-process read lock and the cross-process shared lock,
+    in that order."""
+    with PROJECT_LOCK.read():
+        with project_flock(project, policy, exclusive=False):
+            yield

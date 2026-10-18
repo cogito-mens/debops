@@ -15,7 +15,7 @@ import logging
 import time
 
 from .common import error_result, text_result
-from .execute import _EXECUTION_LOCK
+from .common import exclusive_project
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +48,16 @@ def make_sync_tool(project, policy, sync_state, direction):
     """Build the 'project_pull' / 'project_push' tool handler."""
     def tool(arguments):
         interval = policy.sync_interval if policy is not None else 60
-        now = time.monotonic()
-        remaining = interval - (now - sync_state.get(direction, 0.0))
-        if remaining > 0:
-            return error_result(
-                    'git {} was performed recently; retry in {:.0f} '
-                    'seconds'.format(direction, remaining))
-        with _EXECUTION_LOCK:
-            sync_state[direction] = time.monotonic()
+        # The throttle check and the mark must be atomic with the sync,
+        # hence inside the exclusive section
+        with exclusive_project(project, policy):
+            now = time.monotonic()
+            remaining = interval - (now - sync_state.get(direction, 0.0))
+            if remaining > 0:
+                return error_result(
+                        'git {} was performed recently; retry in {:.0f} '
+                        'seconds'.format(direction, remaining))
+            sync_state[direction] = now
             try:
                 report = getattr(project, direction)()
             except ValueError as errmsg:

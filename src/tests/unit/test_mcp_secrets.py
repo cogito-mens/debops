@@ -11,7 +11,7 @@ dependencies.
 from debops.mcp.policy import McpPolicy
 from debops.mcp.server import McpServer
 from debops.mcp.tools import register_project_tools
-from debops.mcp.tools.execute import _EXECUTION_LOCK
+from debops.mcp.tools.common import PROJECT_LOCK
 from unittest import mock
 import os
 import shutil
@@ -137,15 +137,15 @@ class SecretPathsTestCase(unittest.TestCase):
             self.call_tool()
             finished.set()
 
-        _EXECUTION_LOCK.acquire()
+        PROJECT_LOCK.acquire_write()
         try:
             thread = threading.Thread(target=call)
             thread.start()
             # The tool must not run while a playbook execution holds
-            # the lock
+            # the write lock
             self.assertFalse(finished.wait(0.5))
         finally:
-            _EXECUTION_LOCK.release()
+            PROJECT_LOCK.release_write()
         self.assertTrue(finished.wait(5))
 
     def test_deny_list_removes_the_tool(self):

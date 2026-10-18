@@ -20,7 +20,8 @@ import yaml
 from ...ansible.inventory import AnsibleInventory
 from ..server import RequestCancelled
 from .common import error_result, text_result
-from .execute import _EXECUTION_LOCK, resolve_hosts, run_cancellable
+from .common import exclusive_project
+from .execute import resolve_hosts, run_cancellable
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,7 @@ def _exec(project, policy, arguments, context, module, module_filter):
                                 'only): {!r}'.format(module_filter))
         command.extend(['-a', 'filter=' + module_filter])
 
-    with _EXECUTION_LOCK:
+    with exclusive_project(project, policy):
         inventory = AnsibleInventory(project, name=project.view)
         unlocked = False
         try:

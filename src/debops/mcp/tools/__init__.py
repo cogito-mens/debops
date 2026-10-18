@@ -21,6 +21,7 @@ from .files import (tool_config_get, tool_inventory_query,
 from .hosts import tool_ansible_facts, tool_ansible_ping
 from .playbooks import (COLLECTION_PLAYBOOKS, tool_playbook_info,
                         tool_playbooks)
+from .common import shared_project
 from .project import tool_project_status
 from .roles import (COLLECTION_ROLES, project_role_paths, tool_role_argspec,
                     tool_role_defaults, tool_role_files, tool_role_handlers,
@@ -53,6 +54,25 @@ def execution_schema(policy):
                                   'description': description}
     return {'type': 'object', 'properties': properties,
             'required': ['playbook']}
+
+
+# Tools which read the project directory; they run under the shared
+# project lock so a writer (a run, a sync, secrets) cannot interleave
+READ_LOCKED_TOOLS = frozenset((
+    'project_status', 'project_files', 'project_read', 'config_get',
+    'inventory_query', 'playbooks', 'playbook_info', 'role_info',
+    'role_defaults', 'role_variables', 'role_argspec', 'role_tasks',
+    'role_handlers', 'role_templates', 'role_files', 'collection_roles',
+    'collection_playbooks',
+))
+
+
+def _wrap_shared_lock(project, policy, handler):
+    """Run a read tool under the shared project lock."""
+    def locked(arguments, *rest):
+        with shared_project(project, policy):
+            return handler(arguments, *rest)
+    return locked
 
 
 def register_project_tools(server, roles_path=COLLECTION_ROLES,
@@ -488,6 +508,8 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
     for entry in tools:
         name, description, schema, handler = entry[:4]
         needs_context = entry[4] if len(entry) > 4 else False
+        if name in READ_LOCKED_TOOLS:
+            handler = _wrap_shared_lock(project, policy, handler)
         if policy is None or policy.is_tool_allowed(name):
             server.register_tool(name, description, schema, handler,
                                  needs_context=needs_context)
