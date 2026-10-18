@@ -30,13 +30,13 @@ class SecretPathsTestCase(unittest.TestCase):
         secret = os.path.join(self.project_dir, 'ansible', 'secret')
         os.makedirs(os.path.join(secret, 'pki', 'authorities', 'root',
                                  'private'))
-        os.makedirs(os.path.join(secret, 'credentials', 'kometa',
+        os.makedirs(os.path.join(secret, 'credentials', 'hostname',
                                  'root_account'))
         os.makedirs(os.path.join(secret, 'dhparam', 'params'))
         with open(os.path.join(secret, 'pki', 'authorities', 'root',
                                'private', 'key.pem'), 'w') as fp:
             fp.write('PRIVATE KEY MATERIAL')
-        with open(os.path.join(secret, 'credentials', 'kometa',
+        with open(os.path.join(secret, 'credentials', 'hostname',
                                'root_account', 'password'), 'w') as fp:
             fp.write('the password')
         with open(os.path.join(secret, 'dhparam', 'params', 'dh.pem'),
@@ -80,7 +80,7 @@ class SecretPathsTestCase(unittest.TestCase):
         text = self.result_text(response)
         self.assertFalse(response['result']['isError'])
         self.assertIn('- pki/authorities/root/private/key.pem', text)
-        self.assertIn('- credentials/kometa/root_account/password', text)
+        self.assertIn('- credentials/hostname/root_account/password', text)
         self.assertIn('- dhparam/params/dh.pem', text)
         # Contents are never served
         self.assertNotIn('PRIVATE KEY MATERIAL', text)
@@ -97,7 +97,7 @@ class SecretPathsTestCase(unittest.TestCase):
     def test_glob_star_star(self):
         response, _inventory = self.call_tool({'pattern': '**/password'})
         text = self.result_text(response)
-        self.assertIn('credentials/kometa/root_account/password', text)
+        self.assertIn('credentials/hostname/root_account/password', text)
         self.assertNotIn('key.pem', text)
 
     def test_symlink_escape_matches_nothing(self):
