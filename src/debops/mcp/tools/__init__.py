@@ -169,11 +169,17 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
          'Describe a project or bundled DebOps playbook: its plays, the '
          'inventory groups it targets, the roles it applies, and the '
          'playbooks it imports. Use this to learn what a playbook does '
-         'before running it.',
+         'before running it. With "detail: full", also shows the plays\' '
+         'variables and task listings.',
          {'type': 'object',
           'properties': {'playbook': {'type': 'string',
                                       'description': 'Playbook target, '
-                                      'e.g. "service/nginx" or "site"'}},
+                                      'e.g. "service/nginx" or "site"'},
+                         'detail': {'type': 'string',
+                                    'enum': ['brief', 'full'],
+                                    'description': '"brief" (default) '
+                                    'summarizes the plays, "full" adds '
+                                    'their variables and task listings'}},
           'required': ['playbook']},
          lambda arguments: tool_playbook_info(
              project, policy,

@@ -11,7 +11,8 @@ import yaml
 
 from ...constants import DEBOPS_PACKAGE_DATA
 from ..policy import confine_under
-from .common import (FOLD_MARKER, dump_default, error_result, text_result)
+from .common import (FOLD_MARKER, dump_default, error_result, render_task,
+                     task_module, text_result)
 
 logger = logging.getLogger(__name__)
 
@@ -391,30 +392,6 @@ def tool_role_info(roles_paths, arguments, index_provider=None,
     return text_result('\n'.join(lines))
 
 
-# Task keys which are not the module invocation; the module is the
-# first key not in this set ('action', 'shell' and 'local_action' are
-# module invocations and stay out of the set on purpose)
-_TASK_ATTRIBUTES = frozenset((
-    'name', 'when', 'tags', 'register', 'become', 'vars', 'notify',
-    'loop', 'loop_control', 'changed_when', 'failed_when', 'check_mode',
-    'delegate_to', 'delegate_facts', 'run_once', 'environment', 'args',
-    'ignore_errors', 'ignore_unreachable', 'no_log', 'until', 'retries',
-    'delay', 'async', 'poll', 'timeout', 'connection', 'remote_user',
-    'any_errors_fatal', 'debugger', 'diff', 'force_handlers',
-    'max_fail_percentage', 'serial', 'strategy', 'throttle', 'order',
-    'listen', 'collections', 'module_defaults', 'static',
-    'import_playbook'))
-
-
-def _task_module(task):
-    """The module a task invokes: the first key which is not a known
-    task attribute."""
-    for key in task:
-        if key not in _TASK_ATTRIBUTES:
-            return key
-    return ''
-
-
 def _load_tasks(tasks_file):
     """Parse a tasks file, returning a list of task dicts."""
     with open(tasks_file) as fp:
@@ -481,19 +458,7 @@ def _tool_role_tasklist(roles_paths, arguments, subdir,
         task_name = str(task.get('name', '(unnamed)'))
         if name_filter and name_filter not in task_name.lower():
             continue
-        line = '- {} — {}'.format(task_name, _task_module(task))
-        listen = task.get('listen')
-        if listen:
-            if isinstance(listen, list):
-                listen = ', '.join(str(item) for item in listen)
-            line += ' (listen: {})'.format(listen)
-        lines.append(line)
-        if detail == 'full':
-            if 'when' in task:
-                lines.append('    when: {}'.format(task['when']))
-            if 'tags' in task:
-                lines.append('    tags: {}'.format(
-                        ', '.join(str(tag) for tag in task['tags'])))
+        lines.extend(render_task(task, detail))
         shown += 1
     if name_filter:
         lines.insert(1, '({} matching)'.format(shown))

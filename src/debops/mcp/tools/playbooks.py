@@ -9,7 +9,7 @@ import yaml
 
 from ...constants import DEBOPS_PACKAGE_DATA
 from ..policy import confine_under
-from .common import error_result, text_result
+from .common import error_result, render_task, text_result
 
 # Playbooks shipped in the debops.debops Ansible Collection
 COLLECTION_PLAYBOOKS = os.path.join(
@@ -64,10 +64,19 @@ def parse_playbook(text):
                 hosts = [hosts]
             hosts = [str(host) for host in hosts]
             collections = entry.get('collections') or []
+            play_vars = entry.get('vars') or {}
+            sections = {}
+            for section in ('pre_tasks', 'tasks', 'post_tasks'):
+                section_tasks = [task for task in entry.get(section) or []
+                                 if isinstance(task, dict)]
+                sections[section] = section_tasks
             plays.append({
                 'name': str(entry.get('name', '')),
                 'hosts': hosts,
                 'become': bool(entry.get('become', False)),
+                'vars': sorted(play_vars.keys())
+                if isinstance(play_vars, dict) else [],
+                'sections': sections,
             })
             for host in hosts:
                 if host not in groups:
@@ -180,7 +189,8 @@ def resolve_debops_playbook(project, policy, playbooks_path, name):
     return None
 
 
-def render_playbook_info(title, target, plays, roles, imports, groups):
+def render_playbook_info(title, target, plays, roles, imports, groups,
+                         detail='brief'):
     lines = ['# {}'.format(title), '',
              'Execution target: `{}`'.format(target), '']
     if plays:
@@ -192,6 +202,19 @@ def render_playbook_info(title, target, plays, roles, imports, groups):
             if play['become']:
                 line += ' (become)'
             lines.append(line)
+            if detail == 'full':
+                if play['vars']:
+                    lines.append('    vars: {}'.format(
+                            ', '.join(play['vars'])))
+                for section in ('pre_tasks', 'tasks', 'post_tasks'):
+                    section_tasks = play['sections'].get(section, [])
+                    if not section_tasks:
+                        continue
+                    lines.append('    {} ({}):'.format(
+                            section, len(section_tasks)))
+                    for task in section_tasks:
+                        for task_line in render_task(task, detail):
+                            lines.append('    ' + task_line)
         lines.append('')
     if roles:
         lines.extend(['## Roles ({})'.format(len(roles)), ''])
@@ -277,10 +300,13 @@ def tool_playbook_info(project, policy, playbooks_path, arguments):
         return error_result('playbook not found or invalid: {}'.format(
                 arguments.get('playbook')))
     path, target = resolved
+    detail = arguments.get('detail', 'brief')
+    if detail not in ('brief', 'full'):
+        return error_result('invalid detail level: {}'.format(detail))
     try:
         with open(path) as fp:
             plays, roles, imports, groups = parse_playbook(fp.read())
     except (OSError, ValueError) as errmsg:
         return error_result(str(errmsg))
     return text_result(render_playbook_info(target, target, plays, roles,
-                                            imports, groups))
+                                            imports, groups, detail))
