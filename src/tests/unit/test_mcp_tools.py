@@ -19,6 +19,7 @@ import stat
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROLE_DEFAULTS = '''---
@@ -457,6 +458,134 @@ class ViewWriteTestCase(unittest.TestCase):
                       response['content'][0]['text'])
 
 
+class InventorySpecTestCase(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-spec-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        subprocess.run(['git', 'init', '-q'], cwd=self.tmpdir,
+                       check=True)
+        self.inventory_dir = os.path.join(self.tmpdir, 'ansible',
+                                          'inventory')
+        os.makedirs(self.inventory_dir)
+        self.commits = []
+
+        def _record_commit(instance, message=None):
+            self.commits.append(message)
+
+        self.spec_policy = {'enabled': True, 'max_version': 3,
+                            'allow_io': False}
+        self.project = type('Project', (), {
+            'path': self.tmpdir, 'name': 'project',
+            'project_type': 'legacy', 'view': 'system',
+            'auto_commit': _auto_commit_noop,
+            'commit': _record_commit,
+            'config': type('Config', (), {'raw': {}})(),
+            '_inventory_spec_config': lambda instance: self.spec_policy,
+            '_spec_render_context': lambda instance: {},
+        })()
+        self.policy = McpPolicy(self.project)
+
+    def call_spec(self, document, **arguments):
+        from debops.ansible.inventory import AnsibleInventory as real
+        from debops.inventoryspec import apply_spec as real_apply
+        from debops.mcp.tools.files import tool_inventory_spec
+        with mock.patch('debops.ansible.inventory.AnsibleInventory') \
+                as inventory:
+            inventory.return_value.path = self.inventory_dir
+            inventory.return_value.apply_spec = (
+                    lambda files, **kwargs:
+                    real_apply(files, self.inventory_dir, **kwargs))
+            inventory.return_value.existing_paths = (
+                    lambda: real.existing_paths(inventory.return_value))
+            return tool_inventory_spec(
+                    self.project, self.policy,
+                    dict({'spec': document}, **arguments))
+
+    def result_text(self, result):
+        content = result['content']
+        self.assertEqual(len(content), 1)
+        self.assertEqual(content[0]['type'], 'text')
+        return content[0]['text']
+
+    def test_applies_a_specification(self):
+        result = self.call_spec('version: 0\n'
+                                'files:\n'
+                                '  hosts: "[web]\\nweb1\\n"\n')
+        text = self.result_text(result)
+        self.assertIn('# Inventory specification applied', text)
+        self.assertIn('## Written (1)', text)
+        self.assertIn('- hosts', text)
+        with open(os.path.join(self.inventory_dir, 'hosts')) as fp:
+            self.assertEqual(fp.read(), '[web]\nweb1\n')
+        self.assertEqual(self.commits,
+                         ['DebOps MCP: inventory_spec'])
+
+    def test_dry_run_writes_nothing(self):
+        result = self.call_spec('version: 0\n'
+                                'files:\n'
+                                '  hosts: "[web]\\n"\n', dry_run=True)
+        text = self.result_text(result)
+        self.assertIn('dry run', text)
+        self.assertIn('## Planned writes (1)', text)
+        self.assertFalse(os.path.exists(
+                os.path.join(self.inventory_dir, 'hosts')))
+        self.assertEqual(self.commits, [])
+
+    def test_existing_files_are_skipped_without_overwrite(self):
+        with open(os.path.join(self.inventory_dir, 'hosts'), 'w') as fp:
+            fp.write('[web]\nweb1\n')
+        result = self.call_spec('version: 0\n'
+                                'files:\n'
+                                '  hosts: "[db]\\n"\n')
+        text = self.result_text(result)
+        self.assertIn('## Skipped (already present) (1)', text)
+        with open(os.path.join(self.inventory_dir, 'hosts')) as fp:
+            self.assertEqual(fp.read(), '[web]\nweb1\n')
+        # Nothing changed, nothing to commit
+        self.assertEqual(self.commits, [])
+
+    def test_overwrite_replaces(self):
+        with open(os.path.join(self.inventory_dir, 'hosts'), 'w') as fp:
+            fp.write('[web]\nweb1\n')
+        result = self.call_spec('version: 0\n'
+                                'files:\n'
+                                '  hosts: "[db]\\n"\n', overwrite=True)
+        self.assertIn('## Written (1)', self.result_text(result))
+        with open(os.path.join(self.inventory_dir, 'hosts')) as fp:
+            self.assertEqual(fp.read(), '[db]\n')
+
+    def test_parse_errors_are_reported(self):
+        result = self.call_spec('version: 0\nbogus: true\n')
+        self.assertTrue(result['isError'])
+
+    def test_disabled_by_the_project(self):
+        self.spec_policy['enabled'] = False
+        result = self.call_spec('version: 0\nfiles: {}\n')
+        self.assertTrue(result['isError'])
+        self.assertIn('disabled', result['content'][0]['text'])
+
+    def test_version_cap(self):
+        self.spec_policy['max_version'] = 1
+        result = self.call_spec('version: 3\nfiles: {}\n')
+        self.assertTrue(result['isError'])
+        self.assertIn('version', result['content'][0]['text'])
+
+    def test_spec_is_required(self):
+        from debops.mcp.tools.files import tool_inventory_spec
+        result = tool_inventory_spec(self.project, self.policy, {})
+        self.assertTrue(result['isError'])
+
+    def test_non_git_project_is_refused(self):
+        shutil.rmtree(os.path.join(self.tmpdir, '.git'))
+        result = self.call_spec('version: 0\n'
+                                'files:\n'
+                                '  hosts: "[web]\\n"\n')
+        self.assertTrue(result['isError'])
+        self.assertIn('not a git repository',
+                      result['content'][0]['text'])
+
+
 class ToolsTestCase(unittest.TestCase):
 
     def setUp(self):
@@ -627,7 +756,8 @@ class ToolsTestCase(unittest.TestCase):
         self.assertEqual(sorted(names),
                          ['ansible_facts', 'ansible_ping', 'check',
                           'collection_playbooks', 'collection_roles',
-                          'config_get', 'inventory_query', 'playbook_info',
+                          'config_get', 'inventory_query',
+                          'inventory_spec', 'playbook_info',
                           'playbooks', 'project_files', 'project_pull',
                           'project_push', 'project_read', 'project_status',
                           'role_argspec', 'role_defaults', 'role_files',

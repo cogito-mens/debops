@@ -165,6 +165,8 @@ TOOL_CALL_EXAMPLES = {
     'config_get': ['key=project.default_view'],
     'inventory_query': ['action=graph',
                         'action=host host=web1.example.com'],
+    'inventory_spec': ['spec="version: 0\\nfiles:\\n  hosts.yml: ..." '
+                       'dry_run=true'],
     'secret_paths': ['pattern=**/password'],
     'playbooks': ['filter=nginx'],
     'playbook_info': ['playbook=service/nginx'],

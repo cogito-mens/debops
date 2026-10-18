@@ -163,7 +163,8 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
     assert sorted(names) == ["ansible_facts", "ansible_ping", "check",
                              "collection_playbooks", "collection_roles",
                              "config_get", "inventory_query",
-                             "playbook_info", "playbooks", "project_files",
+                             "inventory_spec", "playbook_info",
+                             "playbooks", "project_files",
                              "project_pull", "project_push", "project_read",
                              "project_status", "role_argspec",
                              "role_defaults", "role_files",
@@ -476,6 +477,58 @@ def test_write_check_run_loop_via_stdio(run_debops, mcp_env,
                          cwd=str(project_dir), env=env,
                          capture_output=True, text=True)
     assert "DebOps MCP: view_write playbooks/written.yml" in log.stdout
+
+
+def test_inventory_spec_via_stdio(run_debops, mcp_env, project_dir):
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+
+    env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1",
+               GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="t@example.org",
+               GIT_COMMITTER_NAME="Test",
+               GIT_COMMITTER_EMAIL="t@example.org")
+    subprocess.run(["git", "init", "-q"], cwd=str(project_dir), env=env,
+                   check=True)
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+
+    def call(name, arguments):
+        # Dependent steps go in separate invocations: a batch runs
+        # concurrently, without ordering
+        request = json.dumps({
+                "jsonrpc": "2.0", "_meta": REQUEST_META, "id": 1,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments}}) + "\n"
+        result = run_debops("mcp", "serve", cwd=str(project_dir),
+                            env=mcp_env, input_text=request)
+        assert result.returncode == 0
+        (response,) = read_json_lines(result.stdout)
+        return response["result"]
+
+    spec = ("version: 0\n"
+            "files:\n"
+            "  hosts: |\n"
+            "    [spec_group]\n"
+            "    spec1.example.com\n")
+    preview = call("inventory_spec", {"spec": spec, "dry_run": True})
+    assert "dry run" in preview["content"][0]["text"]
+    assert "Planned writes" in preview["content"][0]["text"]
+    # Nothing was written
+    assert not (project_dir / "ansible" / "inventory" / "hosts").exists()
+
+    applied = call("inventory_spec", {"spec": spec})
+    assert "## Written (1)" in applied["content"][0]["text"]
+    assert (project_dir / "ansible" / "inventory"
+            / "hosts").read_text() == "[spec_group]\nspec1.example.com\n"
+
+    graph = call("inventory_query", {"action": "graph"})
+    assert "spec_group" in graph["content"][0]["text"]
+
+    # Committed with MCP provenance
+    log = subprocess.run(["git", "log", "--format=%s", "-1"],
+                         cwd=str(project_dir), env=env,
+                         capture_output=True, text=True)
+    assert "DebOps MCP: inventory_spec" in log.stdout
 
 
 def test_run_asks_for_confirmation_via_stdio(run_debops, mcp_env,

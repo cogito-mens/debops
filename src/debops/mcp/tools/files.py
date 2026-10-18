@@ -21,7 +21,7 @@ import tempfile
 
 from ..policy import READ_DENY_COMPONENTS, confine_under
 from .common import (dump_default, error_result, exclusive_project,
-                     text_result)
+                     shared_project, text_result)
 
 logger = logging.getLogger(__name__)
 
@@ -324,3 +324,132 @@ def tool_view_delete(project, policy, arguments):
         project.commit(message='DebOps MCP: view_delete '
                        + view_relative)
         return text_result('deleted: {}'.format(view_relative))
+
+
+def _inventory_spec_report(result, inventory_path, dry_run):
+    """Render the result of an inventory spec application as text."""
+    def rel(paths):
+        return [os.path.relpath(path, inventory_path)
+                for path in paths]
+
+    lines = []
+    if dry_run:
+        lines.append('# Inventory specification (dry run, '
+                     'nothing was written)')
+        if result['planned']:
+            lines.append('')
+            lines.append('## Planned writes ({})'.format(
+                    len(result['planned'])))
+            lines.extend('- {}'.format(path)
+                         for path in rel(result['planned']))
+        if result['planned_removed']:
+            lines.append('')
+            lines.append('## Planned removals ({})'.format(
+                    len(result['planned_removed'])))
+            lines.extend('- {}'.format(path)
+                         for path in rel(result['planned_removed']))
+    else:
+        lines.append('# Inventory specification applied')
+        for title, key in (('Written', 'written'), ('Removed', 'removed'),
+                           ('Skipped (already present)', 'skipped'),
+                           ('Kept', 'kept')):
+            if result[key]:
+                lines.append('')
+                lines.append('## {} ({})'.format(title,
+                                                 len(result[key])))
+                lines.extend('- {}'.format(path) for path in rel(
+                        result[key]))
+    if len(lines) == 1:
+        lines.append('')
+        lines.append('No changes.')
+    return '\n'.join(lines)
+
+
+def tool_inventory_spec(project, policy, arguments):
+    """Apply an inventory specification to the view's inventory."""
+    # Imported here so that the read tools in this module do not pull
+    # the inventory machinery in
+    from ...ansible.inventory import AnsibleInventory
+    from ...exceptions import InventorySpecError
+    from ...inventoryspec import (CONTENT_RENDERED_VERSIONS,
+                                  PATH_RENDERED_VERSIONS, merge_specs,
+                                  parse_spec, render_keep, render_spec)
+
+    document = arguments.get('spec')
+    if not isinstance(document, str) or not document.strip():
+        return error_result('the "spec" argument is required')
+    dry_run = bool(arguments.get('dry_run'))
+    overwrite = bool(arguments.get('overwrite'))
+
+    try:
+        spec_policy = project._inventory_spec_config()
+    except (AttributeError, ValueError) as errmsg:
+        return error_result(str(errmsg))
+    if not spec_policy['enabled']:
+        return error_result('inventory specifications are disabled in '
+                            'this project (project.inventory_spec.enabled '
+                            'is false)')
+
+    inventory = AnsibleInventory(project, name=project.view)
+
+    source = 'tool input'
+    try:
+        spec = parse_spec(document, source)
+    except InventorySpecError as errmsg:
+        return error_result(str(errmsg))
+    if spec['version'] > spec_policy['max_version']:
+        return error_result(
+                'the document declares inventory specification version '
+                '{}, but this project allows at most version {} (the '
+                'project.inventory_spec.version option)'.format(
+                    spec['version'], spec_policy['max_version']))
+
+    # Render before merging, so that the document's own version decides
+    # which of its paths and contents are templates
+    if spec['version'] in PATH_RENDERED_VERSIONS:
+        context = project._spec_render_context()
+        try:
+            spec = {'version': spec['version'],
+                    'files': render_spec(
+                        spec['files'], context, source,
+                        version=spec['version'],
+                        allow_io=spec_policy['allow_io'],
+                        include_base=inventory.path,
+                        render_contents=(spec['version']
+                                         in CONTENT_RENDERED_VERSIONS)),
+                    'keep': render_keep(spec['keep'], context, source,
+                                        version=spec['version'])}
+        except InventorySpecError as errmsg:
+            return error_result(str(errmsg))
+    files, keep, notices = merge_specs([(source, spec)])
+    for notice in notices:
+        logger.notice('%s', notice)
+
+    if dry_run:
+        # A preview reads the inventory; it changes nothing. The
+        # overwrite flag is passed so the preview matches the real run
+        with shared_project(project, policy):
+            result = inventory.apply_spec(
+                    files, pre_existing=inventory.existing_paths(),
+                    overwrite=overwrite, dry_run=True, keep=keep)
+        return text_result(_inventory_spec_report(
+                result, inventory.path, dry_run=True))
+
+    # Writes are recoverable and attributable only with git
+    if not _is_git_tracked_project(project):
+        return error_result('the project directory is not a git '
+                            'repository; initialize it ("debops project '
+                            'init") so that changes can be committed')
+
+    with exclusive_project(project, policy, note='inventory_spec'):
+        # Everything present is user content: without 'overwrite' the
+        # specification may only add paths, not modify or remove them
+        result = inventory.apply_spec(
+                files, pre_existing=inventory.existing_paths(),
+                overwrite=overwrite, keep=keep)
+        if result['written'] or result['removed']:
+            # The commit is part of the tool's contract, as for
+            # view_write
+            project.commit(message='DebOps MCP: inventory_spec')
+        return text_result(_inventory_spec_report(
+                result, inventory.path, dry_run=False))

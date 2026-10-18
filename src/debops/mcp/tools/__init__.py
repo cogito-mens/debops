@@ -17,8 +17,8 @@ from .collections import (COLLECTION_INDEX_TTL, galaxy_collection_list,
                           tool_collection_roles)
 from .execute import tool_check, tool_run
 from .files import (tool_config_get, tool_inventory_query,
-                    tool_project_files, tool_project_read,
-                    tool_view_delete, tool_view_write)
+                    tool_inventory_spec, tool_project_files,
+                    tool_project_read, tool_view_delete, tool_view_write)
 from .hosts import tool_ansible_facts, tool_ansible_ping
 from .playbooks import (COLLECTION_PLAYBOOKS, tool_playbook_info,
                         tool_playbooks)
@@ -108,6 +108,9 @@ TOOL_ANNOTATIONS = {
     # Deleting an absent file is an error, so not idempotent
     'view_delete': {'destructiveHint': True, 'idempotentHint': False,
                     'openWorldHint': False},
+    # A specification can remove inventory paths
+    'inventory_spec': {'destructiveHint': True, 'idempotentHint': True,
+                       'openWorldHint': False},
     # A check run changes nothing on the managed hosts, but the local
     # auto-commit may commit the project
     'check': {'destructiveHint': False, 'idempotentHint': True},
@@ -221,6 +224,30 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                   '"playbooks/deploy.yml"'}},
           'required': ['path']},
          lambda arguments: tool_view_delete(project, policy, arguments)),
+        ('inventory_spec',
+         'Apply an inventory specification to the inventory of the '
+         'current view: define groups, hosts and variables the DebOps '
+         'way, instead of writing inventory files directly. Existing '
+         'files are skipped unless "overwrite" is set; use "dry_run" '
+         'to preview the changes. See the debops-inventory-spec skill '
+         'for the document format. The change is committed to git '
+         'automatically.',
+         {'type': 'object',
+          'properties': {'spec': {'type': 'string',
+                                  'description': 'The inventory '
+                                  'specification document (YAML)'},
+                         'dry_run': {'type': 'boolean',
+                                     'description': 'Report the planned '
+                                     'changes without writing them '
+                                     '(default: false)'},
+                         'overwrite': {'type': 'boolean',
+                                       'description': 'Replace existing '
+                                       'inventory files (default: '
+                                       'false, existing files are '
+                                       'skipped)'}},
+          'required': ['spec']},
+         lambda arguments: tool_inventory_spec(project, policy,
+                                               arguments)),
         ('config_get',
          'Return the value of a DebOps configuration option, like '
          '"debops config get" does; the key is a dot-separated path in '
