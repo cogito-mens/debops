@@ -66,6 +66,45 @@ READ_LOCKED_TOOLS = frozenset((
     'collection_playbooks',
 ))
 
+# Behavior hints for client UIs and auto-approval policies (the
+# ToolAnnotations schema); only values which differ from the defaults
+# are listed. The defaults are: readOnlyHint false, destructiveHint
+# true, idempotentHint false, openWorldHint true.
+_READ_ONLY = {'readOnlyHint': True, 'openWorldHint': False}
+
+TOOL_ANNOTATIONS = {
+    # Pure reads of project or package content
+    'project_status': _READ_ONLY,
+    'project_files': _READ_ONLY,
+    'project_read': _READ_ONLY,
+    'config_get': _READ_ONLY,
+    'inventory_query': _READ_ONLY,
+    'playbooks': _READ_ONLY,
+    'playbook_info': _READ_ONLY,
+    'collection_roles': _READ_ONLY,
+    'collection_playbooks': _READ_ONLY,
+    'role_info': _READ_ONLY,
+    'role_variables': _READ_ONLY,
+    'role_argspec': _READ_ONLY,
+    'role_defaults': _READ_ONLY,
+    'role_tasks': _READ_ONLY,
+    'role_handlers': _READ_ONLY,
+    'role_templates': _READ_ONLY,
+    'role_files': _READ_ONLY,
+    # Host queries reach out over SSH but change nothing
+    'ansible_ping': {'readOnlyHint': True},
+    'ansible_facts': {'readOnlyHint': True},
+    # Secrets are mounted and unmounted; the project may be committed
+    'secret_paths': {'destructiveHint': False, 'idempotentHint': True,
+                     'openWorldHint': False},
+    # A check run changes nothing on the managed hosts, but the local
+    # auto-commit may commit the project
+    'check': {'destructiveHint': False, 'idempotentHint': True},
+    'run': {'destructiveHint': True, 'idempotentHint': True},
+    'project_pull': {'destructiveHint': False, 'idempotentHint': True},
+    'project_push': {'destructiveHint': True, 'idempotentHint': True},
+}
+
 
 def _wrap_shared_lock(project, policy, handler):
     """Run a read tool under the shared project lock."""
@@ -515,4 +554,5 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
             handler = _wrap_shared_lock(project, policy, handler)
         if policy is None or policy.is_tool_allowed(name):
             server.register_tool(name, description, schema, handler,
-                                 needs_context=needs_context)
+                                 needs_context=needs_context,
+                                 annotations=TOOL_ANNOTATIONS.get(name))

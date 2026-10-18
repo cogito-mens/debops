@@ -175,6 +175,7 @@ class ToolsTestCase(unittest.TestCase):
         self.assertEqual(tools[0]['name'], 'echo')
         self.assertEqual(tools[0]['description'], 'Echo the given text')
         self.assertNotIn('outputSchema', tools[0])
+        self.assertNotIn('annotations', tools[0])
 
         response = server.handle(make_request(
                 'tools/call',
@@ -184,6 +185,20 @@ class ToolsTestCase(unittest.TestCase):
         self.assertFalse(result['isError'])
         self.assertEqual(result['content'],
                          [{'type': 'text', 'text': 'hello'}])
+
+    def test_tool_annotations_listed(self):
+        server = McpServer()
+        server.register_tool(
+                'wipe', 'Wipe things', {'type': 'object'},
+                lambda arguments: {'content': [], 'isError': False},
+                annotations={'destructiveHint': True,
+                             'idempotentHint': False})
+
+        response = server.handle(make_request('tools/list'))
+        (tool,) = response['result']['tools']
+        self.assertEqual(tool['annotations'],
+                         {'destructiveHint': True,
+                          'idempotentHint': False})
 
     def test_tools_call_arguments_must_be_an_object(self):
         server = McpServer()

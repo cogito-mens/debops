@@ -439,6 +439,30 @@ class ToolsTestCase(unittest.TestCase):
                           'role_templates', 'role_variables',
                           'secret_paths'])
 
+    def test_tool_annotations(self):
+        # 'run' is only registered when the policy allows changes
+        self.project.config.raw['project'] = {'mcp': {'execute': 'all'}}
+        server = McpServer(project=self.project,
+                           policy=McpPolicy(self.project))
+        register_project_tools(server, roles_path=self.roles_path)
+        response = server.handle({
+                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
+                'method': 'tools/list', 'params': {}})
+        annotations = {tool['name']: tool.get('annotations', {})
+                       for tool in response['result']['tools']}
+        # Pure reads are marked read-only
+        self.assertEqual(annotations['project_status'],
+                         {'readOnlyHint': True, 'openWorldHint': False})
+        self.assertEqual(annotations['role_defaults'],
+                         {'readOnlyHint': True, 'openWorldHint': False})
+        # Host queries are read-only but reach out over SSH
+        self.assertEqual(annotations['ansible_ping'],
+                         {'readOnlyHint': True})
+        # Changes and pushes are destructive; check runs are not
+        self.assertTrue(annotations['run']['destructiveHint'])
+        self.assertTrue(annotations['project_push']['destructiveHint'])
+        self.assertFalse(annotations['check']['destructiveHint'])
+
     def test_denied_tool_is_not_registered(self):
         self.project.config.raw['project'] = {'mcp': {'deny': ['role_info']}}
         server = McpServer(project=self.project,
