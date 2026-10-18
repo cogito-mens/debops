@@ -192,6 +192,56 @@ def test_init_refuses_a_directory_inside_a_project(run_debops, tmp_path,
     assert "inside another" in result.stdout
 
 
+def test_init_config_template(run_debops, tmp_path, debops_env):
+    project_dir = tmp_path / "example-mcp"
+
+    result = run_debops("project", "init", "-t", "modern",
+                        "--no-requirements", "--config", "mcp",
+                        str(project_dir), env=debops_env)
+    assert result.returncode == 0
+
+    rendered = (project_dir / ".debops" / "conf.d" / "mcp.toml")
+    assert rendered.exists()
+    # The Jinja comment header is not rendered into the project
+    assert "{#" not in rendered.read_text()
+
+    # The configuration is discoverable
+    result = run_debops("config", "get", "project.mcp.execute",
+                        cwd=str(project_dir), env=debops_env)
+    assert result.returncode == 0
+    assert "check" in result.stdout
+
+
+def test_init_config_template_legacy_refused(run_debops, tmp_path,
+                                             debops_env):
+    project_dir = tmp_path / "example-legacy-mcp"
+    result = run_debops("project", "init", "--no-requirements",
+                        "--config", "mcp", str(project_dir), env=debops_env)
+    assert result.returncode == 1
+    assert "modern projects only" in result.stdout
+
+
+def test_refresh_config_template(run_debops, tmp_path, debops_env):
+    project_dir = tmp_path / "example-refresh"
+    run_debops("project", "init", "-t", "modern", "--no-requirements",
+               str(project_dir), env=debops_env, check=True)
+
+    result = run_debops("project", "refresh", "--config", "mcp",
+                        str(project_dir), env=debops_env)
+    assert result.returncode == 0
+    rendered = project_dir / ".debops" / "conf.d" / "mcp.toml"
+    assert rendered.exists()
+
+    # A second application refuses without --force
+    result = run_debops("project", "refresh", "--config", "mcp",
+                        str(project_dir), env=debops_env)
+    assert result.returncode == 1
+    assert "--force" in result.stdout
+    result = run_debops("project", "refresh", "--config", "mcp",
+                        "--force", str(project_dir), env=debops_env)
+    assert result.returncode == 0
+
+
 def test_mkview_creates_an_additional_view(run_debops, tmp_path, debops_env):
     project_dir = tmp_path / "example-modern"
     run_debops("project", "init", "-t", "modern", "--no-requirements",

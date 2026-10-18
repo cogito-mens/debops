@@ -1,0 +1,68 @@
+{# Copyright (C) 2026 Maciej Delmanowski <drybjed@gmail.com>
+ # Copyright (C) 2026 DebOps <https://debops.org/>
+ # SPDX-License-Identifier: GPL-3.0-or-later
+#}
+# MCP (Model Context Protocol) server policy for this project.
+
+# The DebOps MCP server ('debops mcp serve') exposes this project to
+# LLM agents: inspection tools by default, playbook execution and
+# project changes when enabled below. The server is confined to this
+# project directory, and every change it makes is committed to git with
+# provenance.
+
+[project.mcp]
+
+# The tools to expose, by name: 'allow' restricts the exposed set,
+# 'deny' removes from it; the deny list wins. Both are empty by default
+# (everything is exposed). See 'debops mcp inspect /path/sock --tools'.
+#allow = []
+#deny = []
+
+# Extra paths the read tools must not serve, relative to the project
+# directory; the built-in deny list (secrets, key material, virtual
+# environments) always applies.
+#read_deny = []
+
+# Playbook execution: 'none' hides the execution tools, 'check' allows
+# check mode only, 'all' allows changing the managed hosts.
+execute = "check"
+
+# How long a playbook execution may run before it is killed, in seconds.
+execute_timeout = 3600
+
+# The ansible-playbook options an execution may pass through.
+execute_options = ["limit", "tags", "skip-tags"]
+
+# Glob allowlists of inventory host patterns the host-query and
+# the execution tools may touch; empty means every host is allowed.
+#ansible_hosts = []
+#execute_hosts = []
+
+# Tools which ask the user for confirmation before they run, on clients
+# which support it. The confirmation is a courtesy, not a security
+# boundary; the 'execute' option above is the boundary.
+confirm = ["run", "project_push"]
+
+# The paths the write tools ('view_write', 'view_delete',
+# 'inventory_spec') may touch, as fnmatch globs relative to the view
+# root; 'playbooks/**' includes the local roles in 'playbooks/roles/'.
+write_allow = ["resources/**", "playbooks/**"]
+
+# The minimum interval between git synchronizations with the origin,
+# in seconds.
+sync_interval = 60
+
+# The write operations refuse to start below this much free disk space,
+# in MiB: a git operation which dies mid-write can leave a broken
+# repository.
+min_free_mb = 64
+
+# Which Ansible Collection content the tools may serve: the bundled
+# DebOps collection, and anything else Ansible can see. The project's
+# own content is always allowed.
+bundled_content = true
+external_content = true
+
+# Note: the global kill switch, 'mcp.enabled', is deliberately not read
+# from the project configuration; it lives in the system or account
+# configuration, written by 'debops mcp disable'.

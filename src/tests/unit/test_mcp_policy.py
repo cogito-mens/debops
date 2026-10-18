@@ -129,6 +129,45 @@ class ResourcePolicyTestCase(unittest.TestCase):
                          .min_free_bytes, 64 * 1024 * 1024)
 
 
+class McpConfigTemplateTestCase(unittest.TestCase):
+    """The shipped 'mcp' configuration template must not drift from the
+    defaults in the code."""
+
+    def _template_values(self):
+        import jinja2
+        import toml
+        from debops.projectdir import _read_config_template
+        rendered = jinja2.Template(_read_config_template('mcp.toml'),
+                                   trim_blocks=True).render(
+                env={}, view='system', default_view='system',
+                project={'name': 'example', 'path': '/srv/x',
+                         'type': 'modern'})
+        return toml.loads(rendered)['project']['mcp']
+
+    def test_template_matches_the_policy_defaults(self):
+        from debops.mcp.policy import _canonical_execute_option
+        values = self._template_values()
+        policy = McpPolicy(FakeProject('/srv/projects/example'))
+
+        self.assertEqual(values['execute'], policy.execute)
+        self.assertEqual(values['execute_timeout'], policy.execute_timeout)
+        self.assertEqual(values['sync_interval'], policy.sync_interval)
+        self.assertEqual(values['min_free_mb'],
+                         policy.min_free_bytes // (1024 * 1024))
+        self.assertEqual(sorted(values['confirm']),
+                         sorted(policy.confirm))
+        self.assertEqual(values['write_allow'], policy.write_allow)
+        # The template uses the CLI spelling of the options; the policy
+        # canonicalizes them
+        self.assertEqual([_canonical_execute_option(option)
+                          for option in values['execute_options']],
+                         policy.execute_options)
+        self.assertEqual(values['bundled_content'],
+                         policy.bundled_content)
+        self.assertEqual(values['external_content'],
+                         policy.external_content)
+
+
 class ConfirmationPolicyTestCase(unittest.TestCase):
 
     def _policy(self, mcp_config):

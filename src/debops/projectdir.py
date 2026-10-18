@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # because the package may be installed as a zip archive, where its data
 # files cannot be listed at runtime
 CONFIG_TEMPLATE_DIR = os.path.join('_data', 'templates', 'conf.d')
-CONFIG_TEMPLATES = {}
+CONFIG_TEMPLATES = {'mcp': 'mcp.toml'}
 
 
 def _read_config_template(filename):
