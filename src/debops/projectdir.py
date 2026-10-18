@@ -15,6 +15,7 @@ from .inventoryspec import (parse_spec, merge_specs, apply_spec,
                             CONTENT_RENDERED_VERSIONS, SPEC_TEMPLATES,
                             SPEC_VERSION)
 from .hooks import run_hooks
+import contextlib
 import os
 import pkgutil
 import getpass
@@ -1567,6 +1568,23 @@ class ProjectDir(object):
             # The configuration option might not exist at this time
             pass
 
+    @contextlib.contextmanager
+    def _closing_repo(self):
+        """A GitPython Repo whose helper processes are closed on exit.
+
+        GitPython spawns persistent 'git cat-file' helpers on object
+        database access and relies on the garbage collector to reap
+        them; in a long-lived process such as the MCP server they would
+        accumulate.
+        """
+        repo = git.Repo(self.path)
+        try:
+            yield repo
+        finally:
+            close = getattr(repo, 'close', None)
+            if close is not None:
+                close()
+
     def commit(self, interactive=False, message=None):
         """Commit the current contents of the project directory to the git
         repository automatically."""
@@ -1576,46 +1594,44 @@ class ProjectDir(object):
         run_hooks(self.path, 'pre-commit')
 
         logger.debug('Detected git repository in project directory')
-        repo = git.Repo(self.path)
-        repo.git.add(all=True)
+        with self._closing_repo() as repo:
+            repo.git.add(all=True)
 
-        # Check if there are any differences between the current HEAD and
-        # the index. If there are, we need to commit them.
-        diff_list = repo.head.commit.diff()
-        if diff_list:
-            if message is None:
-                try:
-                    message = (self.config
-                               .raw['project']['git']['auto_commit_message'])
-                except KeyError:
-                    # There was an issue in the configuration, unstage any
-                    # changes in git index
-                    logger.warning('Issue in DebOps configuration, '
-                                   'unstaging changes in git index')
-                    repo.git.reset()
-                    if interactive:
-                        print('The "project.git.auto_commit_message" option '
-                              'is not defined. Not committing any changes.')
-            if message is not None:
-                logger.debug('New changes detected, committing')
-                repo.index.commit(message)
-                logger.debug('New changes committed in git repository')
-        else:
-            logger.debug('No new changes detected, nothing to commit')
+            # Check if there are any differences between the current HEAD
+            # and the index. If there are, we need to commit them.
+            diff_list = repo.head.commit.diff()
+            if diff_list:
+                if message is None:
+                    try:
+                        message = (self.config.raw['project']
+                                   ['git']['auto_commit_message'])
+                    except KeyError:
+                        # There was an issue in the configuration, unstage
+                        # any changes in git index
+                        logger.warning('Issue in DebOps configuration, '
+                                       'unstaging changes in git index')
+                        repo.git.reset()
+                        if interactive:
+                            print('The "project.git.auto_commit_message" '
+                                  'option is not defined. Not committing '
+                                  'any changes.')
+                if message is not None:
+                    logger.debug('New changes detected, committing')
+                    repo.index.commit(message)
+                    logger.debug('New changes committed in git repository')
+            else:
+                logger.debug('No new changes detected, nothing to commit')
 
         run_hooks(self.path, 'post-commit')
 
-    def _sync_precheck(self):
+    def _sync_precheck(self, repo):
         """Shared guards for pull() and push().
 
-        Returns (repo, branch). The project must be a clean git working
-        tree with an 'origin' remote and an upstream for the current
-        branch; anything else is a ValueError for the caller to show.
+        Returns the current branch. The project must be a clean git
+        working tree with an 'origin' remote and an upstream for the
+        current branch; anything else is a ValueError for the caller to
+        show.
         """
-        if not self._is_git_repo(self.path):
-            raise ValueError('the project directory is not a git '
-                             'repository')
-        repo = git.Repo(self.path)
         if repo.is_dirty(untracked_files=True):
             raise ValueError('the project directory has uncommitted '
                              'changes; commit or stash them first')
@@ -1632,7 +1648,7 @@ class ProjectDir(object):
         if branch.tracking_branch() is None:
             raise ValueError('the current branch has no upstream '
                              'configured')
-        return repo, branch
+        return branch
 
     def _git_env(self):
         """Environment for non-interactive git invocations."""
@@ -1648,9 +1664,13 @@ class ProjectDir(object):
         origin was rewritten and needs a human to look at it. Returns
         a dict describing what changed.
         """
-        repo, branch = self._sync_precheck()
+        if not self._is_git_repo(self.path):
+            raise ValueError('the project directory is not a git '
+                             'repository')
         git_cmd = self.config.raw['binaries']['git']
-        before = repo.head.commit.hexsha
+        with self._closing_repo() as repo:
+            self._sync_precheck(repo)
+            before = repo.head.commit.hexsha
         try:
             result = subprocess.run(
                     [git_cmd, 'pull', '--ff-only'],
@@ -1664,17 +1684,18 @@ class ProjectDir(object):
                              + result.stdout.strip()[-1000:])
 
         # Re-read the repository state after the pull
-        repo = git.Repo(self.path)
-        after = repo.head.commit.hexsha
-        report = {'action': 'pull', 'before': before, 'after': after,
-                  'changed': before != after, 'commits': [],
-                  'files_changed': 0}
-        if report['changed']:
-            log = repo.git.log('--format=%s', '{}..{}'.format(before,
-                                                              after))
-            report['commits'] = log.splitlines() if log else []
-            diff = repo.git.diff('--name-only', before, after)
-            report['files_changed'] = len(diff.splitlines()) if diff else 0
+        with self._closing_repo() as repo:
+            after = repo.head.commit.hexsha
+            report = {'action': 'pull', 'before': before, 'after': after,
+                      'changed': before != after, 'commits': [],
+                      'files_changed': 0}
+            if report['changed']:
+                log = repo.git.log('--format=%s', '{}..{}'.format(
+                        before, after))
+                report['commits'] = log.splitlines() if log else []
+                diff = repo.git.diff('--name-only', before, after)
+                report['files_changed'] = (len(diff.splitlines())
+                                           if diff else 0)
         return report
 
     def push(self):
@@ -1683,12 +1704,16 @@ class ProjectDir(object):
         Only already-committed history is sent; the working tree must be
         clean. Returns a dict describing what was pushed.
         """
-        repo, branch = self._sync_precheck()
+        if not self._is_git_repo(self.path):
+            raise ValueError('the project directory is not a git '
+                             'repository')
         git_cmd = self.config.raw['binaries']['git']
-        upstream = branch.tracking_branch().name
-        ahead = repo.git.log('--format=%s', '{}..{}'.format(upstream,
-                                                            branch.name))
-        commits = ahead.splitlines() if ahead else []
+        with self._closing_repo() as repo:
+            branch = self._sync_precheck(repo)
+            upstream = branch.tracking_branch().name
+            ahead = repo.git.log('--format=%s', '{}..{}'.format(
+                    upstream, branch.name))
+            commits = ahead.splitlines() if ahead else []
         if not commits:
             return {'action': 'push', 'pushed': False, 'commits': []}
         try:

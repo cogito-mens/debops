@@ -10,7 +10,9 @@ exercised against small directory trees.
 """
 
 import os
+import platform
 import re
+import subprocess
 import sys
 from types import SimpleNamespace
 from unittest import mock
@@ -476,6 +478,41 @@ def test_auto_commit_with_a_message():
     project.auto_commit(message="DebOps MCP: run site")
 
     project.commit.assert_called_once_with(message="DebOps MCP: run site")
+
+
+def _cat_file_children():
+    """The 'git cat-file' helper processes this process currently holds."""
+    out = subprocess.run(["ps", "--ppid", str(os.getpid()), "-o", "args="],
+                         capture_output=True, text=True).stdout
+    return [line for line in out.splitlines() if "cat-file" in line]
+
+
+@pytest.mark.skipif(platform.system() != "Linux",
+                    reason="helper processes are listed via ps")
+def test_commit_closes_git_helper_processes(tmp_path):
+    # GitPython spawns persistent 'git cat-file' helpers on object
+    # database access; they must not outlive a commit in a long-lived
+    # process such as the MCP server
+    env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1",
+               GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="test@example.org",
+               GIT_COMMITTER_NAME="Test",
+               GIT_COMMITTER_EMAIL="test@example.org")
+    subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), env=env,
+                   check=True)
+    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "init"],
+                   cwd=str(tmp_path), env=env, check=True)
+    project = make_project_at(
+            tmp_path,
+            raw={"project": {"git": {"auto_commit_message":
+                                     "automatic commit"}}})
+    (tmp_path / "dirty.txt").write_text("x\n")
+
+    project.commit()
+
+    assert _cat_file_children() == []
+    assert subprocess.run(["git", "log", "--format=%s", "-1"],
+                          cwd=str(tmp_path), capture_output=True,
+                          text=True).stdout.strip() == "automatic commit"
 
 
 def test_enable_venv_collections_requirements_without_the_comment(tmp_path):
