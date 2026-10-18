@@ -23,6 +23,9 @@ COLLECTION_ROLES = os.path.join(
 # Role directory names are restricted, which also prevents path traversal
 ROLE_NAME_PATTERN = re.compile(r'^[a-z0-9_]+$')
 
+# A fully qualified role name: 'namespace.collection.role'
+ROLE_FQCN_PATTERN = re.compile(r'^[a-z0-9_]+\.[a-z0-9_]+\.[a-z0-9_]+$')
+
 # Role documentation lives on Read the Docs
 DOCS_BASE_URL = 'https://docs.debops.org/en'
 
@@ -92,14 +95,31 @@ def project_role_paths(project):
     return paths
 
 
-def resolve_role(roles_paths, name):
-    """Validate a role name and return (name, path), or None if unknown.
+def resolve_role(roles_paths, name, index_provider=None):
+    """Resolve a role name to (name, path), or None if unknown.
 
-    roles_paths is a list of directories searched in order; the first
-    match wins, so earlier paths shadow later ones.
+    Short names ('nginx', 'debops.nginx') resolve over the given
+    directories, first match wins, so earlier paths shadow later ones.
+    A fully qualified name ('namespace.collection.role') resolves through
+    the collection index; the content policy applies there.
     """
+    name = str(name or '')
+    if name.count('.') >= 2:
+        if index_provider is None:
+            return None
+        if not ROLE_FQCN_PATTERN.match(name):
+            return None
+        namespace, collection, role = name.split('.')
+        entry = index_provider().get('{}.{}'.format(namespace, collection))
+        if entry is None:
+            return None
+        role_path = os.path.join(entry['path'], 'roles', role)
+        if not os.path.isdir(role_path):
+            return None
+        return role, role_path
+
     # Accept both 'nginx' and the fully qualified 'debops.nginx'
-    name = str(name or '').split('.')[-1]
+    name = name.split('.')[-1]
     if not ROLE_NAME_PATTERN.match(name):
         return None
     for roles_path in roles_paths:
@@ -258,9 +278,13 @@ def _count_tasks(directory):
     return total, files
 
 
-def tool_role_info(roles_paths, arguments, bundled_path=None,
-                   docs_version=None):
-    resolved = resolve_role(roles_paths, arguments.get('name'))
+def tool_role_info(roles_paths, arguments, index_provider=None,
+                   bundled_path=None, docs_version=None):
+    try:
+        resolved = resolve_role(roles_paths, arguments.get('name'),
+                                index_provider)
+    except RuntimeError as errmsg:
+        return error_result(str(errmsg))
     if resolved is None:
         return error_result('role not found or invalid: {}'
                             .format(arguments.get('name')))
@@ -400,10 +424,15 @@ def _load_tasks(tasks_file):
     return [task for task in tasks if isinstance(task, dict)]
 
 
-def _tool_role_tasklist(roles_paths, arguments, subdir):
+def _tool_role_tasklist(roles_paths, arguments, subdir,
+                        index_provider=None):
     """Shared implementation of role_tasks and role_handlers."""
     kind = 'handler' if subdir == 'handlers' else 'task'
-    resolved = resolve_role(roles_paths, arguments.get('name'))
+    try:
+        resolved = resolve_role(roles_paths, arguments.get('name'),
+                                index_provider)
+    except RuntimeError as errmsg:
+        return error_result(str(errmsg))
     if resolved is None:
         return error_result('role not found or invalid: {}'
                             .format(arguments.get('name')))
@@ -471,17 +500,24 @@ def _tool_role_tasklist(roles_paths, arguments, subdir):
     return text_result('\n'.join(lines) + '\n')
 
 
-def tool_role_tasks(roles_paths, arguments):
-    return _tool_role_tasklist(roles_paths, arguments, 'tasks')
+def tool_role_tasks(roles_paths, arguments, index_provider=None):
+    return _tool_role_tasklist(roles_paths, arguments, 'tasks',
+                               index_provider=index_provider)
 
 
-def tool_role_handlers(roles_paths, arguments):
-    return _tool_role_tasklist(roles_paths, arguments, 'handlers')
+def tool_role_handlers(roles_paths, arguments, index_provider=None):
+    return _tool_role_tasklist(roles_paths, arguments, 'handlers',
+                               index_provider=index_provider)
 
 
-def _tool_role_tree(roles_paths, arguments, subdir):
+def _tool_role_tree(roles_paths, arguments, subdir,
+                    index_provider=None):
     """List or read files of a role's 'templates/' or 'files/' tree."""
-    resolved = resolve_role(roles_paths, arguments.get('name'))
+    try:
+        resolved = resolve_role(roles_paths, arguments.get('name'),
+                                index_provider)
+    except RuntimeError as errmsg:
+        return error_result(str(errmsg))
     if resolved is None:
         return error_result('role not found or invalid: {}'
                             .format(arguments.get('name')))
@@ -526,18 +562,145 @@ def _tool_role_tree(roles_paths, arguments, subdir):
     return text_result('# {}\n\n```\n{}```'.format(relative, content))
 
 
-def tool_role_templates(roles_paths, arguments):
-    return _tool_role_tree(roles_paths, arguments, 'templates')
+def tool_role_templates(roles_paths, arguments, index_provider=None):
+    return _tool_role_tree(roles_paths, arguments, 'templates',
+                           index_provider=index_provider)
 
 
-def tool_role_files(roles_paths, arguments):
-    return _tool_role_tree(roles_paths, arguments, 'files')
+def tool_role_files(roles_paths, arguments, index_provider=None):
+    return _tool_role_tree(roles_paths, arguments, 'files',
+                           index_provider=index_provider)
 
 
-def tool_role_variables(roles_paths, arguments):
+def argspec_entries(spec):
+    """Build (name, info) entries from one argument spec entry point."""
+    entries = []
+    for opt_name, option in (spec.get('options') or {}).items():
+        if not isinstance(option, dict):
+            continue
+        description = option.get('description', '')
+        if isinstance(description, list):
+            description = '\n'.join(str(item) for item in description)
+        entries.append((opt_name, {
+            'description': description,
+            'type': option.get('type'),
+            'required': option.get('required', False),
+            'choices': option.get('choices'),
+            'default': option.get('default'),
+            'has_default': 'default' in option,
+        }))
+    return entries
+
+
+def render_spec_entries(label, entries, detail):
+    """Render (name, info) argument entries at the given detail level.
+
+    Each entry's info is a dict with 'description', 'type', 'required',
+    'choices', 'default' and 'has_default' keys, any of which may be
+    missing or empty.
+    """
+    header = '# {} ({})'.format(label, len(entries))
+    if detail == 'names':
+        return '\n'.join([header, ''] + [name for name, _info in entries])
+
+    if detail == 'brief':
+        lines = [header, '']
+        for name, info in entries:
+            summary = ''
+            for description_line in info['description'].splitlines():
+                if description_line.strip():
+                    summary = description_line.strip()
+                    break
+            line = '- **{}**'.format(name)
+            traits = []
+            if info.get('type'):
+                traits.append(info['type'])
+            if info.get('required'):
+                traits.append('required')
+            if traits:
+                line += ' ({})'.format(', '.join(traits))
+            if summary:
+                line += ' — {}'.format(summary)
+            if info.get('has_default'):
+                default = dump_default(info['default'], flow=True)
+                if len(default) > 100:
+                    default = default[:97] + '…'
+                line += ' (default: `{}`)'.format(default)
+            lines.append(line)
+        return '\n'.join(lines)
+
+    lines = [header, '']
+    for name, info in entries:
+        lines.append('## {}'.format(name))
+        lines.append('')
+        traits = []
+        if info.get('type'):
+            traits.append('type: {}'.format(info['type']))
+        if info.get('required'):
+            traits.append('required')
+        if info.get('choices'):
+            traits.append('choices: {}'.format(', '.join(
+                    str(choice) for choice in info['choices'])))
+        if traits:
+            lines.extend(['({})'.format('; '.join(traits)), ''])
+        if info['description']:
+            lines.extend([info['description'], ''])
+        if info.get('has_default'):
+            lines.extend(['```yaml', dump_default(info['default']),
+                          '```', ''])
+    return '\n'.join(lines)
+
+
+def tool_role_argspec(roles_paths, arguments, index_provider=None):
+    try:
+        resolved = resolve_role(roles_paths, arguments.get('name'),
+                                index_provider)
+    except RuntimeError as errmsg:
+        return error_result(str(errmsg))
+    if resolved is None:
+        return error_result('role not found or invalid: {}'
+                            .format(arguments.get('name')))
+    name, path = resolved
+    # Display the requested name so external roles keep their prefix
+    display = str(arguments.get('name') or '')
+    if not display.count('.'):
+        display = 'debops.' + name
+    specs = load_argument_specs(path)
+    if not specs:
+        return error_result('role {} has no argument specs '
+                            '(meta/argument_specs.yml)'.format(display))
+
+    detail = arguments.get('detail', 'brief')
+    if detail not in ('names', 'brief', 'full'):
+        return error_result('invalid detail level: {}'.format(detail))
+    name_filter = str(arguments.get('filter') or '').lower()
+
+    lines = []
+    for entry_point in sorted(specs):
+        entries = argspec_entries(specs[entry_point])
+        if name_filter:
+            entries = [entry for entry in entries
+                       if name_filter in entry[0].lower()]
+        if not entries:
+            continue
+        lines.append(render_spec_entries(
+                '{} argument spec: {}'.format(display, entry_point),
+                entries, detail))
+        lines.append('')
+    if not lines:
+        return text_result('no matching options in the debops.{} '
+                           'argument specs'.format(name))
+    return text_result('\n'.join(lines))
+
+
+def tool_role_variables(roles_paths, arguments, index_provider=None):
     """The role's own variables from vars/ (higher precedence than
     defaults, not meant to be overridden from the inventory)."""
-    resolved = resolve_role(roles_paths, arguments.get('name'))
+    try:
+        resolved = resolve_role(roles_paths, arguments.get('name'),
+                                index_provider)
+    except RuntimeError as errmsg:
+        return error_result(str(errmsg))
     if resolved is None:
         return error_result('role not found or invalid: {}'
                             .format(arguments.get('name')))
@@ -609,9 +772,13 @@ def tool_role_variables(roles_paths, arguments):
     return text_result('\n'.join(lines))
 
 
-def tool_role_defaults(roles_paths, arguments, bundled_path=None,
-                       docs_version=None):
-    resolved = resolve_role(roles_paths, arguments.get('name'))
+def tool_role_defaults(roles_paths, arguments, index_provider=None,
+                       bundled_path=None, docs_version=None):
+    try:
+        resolved = resolve_role(roles_paths, arguments.get('name'),
+                                index_provider)
+    except RuntimeError as errmsg:
+        return error_result(str(errmsg))
     if resolved is None:
         return error_result('role not found or invalid: {}'
                             .format(arguments.get('name')))

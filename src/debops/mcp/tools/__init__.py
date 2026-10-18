@@ -14,8 +14,7 @@ import time
 from .collections import (COLLECTION_INDEX_TTL, galaxy_collection_list,
                           index_from_galaxy, restrict_content,
                           tool_collection_playbook_info,
-                          tool_collection_playbooks, tool_collection_role_info,
-                          tool_collection_role_variables,
+                          tool_collection_playbooks,
                           tool_collection_roles)
 from .execute import tool_check, tool_run
 from .files import (tool_config_get, tool_inventory_query,
@@ -24,9 +23,9 @@ from .hosts import tool_ansible_facts, tool_ansible_ping
 from .playbooks import (COLLECTION_PLAYBOOKS, tool_playbook_info,
                         tool_playbooks)
 from .project import tool_project_status
-from .roles import (COLLECTION_ROLES, project_role_paths, tool_role_defaults,
-                    tool_role_files, tool_role_handlers, tool_role_info,
-                    tool_role_tasks, tool_role_templates,
+from .roles import (COLLECTION_ROLES, project_role_paths, tool_role_argspec,
+                    tool_role_defaults, tool_role_files, tool_role_handlers,
+                    tool_role_info, tool_role_tasks, tool_role_templates,
                     tool_role_variables)
 from .secrets import tool_secret_paths
 from .sync import make_sync_tool
@@ -218,40 +217,6 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                     'this string'}}},
          lambda arguments: tool_collection_roles(
              collection_index_provider, arguments)),
-        ('collection_role_info',
-         'Describe a role from any Ansible Collection visible to this '
-         'project: purpose, argument specs, provided parts, and where it '
-         'was resolved from.',
-         {'type': 'object',
-          'properties': {'role': {'type': 'string',
-                                  'description': 'Fully qualified role '
-                                  'name, e.g. "grafana.grafana.grafana"'}},
-          'required': ['role']},
-         lambda arguments: tool_collection_role_info(
-             collection_index_provider, arguments)),
-        ('collection_role_variables',
-         'List the variables of a role from any Ansible Collection '
-         'visible to this project, from its argument specs when present '
-         'or its defaults otherwise. Survey with the "brief" or "names" '
-         'detail level, then use "filter" with "full" for details.',
-         {'type': 'object',
-          'properties': {'role': {'type': 'string',
-                                  'description': 'Fully qualified role '
-                                  'name, e.g. "grafana.grafana.grafana"'},
-                         'filter': {'type': 'string',
-                                    'description': 'Only include variables '
-                                    'whose name contains this string'},
-                         'detail': {'type': 'string',
-                                    'enum': ['names', 'brief', 'full'],
-                                    'description': 'Level of detail: '
-                                    '"names" lists variable names only, '
-                                    '"brief" (default) gives a one-line '
-                                    'summary and a truncated default per '
-                                    'variable, "full" gives the complete '
-                                    'documentation'}},
-          'required': ['role']},
-         lambda arguments: tool_collection_role_variables(
-             collection_index_provider, arguments)),
     ]
 
     # Playbook execution is gated: 'check' mode by default, changes only
@@ -344,6 +309,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
               'required': ['name']},
              lambda arguments: tool_role_info(
                  roles_paths, arguments,
+                 index_provider=collection_index_provider,
                  bundled_path=roles_path if bundled_content else None,
                  docs_version=server.version)),
             ('role_variables',
@@ -369,8 +335,34 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                         'default per variable, "full" '
                                         'gives the complete documentation'}},
               'required': ['name']},
-             lambda arguments: tool_role_variables(roles_paths,
-                                                   arguments)),
+             lambda arguments: tool_role_variables(
+                               roles_paths, arguments,
+                               index_provider=collection_index_provider)),
+            ('role_argspec',
+             'Render the argument specification of a role '
+             '(meta/argument_specs.yml): its options with types, '
+             'required flags, choices and defaults. Use this for roles '
+             'which document their interface that way.',
+             {'type': 'object',
+              'properties': {'name': {'type': 'string',
+                                      'description': 'Role name, short '
+                                      'or fully qualified '
+                                      '(namespace.collection.role)'},
+                             'filter': {'type': 'string',
+                                        'description': 'Only include '
+                                        'options whose name contains '
+                                        'this string'},
+                             'detail': {'type': 'string',
+                                        'enum': ['names', 'brief', 'full'],
+                                        'description': 'Level of detail: '
+                                        '"names" lists option names '
+                                        'only, "brief" (default) gives a '
+                                        'one-line summary, "full" the '
+                                        'complete specification'}},
+              'required': ['name']},
+             lambda arguments: tool_role_argspec(
+                               roles_paths, arguments,
+                               index_provider=collection_index_provider)),
             ('role_defaults',
              'List the default inventory variables of a role of this '
              'project or the bundled DebOps collection, from its '
@@ -399,6 +391,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
               'required': ['name']},
              lambda arguments: tool_role_defaults(
                  roles_paths, arguments,
+                 index_provider=collection_index_provider,
                  bundled_path=roles_path if bundled_content else None,
                  docs_version=server.version)),
             ('role_tasks',
@@ -423,7 +416,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                         'shows name and module, "full" '
                                         'adds when/tags'}},
               'required': ['name']},
-             lambda arguments: tool_role_tasks(roles_paths, arguments)),
+             lambda arguments: tool_role_tasks(
+                 roles_paths, arguments,
+                 index_provider=collection_index_provider)),
             ('role_handlers',
              'Inspect the handlers of a role: its handler files, and '
              'per file the handlers with their modules, listen topics '
@@ -447,8 +442,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                         'and listen topic, "full" adds '
                                         'when/tags'}},
               'required': ['name']},
-             lambda arguments: tool_role_handlers(roles_paths,
-                                                  arguments)),
+             lambda arguments: tool_role_handlers(
+                 roles_paths, arguments,
+                 index_provider=collection_index_provider)),
             ('role_templates',
              'List the Jinja2 templates of a role, or print one of '
              'them.',
@@ -461,8 +457,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                       'relative to the role\'s '
                                       'templates/ directory'}},
               'required': ['name']},
-             lambda arguments: tool_role_templates(roles_paths,
-                                                   arguments)),
+             lambda arguments: tool_role_templates(
+                 roles_paths, arguments,
+                 index_provider=collection_index_provider)),
             ('role_files',
              'List the static files of a role, or print one of them.',
              {'type': 'object',
@@ -474,7 +471,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                       'relative to the role\'s files/ '
                                       'directory'}},
               'required': ['name']},
-             lambda arguments: tool_role_files(roles_paths, arguments)),
+             lambda arguments: tool_role_files(
+                 roles_paths, arguments,
+                 index_provider=collection_index_provider)),
         ])
 
     # Git synchronization with the project origin; throttled per

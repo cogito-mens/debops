@@ -161,6 +161,11 @@ plainrole__port: 9000
 plainrole__undocumented: true
 '''
 
+PLAIN_ROLE_VARS = '''---
+# The internal state of the plain role.
+plainrole__internal_state: 'on'
+'''
+
 SITE_PLAYBOOK = '''---
 - name: Manage everything
   import_playbook: service/testrole.yml
@@ -268,10 +273,13 @@ class ToolsTestCase(unittest.TestCase):
             fp.write(SPEC_ROLE_ARGUMENT_SPECS)
         with open(os.path.join(specrole, 'defaults', 'main.yml'), 'w') as fp:
             fp.write(SPEC_ROLE_DEFAULTS)
+        os.makedirs(os.path.join(plainrole, 'vars'))
         with open(os.path.join(plainrole, 'meta', 'main.yml'), 'w') as fp:
             fp.write(PLAIN_ROLE_META)
         with open(os.path.join(plainrole, 'defaults', 'main.yml'), 'w') as fp:
             fp.write(PLAIN_ROLE_DEFAULTS)
+        with open(os.path.join(plainrole, 'vars', 'main.yml'), 'w') as fp:
+            fp.write(PLAIN_ROLE_VARS)
 
         # Playbooks: one project playbook, a fixture bundled collection
         os.makedirs(os.path.join(project_dir, 'ansible', 'playbooks'))
@@ -352,14 +360,14 @@ class ToolsTestCase(unittest.TestCase):
         self.assertEqual(sorted(names),
                          ['ansible_facts', 'ansible_ping', 'check',
                           'collection_playbook_info',
-                          'collection_playbooks', 'collection_role_info',
-                          'collection_role_variables', 'collection_roles',
+                          'collection_playbooks', 'collection_roles',
                           'config_get', 'inventory_query', 'playbook_info',
                           'playbooks', 'project_files', 'project_pull',
                           'project_push', 'project_read', 'project_status',
-                          'role_defaults', 'role_files', 'role_handlers',
-                          'role_info', 'role_tasks', 'role_templates',
-                          'role_variables', 'secret_paths'])
+                          'role_argspec', 'role_defaults', 'role_files',
+                          'role_handlers', 'role_info', 'role_tasks',
+                          'role_templates', 'role_variables',
+                          'secret_paths'])
 
     def test_denied_tool_is_not_registered(self):
         self.project.config.raw['project'] = {'mcp': {'deny': ['role_info']}}
@@ -604,168 +612,164 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('ansible-galaxy',
                       response['result']['content'][0]['text'])
 
-    # -- collection_role_info ----------------------------------------------
+    # -- fully qualified role names (unified resolution) ---------------------
 
-    def test_collection_role_info_plain(self):
-        response = self.call_tool('collection_role_info',
-                                  {'role': 'testns.testcoll.plainrole'})
+    def test_role_info_with_fqcn(self):
+        response = self.call_tool('role_info',
+                                  {'name': 'testns.testcoll.plainrole'})
         text = self.result_text(response)
-        self.assertIn('# testns.testcoll.plainrole', text)
         self.assertIn('A plainly documented role', text)
-        self.assertIn('argument specs: none', text)
-        self.assertIn('variables: 2', text)
+        self.assertIn('- argument specs: none', text)
         self.assertIn('resolved at:', text)
 
-    def test_collection_role_info_with_specs(self):
-        response = self.call_tool('collection_role_info',
-                                  {'role': 'testns.testcoll.specrole'})
-        self.assertIn('argument specs: main', self.result_text(response))
-
-    def test_collection_role_info_rejects_bad_names(self):
-        for name in ('two.parts', '../..', 'testns.testcoll.nosuch',
-                     'nosuch.collection.role'):
-            response = self.call_tool('collection_role_info',
-                                      {'role': name})
+    def test_role_info_rejects_bad_fqcn(self):
+        for name in ('two.parts', 'a.b.c.d', '../..'):
+            response = self.call_tool('role_info', {'name': name})
             self.assertTrue(response['result']['isError'], name)
 
-    # -- collection_role_variables -----------------------------------------
-
-    def test_collection_role_variables_from_argument_specs(self):
-        response = self.call_tool('collection_role_variables',
-                                  {'role': 'testns.testcoll.specrole'})
+    def test_role_argspec_with_fqcn(self):
+        response = self.call_tool('role_argspec',
+                                  {'name': 'testns.testcoll.specrole'})
         text = self.result_text(response)
-        # Specs carry type, required and choices
+        self.assertIn('argument spec: main', text)
         self.assertIn('- **specrole__state** (str)', text)
         self.assertIn('- **specrole__password** (str, required)', text)
-        # Variables present in defaults but not in specs are listed too
-        self.assertIn('- **specrole__extra_default**', text)
 
-    def test_collection_role_variables_specs_full(self):
-        response = self.call_tool('collection_role_variables',
-                                  {'role': 'testns.testcoll.specrole',
+    def test_role_argspec_full(self):
+        response = self.call_tool('role_argspec',
+                                  {'name': 'testns.testcoll.specrole',
                                    'detail': 'full'})
         text = self.result_text(response)
         self.assertIn('## specrole__state', text)
-        self.assertIn('choices: present, absent', text)
+        self.assertIn('(type: str; choices: present, absent)', text)
         self.assertIn('Desired state of the thing.', text)
         self.assertIn('```yaml\npresent\n```', text)
 
-    def test_collection_role_variables_plain_comment_association(self):
-        response = self.call_tool('collection_role_variables',
-                                  {'role': 'testns.testcoll.plainrole'})
+    def test_role_argspec_none_present(self):
+        response = self.call_tool('role_argspec', {'name': 'testrole'})
+        self.assertTrue(response['result']['isError'])
+        self.assertIn('no argument specs', self.result_text(response))
+
+    def test_role_variables_with_fqcn(self):
+        response = self.call_tool('role_variables',
+                                  {'name': 'testns.testcoll.plainrole'})
         text = self.result_text(response)
-        self.assertIn('- **plainrole__port** — Configure the listen port. '
-                      '(default: `9000`)', text)
-        self.assertIn('- **plainrole__undocumented** (default: `true`)',
-                      text)
+        self.assertIn('- **plainrole__internal_state** — The internal '
+                      'state of the plain role. (default: `\'on\'`)', text)
 
-    def test_collection_role_variables_names_detail(self):
-        response = self.call_tool('collection_role_variables',
-                                  {'role': 'testns.testcoll.specrole',
-                                   'detail': 'names'})
+    def test_role_defaults_with_fqcn(self):
+        response = self.call_tool('role_defaults',
+                                  {'name': 'testns.testcoll.specrole'})
         text = self.result_text(response)
-        self.assertIn('specrole__state', text)
-        self.assertNotIn('**', text)
+        self.assertIn('- **specrole__extra_default**', text)
 
-    # -- playbooks ----------------------------------------------------------
-
-    def test_playbooks_list(self):
-        response = self.call_tool('playbooks')
-        text = self.result_text(response)
-        self.assertIn('## Project playbooks (view "system")', text)
-        self.assertIn('- `custom` — Custom project playbook '
-                      '(hosts: custom_group)', text)
-        self.assertIn('## DebOps collection: service/', text)
-        self.assertIn('- `service/testrole` — Manage the test role '
-                      '(hosts: debops_service_testrole)', text)
-        self.assertIn('- `site`', text)
-        # Support directories are not listed as playbooks
-        self.assertNotIn('vars', text)
-
-    def test_playbooks_filter(self):
-        response = self.call_tool('playbooks', {'filter': 'testrole'})
-        text = self.result_text(response)
-        self.assertIn('service/testrole', text)
-        self.assertNotIn('`site`', text)
-
-    def test_playbooks_sets_from_view_configuration(self):
-        self.project.config.raw['views'] = {
-                'system': {'playbook_sets': {
-                    'web': ['service/nginx', 'service/php_fpm']}}}
-        server = McpServer(project=self.project,
-                           policy=McpPolicy(self.project))
-        register_project_tools(
-                server, roles_path=self.roles_path,
-                playbooks_path=self.playbooks_path,
-                collection_index_provider=lambda: self.collection_index)
-        response = server.handle({
-                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                'params': {'name': 'playbooks', 'arguments': {}}})
-        text = response['result']['content'][0]['text']
-        self.assertIn('## Playbook sets (view configuration)', text)
-        self.assertIn('- `web` → service/nginx, service/php_fpm', text)
-
-    def test_playbook_info(self):
-        response = self.call_tool('playbook_info',
-                                  {'playbook': 'service/testrole'})
-        text = self.result_text(response)
-        self.assertFalse(response['result']['isError'])
-        self.assertIn('Execution target: `service/testrole`', text)
-        self.assertIn('- Manage the test role — hosts: '
-                      'debops_service_testrole (become)', text)
-        # Short role names are normalized using the play's collections
-        self.assertIn('- debops.debops.keyring', text)
-        self.assertIn('- debops.debops.testrole', text)
-        self.assertIn('## Inventory groups in use', text)
-        self.assertIn('- debops_service_testrole', text)
-
-    def test_playbook_info_imports(self):
-        response = self.call_tool('playbook_info', {'playbook': 'site'})
-        text = self.result_text(response)
-        self.assertIn('## Imported playbooks', text)
-        self.assertIn('- service/testrole.yml', text)
-
-    def test_playbook_info_project_playbook(self):
-        response = self.call_tool('playbook_info', {'playbook': 'custom'})
-        text = self.result_text(response)
-        # The task-level include_role statement is found
-        self.assertIn('- testrole', text)
-
-    def test_playbook_info_rejects_traversal(self):
-        for name in ('../defaults/main', '/etc/passwd', 'nosuch'):
-            response = self.call_tool('playbook_info', {'playbook': name})
-            self.assertTrue(response['result']['isError'], name)
-
-    # -- collection playbooks ----------------------------------------------
-
-    def test_collection_playbooks(self):
-        response = self.call_tool('collection_playbooks',
-                                  {'collection': 'testns.testcoll'})
-        text = self.result_text(response)
-        self.assertIn('# Playbooks in testns.testcoll (1.0.0)', text)
-        self.assertIn('- `testns.testcoll/install` — Install the thing '
-                      '(hosts: localhost)', text)
-
-    def test_collection_playbooks_no_playbooks_dir(self):
-        response = self.call_tool('collection_playbooks',
-                                  {'collection': 'testns.nosuch'})
+    def test_role_variables_fqcn_unknown_collection(self):
+        response = self.call_tool('role_variables',
+                                  {'name': 'nosuch.collection.role'})
         self.assertTrue(response['result']['isError'])
 
-    def test_collection_playbook_info(self):
-        response = self.call_tool('collection_playbook_info',
-                                  {'collection': 'testns.testcoll',
-                                   'playbook': 'install'})
-        text = self.result_text(response)
-        self.assertIn('Execution target: `testns.testcoll/install`',
-                      text)
-        # The task-level include_role statement is found
-        self.assertIn('- testns.testcoll.plainrole', text)
+    # -- role_tasks / role_templates / role_files ----------------------------
 
-    def test_collection_playbook_info_rejects_traversal(self):
-        response = self.call_tool('collection_playbook_info',
-                                  {'collection': 'testns.testcoll',
-                                   'playbook': '../roles/plainrole'})
+    def test_role_tasks_overview(self):
+        response = self.call_tool('role_tasks', {'name': 'testrole'})
+        text = self.result_text(response)
+        self.assertIn('- `main` — 3 tasks', text)
+        self.assertIn('- `extra` — 1 task', text)
+        self.assertIn('(4 tasks)', text)
+
+    def test_role_tasks_file_brief(self):
+        response = self.call_tool('role_tasks',
+                                  {'name': 'testrole', 'file': 'main'})
+        text = self.result_text(response)
+        self.assertIn('- Install the test packages — ansible.builtin.apt',
+                      text)
+        self.assertIn('- Internal helper tasks — '
+                      'ansible.builtin.include_tasks', text)
+        self.assertNotIn('when:', text)
+
+    def test_role_tasks_file_full(self):
+        response = self.call_tool('role_tasks',
+                                  {'name': 'testrole', 'file': 'main',
+                                   'detail': 'full'})
+        text = self.result_text(response)
+        self.assertIn('when: testrole__enabled | bool', text)
+        self.assertIn('tags: role::testrole, skip::testrole', text)
+
+    def test_role_tasks_filter(self):
+        response = self.call_tool('role_tasks',
+                                  {'name': 'testrole', 'file': 'main',
+                                   'filter': 'configure'})
+        text = self.result_text(response)
+        self.assertIn('Configure the test service', text)
+        self.assertNotIn('Install the test packages', text)
+
+    def test_role_tasks_unknown_file(self):
+        response = self.call_tool('role_tasks',
+                                  {'name': 'testrole', 'file': 'nosuch'})
         self.assertTrue(response['result']['isError'])
+
+    def test_role_tasks_traversal_rejected(self):
+        response = self.call_tool('role_tasks',
+                                  {'name': 'testrole',
+                                   'file': '../defaults/main'})
+        self.assertTrue(response['result']['isError'])
+
+    def test_role_tasks_no_tasks_dir(self):
+        response = self.call_tool('role_tasks', {'name': 'splitrole'})
+        self.assertTrue(response['result']['isError'])
+        self.assertIn('no tasks', self.result_text(response))
+
+    def test_role_templates(self):
+        response = self.call_tool('role_templates', {'name': 'testrole'})
+        text = self.result_text(response)
+        self.assertIn('- etc/testrole/config.j2', text)
+
+        response = self.call_tool('role_templates',
+                                  {'name': 'testrole',
+                                   'path': 'etc/testrole/config.j2'})
+        self.assertIn('ansible_managed', self.result_text(response))
+
+    def test_role_templates_traversal_rejected(self):
+        response = self.call_tool('role_templates',
+                                  {'name': 'testrole',
+                                   'path': '../../defaults/main.yml'})
+        self.assertTrue(response['result']['isError'])
+
+    def test_role_files(self):
+        response = self.call_tool('role_files', {'name': 'testrole'})
+        self.assertIn('- etc/motd.txt', self.result_text(response))
+
+        response = self.call_tool('role_files',
+                                  {'name': 'testrole',
+                                   'path': 'etc/motd.txt'})
+        self.assertIn('A static file', self.result_text(response))
+
+    def test_role_files_missing(self):
+        response = self.call_tool('role_files', {'name': 'splitrole'})
+        self.assertTrue(response['result']['isError'])
+        self.assertIn('no files', self.result_text(response))
+
+    # -- role_handlers -------------------------------------------------------
+
+    def test_role_handlers_overview(self):
+        response = self.call_tool('role_handlers', {'name': 'testrole'})
+        text = self.result_text(response)
+        self.assertIn('- `main` — 2 handlers', text)
+        self.assertIn('- `extra` — 1 handler', text)
+        self.assertIn('(3 handlers)', text)
+
+    def test_role_handlers_file_with_listen(self):
+        response = self.call_tool('role_handlers',
+                                  {'name': 'testrole', 'file': 'main'})
+        text = self.result_text(response)
+        self.assertIn('- Restart the test service — '
+                      'ansible.builtin.service (listen: restart testrole)',
+                      text)
+
+    def test_role_handlers_no_handlers_dir(self):
+        response = self.call_tool('role_handlers', {'name': 'splitrole'})
+        self.assertTrue(response['result']['isError'])
+        self.assertIn('no handlers', self.result_text(response))
 
     # -- content policy -----------------------------------------------------
 

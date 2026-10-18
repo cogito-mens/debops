@@ -151,15 +151,15 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
     names = [tool["name"] for tool in response["result"]["tools"]]
     assert sorted(names) == ["ansible_facts", "ansible_ping", "check",
                              "collection_playbook_info",
-                             "collection_playbooks", "collection_role_info",
-                             "collection_role_variables", "collection_roles",
+                             "collection_playbooks", "collection_roles",
                              "config_get", "inventory_query",
                              "playbook_info", "playbooks", "project_files",
                              "project_pull", "project_push", "project_read",
-                             "project_status", "role_defaults",
-                             "role_files", "role_handlers", "role_info",
-                             "role_tasks", "role_templates",
-                             "role_variables", "secret_paths"]
+                             "project_status", "role_argspec",
+                             "role_defaults", "role_files",
+                             "role_handlers", "role_info", "role_tasks",
+                             "role_templates", "role_variables",
+                             "secret_paths"]
 
 
 def test_role_defaults_via_stdio(run_debops, mcp_env, project_dir):

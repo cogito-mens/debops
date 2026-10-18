@@ -15,14 +15,11 @@ import logging
 import os
 import re
 import subprocess
-import yaml
 
 from ..policy import confine_under
-from .common import (FOLD_MARKER, dump_default, error_result, text_result)
+from .common import (error_result, text_result)
 from .playbooks import (list_playbooks, parse_playbook, playbook_summary,
                         render_playbook_info, target_form)
-from .roles import (extract_plain_docs, load_argument_specs,
-                    load_role_sources, merge_role_values)
 
 logger = logging.getLogger(__name__)
 
@@ -130,20 +127,6 @@ def list_collection_roles(collection_path):
     return roles
 
 
-def resolve_collection_role(index, fqcn_role):
-    """Resolve 'namespace.collection.role' to (name, path)."""
-    if not ROLE_FQCN_PATTERN.match(str(fqcn_role or '')):
-        return None
-    namespace, collection, role = fqcn_role.split('.')
-    entry = index.get('{}.{}'.format(namespace, collection))
-    if entry is None:
-        return None
-    role_path = os.path.join(entry['path'], 'roles', role)
-    if not os.path.isdir(role_path):
-        return None
-    return role, role_path
-
-
 def resolve_collection(index, fqcn):
     """Resolve 'namespace.collection' to its index entry, or None."""
     if not COLLECTION_FQCN_PATTERN.match(str(fqcn or '')):
@@ -177,184 +160,6 @@ def tool_collection_roles(index_provider, arguments):
     header = '# Collections with roles visible to Ansible ({})'.format(
             total)
     return text_result('\n'.join([header, ''] + lines))
-
-
-def tool_collection_role_info(index_provider, arguments):
-    try:
-        index = index_provider()
-    except RuntimeError as errmsg:
-        return error_result(str(errmsg))
-    resolved = resolve_collection_role(index, arguments.get('role'))
-    if resolved is None:
-        return error_result('role not found or invalid: {}'
-                            .format(arguments.get('role')))
-    role, role_path = resolved
-    fqcn_role = arguments.get('role')
-
-    description = ''
-    tags = []
-    meta_file = os.path.join(role_path, 'meta', 'main.yml')
-    if os.path.isfile(meta_file):
-        try:
-            with open(meta_file) as fp:
-                meta = yaml.safe_load(fp) or {}
-            galaxy_info = meta.get('galaxy_info', {})
-            description = galaxy_info.get('description', '')
-            tags = galaxy_info.get('galaxy_tags', [])
-        except yaml.YAMLError as errmsg:
-            logger.warning('Cannot parse %s: %s', meta_file, errmsg)
-
-    specs = load_argument_specs(role_path)
-    values, partial = merge_role_values(load_role_sources(
-            role_path, 'defaults'))
-
-    lines = ['# {}'.format(fqcn_role), '']
-    if description:
-        lines.extend([description, ''])
-    lines.append('- resolved at: {}'.format(role_path))
-    variables_line = str(len(values))
-    if partial:
-        variables_line += ' (partial, a defaults file did not parse)'
-    lines.append('- variables: {}'.format(variables_line))
-    if specs:
-        lines.append('- argument specs: {}'.format(', '.join(
-                sorted(specs.keys()))))
-    else:
-        lines.append('- argument specs: none')
-    lines.append('- README: {}'.format(
-            'yes' if os.path.isfile(os.path.join(
-                role_path, 'README.md')) else 'no'))
-    lines.append('- tasks: {}'.format(
-            'yes' if os.path.isfile(os.path.join(
-                role_path, 'tasks', 'main.yml')) else 'no'))
-    if tags:
-        lines.append('- galaxy tags: {}'.format(', '.join(tags)))
-    return text_result('\n'.join(lines))
-
-
-def render_variable_entries(fqcn_role, entries, detail):
-    """Render (name, info) variable entries at the given detail level.
-
-    Each entry's info is a dict with 'description', 'type', 'required',
-    'choices', 'default' and 'has_default' keys, any of which may be
-    missing or empty.
-    """
-    header = '# {} role variables ({})'.format(fqcn_role, len(entries))
-    if detail == 'names':
-        return '\n'.join([header, ''] + [name for name, _info in entries])
-
-    if detail == 'brief':
-        lines = [header, '']
-        for name, info in entries:
-            summary = ''
-            for description_line in info['description'].splitlines():
-                if description_line.strip():
-                    summary = description_line.strip()
-                    break
-            line = '- **{}**'.format(name)
-            traits = []
-            if info.get('type'):
-                traits.append(info['type'])
-            if info.get('required'):
-                traits.append('required')
-            if traits:
-                line += ' ({})'.format(', '.join(traits))
-            if summary:
-                line += ' — {}'.format(summary)
-            if info.get('has_default'):
-                default = dump_default(info['default'], flow=True)
-                if len(default) > 100:
-                    default = default[:97] + '…'
-                line += ' (default: `{}`)'.format(default)
-            lines.append(line)
-        return '\n'.join(lines)
-
-    lines = [header, '']
-    for name, info in entries:
-        lines.append('## {}'.format(name))
-        lines.append('')
-        traits = []
-        if info.get('type'):
-            traits.append('type: {}'.format(info['type']))
-        if info.get('required'):
-            traits.append('required')
-        if info.get('choices'):
-            traits.append('choices: {}'.format(', '.join(
-                    str(choice) for choice in info['choices'])))
-        if traits:
-            lines.extend(['({})'.format('; '.join(traits)), ''])
-        if info['description']:
-            lines.extend([info['description'], ''])
-        if info.get('has_default'):
-            lines.extend(['```yaml', dump_default(info['default']),
-                          '```', ''])
-    return '\n'.join(lines)
-
-
-def tool_collection_role_variables(index_provider, arguments):
-    try:
-        index = index_provider()
-    except RuntimeError as errmsg:
-        return error_result(str(errmsg))
-    resolved = resolve_collection_role(index, arguments.get('role'))
-    if resolved is None:
-        return error_result('role not found or invalid: {}'
-                            .format(arguments.get('role')))
-    role, role_path = resolved
-    fqcn_role = arguments.get('role')
-
-    detail = arguments.get('detail', 'brief')
-    if detail not in ('names', 'brief', 'full'):
-        return error_result('invalid detail level: {}'.format(detail))
-
-    entries = []
-    seen = set()
-
-    # Structured argument specs are authoritative when present
-    specs = load_argument_specs(role_path)
-    if specs:
-        entry_point = specs.get('main')
-        if entry_point is None:
-            entry_point = next(iter(specs.values()), {})
-        for opt_name, spec in (entry_point.get('options') or {}).items():
-            if not isinstance(spec, dict):
-                continue
-            description = spec.get('description', '')
-            if isinstance(description, list):
-                description = '\n'.join(str(item) for item in description)
-            entries.append((opt_name, {
-                'description': description,
-                'type': spec.get('type'),
-                'required': spec.get('required', False),
-                'choices': spec.get('choices'),
-                'default': spec.get('default'),
-                'has_default': 'default' in spec,
-            }))
-            seen.add(opt_name)
-
-    # Defaults cover the rest, with their comment blocks as documentation
-    sources = load_role_sources(role_path, 'defaults')
-    values, _partial = merge_role_values(sources)
-    for _source, text in sources:
-        for var_name, description in extract_plain_docs(text):
-            if var_name in seen:
-                continue
-            entries.append((var_name, {
-                'description': description,
-                'default': values.get(var_name),
-                'has_default': var_name in values,
-            }))
-            seen.add(var_name)
-
-    name_filter = str(arguments.get('filter') or '').lower()
-    if name_filter:
-        entries = [entry for entry in entries
-                   if name_filter in entry[0].lower()]
-    if not entries:
-        return text_result('no matching variables in the {} role'
-                           .format(fqcn_role))
-    return text_result(render_variable_entries(fqcn_role, entries,
-                                               detail))
 
 
 def tool_collection_playbooks(index_provider, arguments):
