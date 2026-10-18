@@ -20,6 +20,7 @@ from .collections import (COLLECTION_INDEX_TTL, galaxy_collection_list,
 from .execute import tool_check, tool_run
 from .files import (tool_config_get, tool_inventory_query,
                     tool_project_files, tool_project_read)
+from .hosts import tool_exec_facts, tool_exec_ping
 from .playbooks import (COLLECTION_PLAYBOOKS, tool_playbook_info,
                         tool_playbooks)
 from .project import tool_project_status
@@ -282,6 +283,46 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                 enabled_check=enabled_check,
                 on_disabled=server.cancel_all),
             True))
+
+    # Host queries change nothing, so they are registered wherever
+    # execution is allowed at all
+    if execute_mode in ('check', 'all'):
+        exec_properties = {
+            'hosts': {'type': 'string',
+                      'description': 'Host or group pattern to query, '
+                      'e.g. "webservers" or "web1.example.com"'},
+            'become': {'type': 'boolean',
+                       'description': 'Escalate privileges on the '
+                       'remote host (sudo to root) — useful because an '
+                       'unprivileged account sees a different fact set '
+                       'than root. Whether it works is governed by the '
+                       'remote sudo configuration, not by this server.'},
+        }
+        tools.extend([
+            ('exec_ping',
+             'Check SSH connectivity and Ansible reachability of hosts '
+             '(ansible -m ping). Use this to verify a connection before '
+             'querying or changing a host.',
+             {'type': 'object', 'properties': exec_properties,
+              'required': ['hosts']},
+             lambda arguments, context: tool_exec_ping(
+                 project, policy, arguments, context),
+             True),
+            ('exec_facts',
+             'Gather Ansible facts from hosts (ansible -m setup), '
+             'for debugging and environment knowledge. The output is '
+             'large; use "filter" to narrow it (e.g. '
+             '"ansible_distribution*", "ansible_default_ipv4*").',
+             {'type': 'object',
+              'properties': dict(exec_properties, **{
+                  'filter': {'type': 'string',
+                             'description': 'Narrow the gathered facts '
+                             'with a glob, e.g. "ansible_default_ipv4*"'}}),
+              'required': ['hosts']},
+             lambda arguments, context: tool_exec_facts(
+                 project, policy, arguments, context),
+             True),
+        ])
 
     # Role tools search the project's own roles first; the bundled
     # DebOps collection is included unless the policy disables it. With

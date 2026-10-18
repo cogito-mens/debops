@@ -152,7 +152,8 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
     assert sorted(names) == ["check", "collection_playbook_info",
                              "collection_playbooks", "collection_role_info",
                              "collection_role_variables", "collection_roles",
-                             "config_get", "inventory_query",
+                             "config_get", "exec_facts", "exec_ping",
+                             "inventory_query",
                              "playbook_info", "playbooks", "project_files",
                              "project_pull", "project_push", "project_read",
                              "project_status", "role_defaults",
@@ -369,6 +370,30 @@ def test_secret_paths_via_stdio(run_debops, mcp_env, project_dir):
     # The path is served, the content is not
     assert "credentials/host1.example.com/password" in text
     assert "the password" not in text
+
+
+def test_exec_ping_via_stdio(run_debops, mcp_env, project_dir):
+    if shutil.which("ansible") is None:
+        pytest.skip("ansible is not installed")
+
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+
+    request = json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "exec_ping", "arguments": {"hosts": "local"}},
+    }) + "\n"
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=request)
+
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    assert response["result"]["isError"] is False
+    assert "pong" in response["result"]["content"][0]["text"]
 
 
 def test_kill_switch_flow(run_debops, mcp_env, project_dir):

@@ -86,6 +86,77 @@ def _build_ansible_args(arguments, check, allowed_options=EXECUTE_OPTIONS):
     return args
 
 
+def run_cancellable(command, env, cwd, context, timeout, on_line=None,
+                    enabled_check=None, on_disabled=None):
+    """Run a command with cancellation, a timeout and capped output.
+
+    Returns (output, returncode, status) where status is one of 'done',
+    'cancelled', 'timeout' or 'disabled'. Only the last
+    EXECUTE_OUTPUT_LIMIT bytes of combined output are kept. on_line is
+    called with each output line as it arrives (progress reporting).
+    """
+    process = subprocess.Popen(
+            command, env=env, cwd=cwd,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            universal_newlines=True, bufsize=1)
+
+    # A reader thread consumes the output as it comes; the buffer is
+    # bounded so that long runs use constant memory
+    output_lines = collections.deque(maxlen=4096)
+
+    def read_output():
+        for line in process.stdout:
+            output_lines.append(line)
+            if on_line is not None:
+                on_line(line)
+
+    reader = threading.Thread(target=read_output, daemon=True)
+    reader.start()
+
+    deadline = time.monotonic() + timeout
+    cancelled = False
+    timed_out = False
+    disabled = False
+    while process.poll() is None:
+        if enabled_check is not None and not enabled_check():
+            # The kill switch flipped mid-run
+            disabled = True
+            logger.warning('MCP functionality disabled mid-run; '
+                           'terminating the execution')
+            if on_disabled is not None:
+                on_disabled()
+            process.terminate()
+            break
+        if context.cancelled.is_set():
+            cancelled = True
+            process.terminate()
+            break
+        if time.monotonic() > deadline:
+            timed_out = True
+            process.kill()
+            break
+        time.sleep(0.2)
+    try:
+        process.wait(timeout=TERMINATION_GRACE)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+    reader.join(timeout=TERMINATION_GRACE)
+    output = ''.join(output_lines)
+    if len(output) > EXECUTE_OUTPUT_LIMIT:
+        output = ('… (earlier output truncated)\n'
+                  + output[-EXECUTE_OUTPUT_LIMIT:])
+    if disabled:
+        status = 'disabled'
+    elif cancelled:
+        status = 'cancelled'
+    elif timed_out:
+        status = 'timeout'
+    else:
+        status = 'done'
+    return output, process.returncode, status
+
+
 def _execute_playbook(project, policy, arguments, context, check,
                       enabled_check=None, on_disabled=None):
     mode = 'check' if check else 'run'
@@ -126,66 +197,25 @@ def _execute_playbook(project, policy, arguments, context, check,
 
             env = os.environ.copy()
             env.update(project.config._env_vars)
-            process = subprocess.Popen(
-                    command, env=env, cwd=project.path,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    universal_newlines=True, bufsize=1)
 
-            # A reader thread consumes the output as it comes, capturing
-            # it for the result and reporting play/task progress to the
-            # client; the buffer is bounded so that long runs use
-            # constant memory
-            output_lines = collections.deque(maxlen=4096)
+            # Play and task headers become progress notifications
             progress_counter = itertools.count(1)
             last_progress = [0.0]
 
-            def read_output():
-                for line in process.stdout:
-                    output_lines.append(line)
-                    if (_PLAY_HEADER.match(line)
-                            or _TASK_HEADER.match(line)):
-                        now = time.monotonic()
-                        if now - last_progress[0] >= PROGRESS_INTERVAL:
-                            last_progress[0] = now
-                            context.progress(
-                                    line.rstrip(),
-                                    progress=next(progress_counter))
+            def on_line(line):
+                if (_PLAY_HEADER.match(line)
+                        or _TASK_HEADER.match(line)):
+                    now = time.monotonic()
+                    if now - last_progress[0] >= PROGRESS_INTERVAL:
+                        last_progress[0] = now
+                        context.progress(
+                                line.rstrip(),
+                                progress=next(progress_counter))
 
-            reader = threading.Thread(target=read_output, daemon=True)
-            reader.start()
-
-            deadline = time.monotonic() + policy.execute_timeout
-            cancelled = False
-            timed_out = False
-            disabled = False
-            while process.poll() is None:
-                if enabled_check is not None and not enabled_check():
-                    # The kill switch flipped mid-run: terminate this
-                    # execution and cancel everything else in flight
-                    disabled = True
-                    logger.warning('MCP functionality disabled mid-run; '
-                                   'terminating the execution')
-                    if on_disabled is not None:
-                        on_disabled()
-                    process.terminate()
-                    break
-                if context.cancelled.is_set():
-                    cancelled = True
-                    process.terminate()
-                    break
-                if time.monotonic() > deadline:
-                    timed_out = True
-                    process.kill()
-                    break
-                time.sleep(0.2)
-            try:
-                process.wait(timeout=TERMINATION_GRACE)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-            reader.join(timeout=TERMINATION_GRACE)
-            output = ''.join(output_lines)
-            returncode = process.returncode
+            output, returncode, status = run_cancellable(
+                    command, env=env, cwd=project.path, context=context,
+                    timeout=policy.execute_timeout, on_line=on_line,
+                    enabled_check=enabled_check, on_disabled=on_disabled)
         finally:
             if unlocked:
                 inventory.lock()
@@ -193,19 +223,15 @@ def _execute_playbook(project, policy, arguments, context, check,
     run_hooks(project.path, 'post-' + mode,
               extra_env={'DEBOPS_RETURN_CODE': returncode})
 
-    if len(output) > EXECUTE_OUTPUT_LIMIT:
-        output = ('… (earlier output truncated)\n'
-                  + output[-EXECUTE_OUTPUT_LIMIT:])
-
     header = '# debops {} {}\n\nexit code: {}\n\n'.format(
             mode, args[0], returncode)
-    if disabled:
+    if status == 'disabled':
         return error_result(header + 'terminated: the MCP functionality '
                             'was disabled mid-run (the kill switch)\n\n'
                             + output)
-    if cancelled:
+    if status == 'cancelled':
         raise RequestCancelled()
-    if timed_out:
+    if status == 'timeout':
         return error_result(header + 'timed out after {} seconds\n\n{}'
                             .format(policy.execute_timeout, output))
     if returncode != 0:
