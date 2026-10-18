@@ -410,6 +410,7 @@ Commands:
 Commands:
     serve    run an MCP server over stdio or a UNIX socket
     connect  bridge stdio to an MCP server UNIX socket
+    inspect  inspect an MCP server on a UNIX socket
     skills   list or print the DebOps skills shipped with the package
     disable  disable the MCP functionality on this host or account
              (the kill switch)''')
@@ -456,6 +457,32 @@ Commands:
         parser.add_argument('--raw', dest='raw', action='store_true',
                             help='print the server response as received '
                                  '(only with --ping)')
+        self.args = parser.parse_args(self.args[3:])
+
+    def do_mcp_inspect(self):
+        parser = argparse.ArgumentParser(
+                parents=[self.global_parser],
+                description='inspect an MCP server on a UNIX socket',
+                usage='debops mcp inspect [<args>] <socket>')
+        parser.add_argument('socket', type=str,
+                            help='path of the MCP server UNIX socket')
+        parser.add_argument('--discover', dest='discover',
+                            action='store_true',
+                            help='show the server identity, capabilities '
+                                 'and instructions (the default)')
+        parser.add_argument('--tools', dest='tools', action='store_true',
+                            help='list the tools the server exposes')
+        parser.add_argument('--tool', dest='tool', type=str,
+                            metavar='NAME',
+                            help='describe one tool in detail')
+        parser.add_argument('--resources', dest='resources',
+                            action='store_true',
+                            help='list the resources the server exposes')
+        parser.add_argument('--prompts', dest='prompts',
+                            action='store_true',
+                            help='list the prompts the server exposes')
+        parser.add_argument('--raw', dest='raw', action='store_true',
+                            help='print the server responses as received')
         self.args = parser.parse_args(self.args[3:])
 
     def do_mcp_skills(self):

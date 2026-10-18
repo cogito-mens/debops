@@ -12,6 +12,7 @@ server; it is not a general-purpose library.
 import json
 import os
 import socket
+import textwrap
 
 from . import rpc
 from . import server as _server
@@ -91,6 +92,12 @@ class UnixClient(object):
             self._connection = None
             self._reader = None
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+
 
 def request_unix(path, method, params=None, timeout=5):
     """Send one request to an MCP server on a UNIX socket.
@@ -105,3 +112,117 @@ def request_unix(path, method, params=None, timeout=5):
         return client.request_raw(method, params)
     finally:
         client.close()
+
+
+# -- formatters for human inspection ---------------------------------------
+
+def _first_sentence(text):
+    """The first sentence of a description, single-spaced."""
+    text = ' '.join(str(text).split())
+    sentence, _, rest = text.partition('. ')
+    if rest:
+        return sentence + '.'
+    return text
+
+
+def _shorten(text, width=64):
+    """The first sentence of a description, truncated to a width."""
+    text = _first_sentence(text)
+    if len(text) > width:
+        return text[:width - 3].rstrip() + '...'
+    return text
+
+
+def annotation_flags(annotations):
+    """Render tool annotations as short flags for humans."""
+    flags = []
+    if annotations.get('readOnlyHint'):
+        flags.append('read-only')
+    elif annotations.get('destructiveHint', True):
+        flags.append('destructive')
+    else:
+        flags.append('non-destructive')
+    if annotations.get('idempotentHint'):
+        flags.append('idempotent')
+    if annotations.get('openWorldHint') is False:
+        flags.append('local')
+    return flags
+
+
+def format_discover(result):
+    """Render a server/discover result as lines for humans."""
+    lines = []
+    meta = result.get('_meta', {})
+    info = meta.get('io.modelcontextprotocol/serverInfo', {})
+    lines.append('name: {}'.format(info.get('name', '?')))
+    lines.append('version: {}'.format(info.get('version', '?')))
+    if meta.get('org.debops/project') is not None:
+        lines.append('project: {}'.format(meta['org.debops/project']))
+    if meta.get('org.debops/view') is not None:
+        lines.append('view: {}'.format(meta['org.debops/view']))
+    lines.append('protocol: {}'.format(
+            ', '.join(result.get('supportedVersions', [])) or '?'))
+    capabilities = result.get('capabilities', {})
+    if capabilities:
+        lines.append('capabilities:')
+        for name, contents in sorted(capabilities.items()):
+            lines.append('    {}: {}'.format(
+                    name, json.dumps(contents) if contents else 'yes'))
+    else:
+        lines.append('capabilities: (none)')
+    if result.get('instructions'):
+        lines.append('instructions:')
+        lines.extend('    ' + line
+                     for line in textwrap.wrap(result['instructions'],
+                                               width=76))
+    lines.append('cache: {} ms, {}'.format(result.get('ttlMs', '?'),
+                                           result.get('cacheScope', '?')))
+    return lines
+
+
+def format_tools(tools):
+    """Render a tools/list result as lines for humans."""
+    lines = ['tools ({}):'.format(len(tools))]
+    width = max([len(tool['name']) for tool in tools] + [0])
+    for tool in tools:
+        flags = annotation_flags(tool.get('annotations', {}))
+        suffix = ' [{}]'.format(', '.join(flags)) if flags else ''
+        lines.append('    {}  {}{}'.format(
+                tool['name'].ljust(width),
+                _shorten(tool.get('description', '')),
+                suffix))
+    return lines
+
+
+def format_tool(tool):
+    """Render one tool in detail, with its parameters, for humans."""
+    lines = ['{} — {}'.format(tool['name'], tool.get('description', ''))]
+    flags = annotation_flags(tool.get('annotations', {}))
+    if flags:
+        lines.append('annotations: {}'.format(', '.join(flags)))
+    schema = tool.get('inputSchema', {})
+    properties = schema.get('properties', {})
+    required = schema.get('required', [])
+    if properties:
+        lines.append('parameters:')
+        width = max(len(name) for name in properties)
+        for name, prop in sorted(properties.items()):
+            marker = ', required' if name in required else ''
+            lines.append('    {}  ({}): {}'.format(
+                    (name + marker).ljust(width + 11),
+                    prop.get('type', '?'),
+                    _first_sentence(prop.get('description', ''))))
+    else:
+        lines.append('parameters: (none)')
+    return lines
+
+
+def format_resources(resources):
+    """Render a resources/list result as lines for humans."""
+    lines = ['resources ({}):'.format(len(resources))]
+    width = max([len(resource['name']) for resource in resources] + [0])
+    for resource in resources:
+        lines.append('    {}  {}'.format(
+                resource['name'].ljust(width),
+                _shorten(resource.get('description', ''))))
+    return lines

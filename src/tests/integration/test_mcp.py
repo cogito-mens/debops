@@ -10,6 +10,7 @@ framing a user (or an MCP client) sees.
 """
 
 from debops.mcp.server import McpServer
+from debops.mcp.skills import SkillLibrary
 from debops.mcp.transport import UnixSocketTransport
 import json
 import os
@@ -573,6 +574,71 @@ def test_connect_ping_shows_project_and_view(run_debops,
     finally:
         server.terminate()
         server.wait(timeout=10)
+
+
+def test_inspect_via_socket(run_debops, mcp_env, tmp_path):
+    socket_path = str(tmp_path / "server.sock")
+    server = McpServer(skills=SkillLibrary())
+    server.register_tool(
+            "mop", "Mop the floors. Repeatedly.",
+            {"type": "object",
+             "properties": {"bucket": {"type": "string",
+                                       "description": "The bucket."}},
+             "required": ["bucket"]},
+            lambda arguments: {"content": [], "isError": False},
+            annotations={"destructiveHint": False,
+                         "idempotentHint": True})
+    transport = UnixSocketTransport(socket_path)
+    thread = threading.Thread(target=transport.serve, args=(server,),
+                              daemon=True)
+    thread.start()
+    try:
+        for _ in range(500):
+            if os.path.exists(socket_path):
+                break
+            time.sleep(0.01)
+
+        # The default inspection is the discovery summary
+        result = run_debops("mcp", "inspect", socket_path, env=mcp_env)
+        assert result.returncode == 0
+        assert "name: debops" in result.stdout
+        assert "instructions:" in result.stdout
+        assert "capabilities:" in result.stdout
+
+        result = run_debops("mcp", "inspect", socket_path, "--tools",
+                            env=mcp_env)
+        assert result.returncode == 0
+        assert "tools (1):" in result.stdout
+        assert "mop" in result.stdout
+        assert "[non-destructive, idempotent]" in result.stdout
+
+        result = run_debops("mcp", "inspect", socket_path,
+                            "--tool", "mop", env=mcp_env)
+        assert result.returncode == 0
+        assert "mop — Mop the floors." in result.stdout
+        assert "bucket, required" in result.stdout
+
+        result = run_debops("mcp", "inspect", socket_path, "--resources",
+                            env=mcp_env)
+        assert result.returncode == 0
+        assert "debops-cli" in result.stdout
+
+        # The prompts stub answers gracefully
+        result = run_debops("mcp", "inspect", socket_path, "--prompts",
+                            env=mcp_env)
+        assert result.returncode == 0
+        assert "does not support" in result.stdout
+
+        # Raw responses are one JSON line per selected step
+        result = run_debops("mcp", "inspect", socket_path, "--raw",
+                            "--discover", "--tools", env=mcp_env)
+        assert result.returncode == 0
+        first, second = read_json_lines(result.stdout)
+        assert first["result"]["supportedVersions"] == ["2026-07-28"]
+        assert second["result"]["tools"][0]["name"] == "mop"
+    finally:
+        transport.shutdown()
+        thread.join(timeout=5)
 
 
 def test_connect_ping_missing_socket(run_debops, mcp_env, tmp_path):

@@ -14,6 +14,8 @@ from .mcp.server import McpServer
 from .mcp.policy import McpPolicy, KillSwitch
 from .mcp.skills import SkillLibrary
 from .mcp.tools import register_project_tools
+from .mcp import client as mcp_client
+from .mcp.client import UnixClient
 from .mcp.transport import StdioTransport, UnixSocketTransport
 from .mcp.transport import bridge_stdio_to_unix, ping_unix
 from xdg.BaseDirectory import xdg_config_home
@@ -86,6 +88,8 @@ class Interpreter(object):
                 self.do_mcp_serve(self.parsed_args.args)
             elif self.parsed_args.command == 'connect':
                 self.do_mcp_connect(self.parsed_args.args)
+            elif self.parsed_args.command == 'inspect':
+                self.do_mcp_inspect(self.parsed_args.args)
             elif self.parsed_args.command == 'skills':
                 self.do_mcp_skills(self.parsed_args.args)
             elif self.parsed_args.command == 'disable':
@@ -399,6 +403,88 @@ class Interpreter(object):
         print('    protocol: {}'.format(', '.join(versions) or '?'))
         print('    capabilities: {}'.format(capabilities or '(none)'))
         print('    round-trip: {:.0f} ms'.format(rtt * 1000))
+
+    def do_mcp_inspect(self, args):
+        self._mcp_refuse_if_disabled()
+        # With no selection, show the discovery summary
+        nothing = not any((args.discover, args.tools, args.tool,
+                           args.resources, args.prompts))
+        steps = []
+        if args.discover or nothing:
+            steps.append('discover')
+        if args.tools:
+            steps.append('tools')
+        if args.tool:
+            steps.append('tool')
+        if args.prompts:
+            steps.append('prompts')
+        if args.resources:
+            steps.append('resources')
+
+        client = UnixClient(args.socket)
+        try:
+            for step in steps:
+                self._mcp_inspect_step(client, step, args)
+        except ConnectionError as errmsg:
+            print('Error:', errmsg, file=sys.stderr)
+            sys.exit(1)
+        except EOFError:
+            print('Error: the server closed the connection without '
+                  'a response (the kill switch may be active)',
+                  file=sys.stderr)
+            sys.exit(1)
+        except TimeoutError as errmsg:
+            print('Error:', errmsg, file=sys.stderr)
+            sys.exit(1)
+        finally:
+            client.close()
+
+    def _mcp_inspect_step(self, client, step, args):
+        """Run one inspection step and print its result."""
+        request = {'discover': ('server/discover', None),
+                   'tools': ('tools/list', None),
+                   'tool': ('tools/list', None),
+                   'prompts': ('prompts/list', None),
+                   'resources': ('resources/list', None)}[step]
+        response = client.request(*request)
+        if 'error' in response:
+            error = response['error']
+            # A server announces missing primitives with Method not
+            # found; that is an answer, not a failure
+            if (error.get('code') == -32601
+                    and step in ('prompts', 'resources')):
+                print('{}: the server does not support them'
+                      .format(step))
+                return
+            print('Error: the server returned an error: {}'.format(
+                    error.get('message')), file=sys.stderr)
+            sys.exit(1)
+        if args.raw:
+            print(json.dumps(response))
+            return
+        result = response.get('result', {})
+        if step == 'discover':
+            print('\n'.join(mcp_client.format_discover(result)))
+        elif step == 'tools':
+            print('\n'.join(mcp_client.format_tools(
+                    result.get('tools', []))))
+        elif step == 'tool':
+            tools = {tool['name']: tool
+                     for tool in result.get('tools', [])}
+            if args.tool not in tools:
+                print('Error: no such tool: {}'.format(args.tool),
+                      file=sys.stderr)
+                sys.exit(1)
+            print('\n'.join(mcp_client.format_tool(tools[args.tool])))
+        elif step == 'prompts':
+            prompts = result.get('prompts', [])
+            print('prompts ({}):'.format(len(prompts)))
+            for prompt in prompts:
+                print('    {}  {}'.format(
+                        prompt['name'], prompt.get('description', '')))
+        elif step == 'resources':
+            print('\n'.join(mcp_client.format_resources(
+                    result.get('resources', []))))
 
     def do_mcp_skills(self, args):
         self._mcp_refuse_if_disabled()
