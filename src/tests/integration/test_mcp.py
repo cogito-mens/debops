@@ -674,6 +674,13 @@ def test_connect_call_via_socket(run_debops, mcp_env, tmp_path):
         response = json.loads(result.stdout)
         assert response["result"]["isError"] is False
 
+        # The short forms
+        result = run_debops("mcp", "connect", socket_path,
+                            "-c", "mop", "bucket=zinc", "-t", "5",
+                            env=mcp_env)
+        assert result.returncode == 0
+        assert "mopping with zinc" in result.stdout
+
         # A malformed pair is a usage error
         result = run_debops("mcp", "connect", socket_path,
                             "--call", "mop", "bogus", env=mcp_env)

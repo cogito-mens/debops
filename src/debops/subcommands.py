@@ -456,7 +456,7 @@ Commands:
         action.add_argument('--ping', dest='ping', action='store_true',
                             help='probe the server with a server/discover '
                                  'request and print the result')
-        action.add_argument('--call', dest='call', type=str,
+        action.add_argument('-c', '--call', dest='call', type=str,
                             metavar='TOOL',
                             help='call a tool on the server and print '
                                  'the result; tool arguments follow the '
@@ -464,7 +464,7 @@ Commands:
         parser.add_argument('arguments', type=str, nargs='*',
                             metavar='key=value',
                             help='arguments for --call')
-        parser.add_argument('--timeout', dest='timeout', type=float,
+        parser.add_argument('-t', '--timeout', dest='timeout', type=float,
                             metavar='SECONDS',
                             help='how long to wait for the server '
                                  '(default: 5 s for --ping; no limit '
