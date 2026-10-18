@@ -23,6 +23,7 @@ prompt is fetched:
 import logging
 import os
 
+from ..constants import DEBOPS_PACKAGE_DATA
 from ..utils import strtobool
 from .skills import SKILL_NAME_PATTERN, _parse_frontmatter
 import jinja2
@@ -31,38 +32,57 @@ logger = logging.getLogger(__name__)
 
 
 class PromptLibrary(object):
-    """List and render the prompts of a project."""
+    """List and render prompts: the project's own, then the package's.
 
-    def __init__(self, path):
+    A project prompt ('.debops/mcp/prompts/<name>.md') shadows a package
+    prompt of the same name, the way project skills shadow package
+    skills.
+    """
+
+    def __init__(self, path, package_path=None):
         self.path = path
+        self.package_path = (package_path if package_path is not None
+                             else None)
+
+    @property
+    def _roots(self):
+        roots = [self.path]
+        if self.package_path is not None:
+            roots.append(self.package_path)
+        return roots
 
     def available(self):
-        """Whether the project has a prompts directory at all."""
-        return os.path.isdir(self.path)
+        """Whether any prompts directory exists at all."""
+        return any(os.path.isdir(root) for root in self._roots)
 
     def _prompts(self):
         """The valid prompts, as name → (path, frontmatter)."""
         prompts = {}
-        if not os.path.isdir(self.path):
-            return prompts
-        for entry in sorted(os.listdir(self.path)):
-            if not entry.endswith('.md'):
+        for root in self._roots:
+            if not os.path.isdir(root):
                 continue
-            name = entry[:-3]
-            if not SKILL_NAME_PATTERN.match(name):
-                logger.warning('Ignoring prompt with an invalid name: %s',
-                               entry)
-                continue
-            path = os.path.join(self.path, entry)
-            if not os.path.isfile(path):
-                continue
-            meta = _parse_frontmatter(path)
-            if not meta.get('description'):
-                # The only thing an agent sees when choosing a prompt
-                logger.warning('Ignoring prompt %s: no description in the '
-                               'frontmatter', name)
-                continue
-            prompts[name] = (path, meta)
+            for entry in sorted(os.listdir(root)):
+                if not entry.endswith('.md'):
+                    continue
+                name = entry[:-3]
+                if not SKILL_NAME_PATTERN.match(name):
+                    logger.warning('Ignoring prompt with an invalid name: '
+                                   '%s', entry)
+                    continue
+                path = os.path.join(root, entry)
+                if not os.path.isfile(path):
+                    continue
+                if name in prompts:
+                    logger.notice('Prompt %s in %s shadows the packaged '
+                                  'one', name, root)
+                    continue
+                meta = _parse_frontmatter(path)
+                if not meta.get('description'):
+                    # The only thing an agent sees when choosing a prompt
+                    logger.warning('Ignoring prompt %s: no description in '
+                                   'the frontmatter', name)
+                    continue
+                prompts[name] = (path, meta)
         return prompts
 
     def list(self):

@@ -4,6 +4,7 @@
 
 from .exceptions import NoDefaultViewException, InventorySpecError
 from .config import Configuration
+from .constants import DEBOPS_PACKAGE_DATA
 from .subcommands import Subcommands
 from .projectdir import ProjectDir
 from .projectvenv import ProjectVenv
@@ -351,8 +352,10 @@ class Interpreter(object):
         prompts = None
         if policy.project_content:
             project_content = os.path.join(project.path, '.debops', 'mcp')
-            prompts = PromptLibrary(os.path.join(project_content,
-                                                 'prompts'))
+            prompts = PromptLibrary(
+                    os.path.join(project_content, 'prompts'),
+                    package_path=os.path.join(DEBOPS_PACKAGE_DATA,
+                                              'prompts'))
         server = McpServer(project=project, policy=policy,
                            skills=SkillLibrary(
                                project_path=(os.path.join(project_content,

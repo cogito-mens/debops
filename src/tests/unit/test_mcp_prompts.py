@@ -106,6 +106,46 @@ class PromptLibraryTestCase(unittest.TestCase):
         self.assertIn('service', str(context.exception))
 
 
+class PackagePromptsTestCase(unittest.TestCase):
+    """Package prompts merge with the project's and are shadowed."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-pprompts-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        self.package = os.path.join(self.tmpdir, 'package')
+        self.project = os.path.join(self.tmpdir, 'project')
+        for root, name, description in (
+                (self.package, 'shared', 'The packaged prompt'),
+                (self.package, 'packaged', 'Only in the package'),
+                (self.project, 'shared', 'The project override')):
+            os.makedirs(root, exist_ok=True)
+            with open(os.path.join(root, name + '.md'), 'w') as fp:
+                fp.write('---\ndescription: {}\n---\n\n{} body.\n'
+                         .format(description, name))
+        self.library = PromptLibrary(self.project,
+                                     package_path=self.package)
+
+    def test_list_merges_and_shadows(self):
+        prompts = {prompt['name']: prompt
+                   for prompt in self.library.list()}
+        self.assertEqual(sorted(prompts), ['packaged', 'shared'])
+        # The project prompt shadows the packaged one
+        self.assertEqual(prompts['shared']['description'],
+                         'The project override')
+
+    def test_render_prefers_the_project(self):
+        rendered = self.library.render('shared', {})
+        self.assertEqual(rendered['text'], 'shared body.\n')
+        self.assertEqual(rendered['description'], 'The project override')
+
+    def test_available_with_only_package_content(self):
+        library = PromptLibrary(os.path.join(self.tmpdir, 'nosuch'),
+                                package_path=self.package)
+        self.assertTrue(library.available())
+        names = [prompt['name'] for prompt in library.list()]
+        self.assertEqual(sorted(names), ['packaged', 'shared'])
+
+
 class ServerPromptsTestCase(unittest.TestCase):
 
     def setUp(self):
