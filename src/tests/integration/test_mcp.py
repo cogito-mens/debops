@@ -149,11 +149,11 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
     assert result.returncode == 0
     (response,) = read_json_lines(result.stdout)
     names = [tool["name"] for tool in response["result"]["tools"]]
-    assert sorted(names) == ["check", "collection_playbook_info",
+    assert sorted(names) == ["ansible_facts", "ansible_ping", "check",
+                             "collection_playbook_info",
                              "collection_playbooks", "collection_role_info",
                              "collection_role_variables", "collection_roles",
-                             "config_get", "exec_facts", "exec_ping",
-                             "inventory_query",
+                             "config_get", "inventory_query",
                              "playbook_info", "playbooks", "project_files",
                              "project_pull", "project_push", "project_read",
                              "project_status", "role_defaults",
@@ -372,7 +372,7 @@ def test_secret_paths_via_stdio(run_debops, mcp_env, project_dir):
     assert "the password" not in text
 
 
-def test_exec_ping_via_stdio(run_debops, mcp_env, project_dir):
+def test_ansible_ping_via_stdio(run_debops, mcp_env, project_dir):
     if shutil.which("ansible") is None:
         pytest.skip("ansible is not installed")
 
@@ -385,7 +385,7 @@ def test_exec_ping_via_stdio(run_debops, mcp_env, project_dir):
 
     request = json.dumps({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "exec_ping", "arguments": {"hosts": "local"}},
+        "params": {"name": "ansible_ping", "arguments": {"hosts": "local"}},
     }) + "\n"
     result = run_debops("mcp", "serve", cwd=str(project_dir),
                         env=mcp_env, input_text=request)

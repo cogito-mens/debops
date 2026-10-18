@@ -184,8 +184,8 @@ class McpPolicy(object):
 
         # A glob allowlist of hosts the exec tools may contact; empty
         # means every host in the inventory is allowed
-        self.exec_hosts = [str(entry) for entry in
-                           mcp_config.get('exec_hosts', []) or []]
+        self.ansible_hosts = [str(entry) for entry in
+                              mcp_config.get('ansible_hosts', []) or []]
         # Same, for hosts a playbook execution may touch
         self.execute_hosts = [str(entry) for entry in
                               mcp_config.get('execute_hosts', []) or []]

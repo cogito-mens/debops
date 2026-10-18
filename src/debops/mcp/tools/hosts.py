@@ -143,12 +143,12 @@ def _exec(project, policy, arguments, context, module, module_filter):
                 return error_result('the pattern matches no hosts in the '
                                     'inventory: {}'.format(hosts))
             rejected = [host for host in resolved
-                        if policy.exec_hosts
+                        if policy.ansible_hosts
                         and not any(fnmatch.fnmatch(host, allowed)
-                                    for allowed in policy.exec_hosts)]
+                                    for allowed in policy.ansible_hosts)]
             if rejected:
                 return error_result('not allowed by the project policy '
-                                    '(project.mcp.exec_hosts): '
+                                    '(project.mcp.ansible_hosts): '
                                     + ', '.join(rejected))
 
             logger.notice('Querying hosts: %s → %s', hosts,
@@ -182,12 +182,12 @@ def _exec(project, policy, arguments, context, module, module_filter):
     return text_result(text)
 
 
-def tool_exec_ping(project, policy, arguments, context):
+def tool_ansible_ping(project, policy, arguments, context):
     return _exec(project, policy, arguments, context,
                  'ansible.builtin.ping', None)
 
 
-def tool_exec_facts(project, policy, arguments, context):
+def tool_ansible_facts(project, policy, arguments, context):
     return _exec(project, policy, arguments, context,
                  'ansible.builtin.setup',
                  str(arguments.get('filter') or '') or None)

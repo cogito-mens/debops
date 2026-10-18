@@ -20,7 +20,7 @@ from .collections import (COLLECTION_INDEX_TTL, galaxy_collection_list,
 from .execute import tool_check, tool_run
 from .files import (tool_config_get, tool_inventory_query,
                     tool_project_files, tool_project_read)
-from .hosts import tool_exec_facts, tool_exec_ping
+from .hosts import tool_ansible_facts, tool_ansible_ping
 from .playbooks import (COLLECTION_PLAYBOOKS, tool_playbook_info,
                         tool_playbooks)
 from .project import tool_project_status
@@ -299,16 +299,16 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                        'remote sudo configuration, not by this server.'},
         }
         tools.extend([
-            ('exec_ping',
+            ('ansible_ping',
              'Check SSH connectivity and Ansible reachability of hosts '
              '(ansible -m ping). Use this to verify a connection before '
              'querying or changing a host.',
              {'type': 'object', 'properties': exec_properties,
               'required': ['hosts']},
-             lambda arguments, context: tool_exec_ping(
+             lambda arguments, context: tool_ansible_ping(
                  project, policy, arguments, context),
              True),
-            ('exec_facts',
+            ('ansible_facts',
              'Gather Ansible facts from hosts (ansible -m setup), '
              'for debugging and environment knowledge. The output is '
              'large; use "filter" to narrow it (e.g. '
@@ -319,7 +319,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                              'description': 'Narrow the gathered facts '
                              'with a glob, e.g. "ansible_default_ipv4*"'}}),
               'required': ['hosts']},
-             lambda arguments, context: tool_exec_facts(
+             lambda arguments, context: tool_ansible_facts(
                  project, policy, arguments, context),
              True),
         ])

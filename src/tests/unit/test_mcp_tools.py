@@ -350,11 +350,11 @@ class ToolsTestCase(unittest.TestCase):
                 'params': {}})
         names = [tool['name'] for tool in response['result']['tools']]
         self.assertEqual(sorted(names),
-                         ['check', 'collection_playbook_info',
+                         ['ansible_facts', 'ansible_ping', 'check',
+                          'collection_playbook_info',
                           'collection_playbooks', 'collection_role_info',
                           'collection_role_variables', 'collection_roles',
-                          'config_get', 'exec_facts', 'exec_ping',
-                          'inventory_query', 'playbook_info',
+                          'config_get', 'inventory_query', 'playbook_info',
                           'playbooks', 'project_files', 'project_pull',
                           'project_push', 'project_read', 'project_status',
                           'role_defaults', 'role_files', 'role_handlers',
