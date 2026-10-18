@@ -16,6 +16,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 
 PULL_CHANGED = {'action': 'pull', 'before': 'a' * 40, 'after': 'b' * 40,
@@ -95,6 +96,37 @@ class SyncTestCase(unittest.TestCase):
         self.assertIn('files changed: 3', text)
         self.assertIn('Add a thing', text)
         self.assertIn('Fix another thing', text)
+
+    def test_changed_pull_refreshes_the_project(self):
+        # The refresh runs on a fresh ProjectDir which reads the
+        # configuration as just pulled
+        with mock.patch('debops.mcp.tools.sync.ProjectDir') as fresh:
+            text = self.result_text(self.call_tool('project_pull'))
+        fresh.return_value.refresh.assert_called_once()
+        self.assertEqual(fresh.call_args[1]['path'], self.tmpdir)
+        self.assertIn('project refreshed', text)
+
+    def test_unchanged_pull_does_not_refresh(self):
+        self.reports['pull'] = PULL_CLEAN
+        with mock.patch('debops.mcp.tools.sync.ProjectDir') as fresh:
+            text = self.result_text(self.call_tool('project_pull'))
+        self.assertIn('Already up to date', text)
+        fresh.return_value.refresh.assert_not_called()
+
+    def test_refresh_failure_does_not_eat_the_pull_report(self):
+        with mock.patch('debops.mcp.tools.sync.ProjectDir') as fresh:
+            fresh.return_value.refresh.side_effect = \
+                RuntimeError('no ansible.cfg for you')
+            response = self.call_tool('project_pull')
+        text = self.result_text(response)
+        self.assertFalse(response['result']['isError'])
+        self.assertIn('files changed: 3', text)
+        self.assertIn('refresh error: no ansible.cfg for you', text)
+
+    def test_push_never_refreshes(self):
+        with mock.patch('debops.mcp.tools.sync.ProjectDir') as fresh:
+            self.result_text(self.call_tool('project_push'))
+        fresh.return_value.refresh.assert_not_called()
 
     def test_pull_up_to_date(self):
         self.reports['pull'] = PULL_CLEAN

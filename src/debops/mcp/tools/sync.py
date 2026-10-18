@@ -11,9 +11,13 @@ serialized with playbook executions, so a sync cannot change roles
 mid-run.
 """
 
+import contextlib
 import logging
+import sys
 import time
 
+from ...config import Configuration
+from ...projectdir import ProjectDir
 from .common import error_result, text_result
 from .common import exclusive_project
 
@@ -28,6 +32,12 @@ def render_sync_report(report):
                  'before: {}'.format(report['before'][:12]),
                  'after: {}'.format(report['after'][:12]),
                  'files changed: {}'.format(report['files_changed'])]
+        if report.get('refreshed'):
+            lines.append('project refreshed (ansible.cfg regenerated, '
+                         'skeleton recreated)')
+        if report.get('refresh_error'):
+            lines.append('refresh error: {}'.format(
+                    report['refresh_error']))
         if report['commits']:
             lines.extend(['', '## New commits'])
             lines.extend('- {}'.format(subject)
@@ -62,5 +72,28 @@ def make_sync_tool(project, policy, sync_state, direction):
                 report = getattr(project, direction)()
             except ValueError as errmsg:
                 return error_result(str(errmsg))
+            if direction == 'pull' and report.get('changed'):
+                # A pull can change the project configuration, and
+                # ansible.cfg is generated from it; git does not track
+                # the empty skeleton directories. The server's ProjectDir
+                # still holds the pre-pull configuration, so the refresh
+                # runs on a fresh instance which reads the configuration
+                # as just pulled. The refresh is command-line machinery
+                # and prints its status to stdout, which is the protocol
+                # channel in stdio mode; send it to the log channel
+                # instead
+                try:
+                    with contextlib.redirect_stdout(sys.stderr):
+                        fresh = ProjectDir(path=project.path,
+                                           config=Configuration(),
+                                           view=project.view)
+                        fresh.refresh()
+                    report['refreshed'] = True
+                except Exception as errmsg:
+                    # The pull itself succeeded; the refresh is
+                    # housekeeping and must not eat its report
+                    logger.warning('Refresh after the pull failed: %s',
+                                   errmsg)
+                    report['refresh_error'] = str(errmsg)
         return text_result(render_sync_report(report))
     return tool

@@ -1027,6 +1027,62 @@ def test_project_sync_via_stdio(run_debops, mcp_env, tmp_path):
     assert "retry in" in second["content"][0]["text"]
 
 
+def test_pull_refreshes_the_project_via_stdio(run_debops, mcp_env,
+                                              tmp_path):
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+
+    project_dir = tmp_path / "example"
+    run_debops("project", "init", "--no-requirements", str(project_dir),
+               env=mcp_env, check=True)
+    origin_dir = tmp_path / "origin.git"
+    git_env = {**os.environ, **mcp_env,
+               "GIT_CONFIG_NOSYSTEM": "1",
+               "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "t@x.org",
+               "GIT_COMMITTER_NAME": "Test",
+               "GIT_COMMITTER_EMAIL": "t@x.org"}
+
+    def git(*args, cwd=None):
+        subprocess.run(["git"] + list(args), env=git_env, check=True,
+                       cwd=cwd, capture_output=True)
+
+    git("init", "--bare", str(origin_dir))
+    git("-C", str(project_dir), "remote", "add", "origin",
+        str(origin_dir))
+    git("-C", str(project_dir), "push", "-u", "origin", "HEAD")
+
+    # The generated files are removed: the pull must regenerate them
+    (project_dir / "ansible.cfg").unlink()
+    shutil.rmtree(project_dir / "ansible" / "playbooks")
+
+    # The origin advances with a configuration change
+    clone = tmp_path / "clone"
+    git("clone", str(origin_dir), str(clone))
+    with open(str(clone / ".debops.cfg"), "a") as fp:
+        fp.write("[ansible defaults]\nforce_color = true\n")
+    git("-C", str(clone), "add", ".debops.cfg")
+    git("-C", str(clone), "commit", "-q", "-m", "Configure color")
+    git("-C", str(clone), "push", "-q")
+
+    request = json.dumps({
+        "jsonrpc": "2.0", "_meta": REQUEST_META, "id": 1,
+        "method": "tools/call",
+        "params": {"name": "project_pull", "arguments": {}}}) + "\n"
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=request)
+
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    text = response["result"]["content"][0]["text"]
+    assert response["result"]["isError"] is False
+    assert "project refreshed" in text
+    # ansible.cfg was regenerated and carries the pulled configuration
+    ansible_cfg = (project_dir / "ansible.cfg").read_text()
+    assert "force_color" in ansible_cfg
+    # The skeleton directory is back
+    assert (project_dir / "ansible" / "playbooks").is_dir()
+
+
 def test_check_with_limit_resolves_hosts(run_debops, mcp_env, project_dir):
     if shutil.which("ansible-playbook") is None:
         pytest.skip("ansible-playbook is not installed")
