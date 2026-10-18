@@ -42,6 +42,21 @@ EXECUTE_OUTPUT_LIMIT = 128 * 1024
 # ansible-playbook process
 TERMINATION_GRACE = 5  # seconds
 
+# Every playbook execution gets a daemon-unique number, so the log lines
+# of a run can be correlated when clients overlap
+_EXECUTION_IDS = itertools.count(1)
+
+
+def _execution_label(execution_id, context):
+    """The correlation suffix for the log lines of an execution."""
+    parts = ['execution {}'.format(execution_id)]
+    if context.request_id is not None:
+        parts.append('request {}'.format(context.request_id))
+    if context.peer_pid is not None:
+        parts.append('client pid {}'.format(context.peer_pid))
+    return ', '.join(parts)
+
+
 # Play and task headers in ansible-playbook output drive progress
 # notifications; the play recap and host result lines do not
 _PLAY_HEADER = re.compile(r'^PLAY \[.*\]')
@@ -218,9 +233,13 @@ def _execute_playbook(project, policy, arguments, context, check,
                                 .format(errmsg.code, details))
         command = runner.command()
 
-        logger.notice('Executing a playbook in %s mode: %s',
-                      mode, ' '.join(command))
+        execution_id = next(_EXECUTION_IDS)
+        logger.notice('Executing a playbook in %s mode: %s [%s]',
+                      mode, ' '.join(command),
+                      _execution_label(execution_id, context))
         if not run_hooks(project.path, 'pre-' + mode):
+            logger.notice('Playbook execution %s aborted: the pre-%s '
+                          'hook failed', execution_id, mode)
             return error_result('the pre-{} hook aborted the execution'
                                 .format(mode))
         unlocked = False
@@ -238,6 +257,8 @@ def _execute_playbook(project, policy, arguments, context, check,
                 resolved_hosts = resolve_hosts(env, project.path, command)
             except (ValueError, subprocess.TimeoutExpired,
                     FileNotFoundError) as errmsg:
+                logger.notice('Playbook execution %s aborted: %s',
+                              execution_id, errmsg)
                 return error_result('cannot resolve the affected hosts: '
                                     + str(errmsg))
             rejected = [host for host in resolved_hosts
@@ -245,19 +266,25 @@ def _execute_playbook(project, policy, arguments, context, check,
                         and not any(fnmatch.fnmatch(host, allowed)
                                     for allowed in policy.execute_hosts)]
             if rejected:
+                logger.notice('Playbook execution %s aborted: hosts '
+                              'rejected by the policy: %s',
+                              execution_id, ', '.join(rejected))
                 return error_result(
                         'not allowed by the project policy '
                         '(project.mcp.execute_hosts): '
                         + ', '.join(rejected))
             if resolved_hosts:
                 shown = resolved_hosts[:8]
-                logger.notice('The execution affects %s host(s): %s',
+                logger.notice('The execution affects %s host(s): %s '
+                              '[execution %s]',
                               len(resolved_hosts), ', '.join(shown) + (
                                   ', and {} more'.format(
                                           len(resolved_hosts) - 8)
-                                  if len(resolved_hosts) > 8 else ''))
+                                  if len(resolved_hosts) > 8 else ''),
+                              execution_id)
             else:
-                logger.notice('The execution matches no hosts')
+                logger.notice('The execution matches no hosts '
+                              '[execution %s]', execution_id)
 
             # Play and task headers become progress notifications
             progress_counter = itertools.count(1)
@@ -285,8 +312,8 @@ def _execute_playbook(project, policy, arguments, context, check,
                 'timeout': 'killed: it exceeded the timeout',
                 'disabled': 'terminated: the kill switch was flipped',
             }[status]
-            logger.notice('Playbook execution %s after %.0f s '
-                          '(exit code %s)', ended,
+            logger.notice('Playbook execution %s %s after %.0f s '
+                          '(exit code %s)', execution_id, ended,
                           time.monotonic() - started, returncode)
         finally:
             if unlocked:

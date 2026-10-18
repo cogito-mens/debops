@@ -79,18 +79,19 @@ class RequestContext(object):
 
     Carries the request id and the transport-level notification channel
     (for server-initiated messages such as progress notifications), plus
-    the client's progress token and capabilities from the request
-    '_meta'.
+    the client's progress token, capabilities and process id from the
+    request '_meta' and the transport.
     """
 
     def __init__(self, request_id, notify=None, progress_token=None,
-                 client_capabilities=None):
+                 client_capabilities=None, peer_pid=None):
         self.request_id = request_id
         self.notify = notify
         self.progress_token = progress_token
         self.client_capabilities = (client_capabilities
                                     if isinstance(client_capabilities, dict)
                                     else {})
+        self.peer_pid = peer_pid
 
 
 class ToolContext(object):
@@ -100,14 +101,16 @@ class ToolContext(object):
     request via 'notifications/cancelled'; long-running tools should
     poll it and stop. 'progress()' sends a progress notification when
     the client asked for one with a 'progressToken' in the request
-    '_meta'.
+    '_meta'. 'peer_pid' identifies the client process on this host,
+    for the audit log.
     """
 
     def __init__(self, request_id, cancelled, progress_token=None,
-                 notify=None):
+                 notify=None, peer_pid=None):
         self.request_id = request_id
         self.cancelled = cancelled
         self.progress_token = progress_token
+        self.peer_pid = peer_pid
         self._notify = notify
 
     def progress(self, message, progress=None, total=None):
@@ -224,7 +227,7 @@ class McpServer(object):
             meta[VIEW_META_KEY] = self.project.view
         return meta
 
-    def handle_bytes(self, data, notify=None):
+    def handle_bytes(self, data, notify=None, peer_pid=None):
         """Handle one raw message; return the response or None."""
         try:
             message = rpc.parse_message(data)
@@ -232,12 +235,12 @@ class McpServer(object):
             logger.warning('Rejecting an unparseable message: %s',
                            errmsg.message)
             return errmsg.to_response()
-        return self.handle(message, notify)
+        return self.handle(message, notify, peer_pid=peer_pid)
 
-    def handle(self, message, notify=None):
+    def handle(self, message, notify=None, peer_pid=None):
         """Handle one parsed message; return the response or None."""
         try:
-            return self._dispatch(message, notify)
+            return self._dispatch(message, notify, peer_pid=peer_pid)
         except rpc.JsonRpcError as errmsg:
             # Error responses have no '_meta' slot; the clacks overhead
             # and the server identity ride results only
@@ -247,7 +250,7 @@ class McpServer(object):
             return rpc.make_error(message.get('id'),
                                   rpc.INTERNAL_ERROR, 'Internal error')
 
-    def _dispatch(self, message, notify=None):
+    def _dispatch(self, message, notify=None, peer_pid=None):
         """Route one parsed message to its method handler.
 
         Raises JsonRpcError for protocol-level errors; the caller turns
@@ -272,7 +275,8 @@ class McpServer(object):
                         if isinstance(meta, dict) else None)
         context = RequestContext(request_id, notify=notify,
                                  progress_token=progress_token,
-                                 client_capabilities=capabilities)
+                                 client_capabilities=capabilities,
+                                 peer_pid=peer_pid)
 
         if is_notification:
             logger.info('Notification: %s', method)
@@ -414,7 +418,8 @@ class McpServer(object):
             tool_context = ToolContext(
                     request_id, cancel_event,
                     progress_token=context.progress_token,
-                    notify=context.notify)
+                    notify=context.notify,
+                    peer_pid=context.peer_pid)
             return tool.handler(arguments, tool_context)
         finally:
             if request_id is not None:

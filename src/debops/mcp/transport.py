@@ -40,7 +40,7 @@ def get_peer_credentials(connection):
     return struct.unpack('3i', credentials)
 
 
-def _write_response(server, writer, write_lock, data):
+def _write_response(server, writer, write_lock, data, peer_pid=None):
     """Handle one message and write its response, if any.
 
     Each message runs in its own thread, so a long-running request does
@@ -56,7 +56,8 @@ def _write_response(server, writer, write_lock, data):
             # The client went away while the request was being handled
             pass
 
-    response = server.handle_bytes(data, notify=notify)
+    response = server.handle_bytes(data, notify=notify,
+                                   peer_pid=peer_pid)
     if response is None:
         return
     try:
@@ -80,6 +81,8 @@ class StdioTransport(object):
         writer = sys.stdout.buffer
         write_lock = threading.Lock()
         workers = []
+        # On stdio the client is the parent process
+        peer_pid = os.getppid()
         try:
             while True:
                 try:
@@ -92,7 +95,7 @@ class StdioTransport(object):
                     break
                 thread = threading.Thread(
                         target=_write_response,
-                        args=(server, writer, write_lock, data),
+                        args=(server, writer, write_lock, data, peer_pid),
                         daemon=True)
                 thread.start()
                 workers.append(thread)
@@ -242,7 +245,7 @@ class UnixSocketTransport(object):
                 # not block cancellations and later requests
                 thread = threading.Thread(
                         target=_write_response,
-                        args=(server, writer, write_lock, data),
+                        args=(server, writer, write_lock, data, pid),
                         daemon=True)
                 thread.start()
             logger.notice('Client disconnected: pid=%s', pid)

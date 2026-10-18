@@ -242,6 +242,22 @@ class CancellationTestCase(unittest.TestCase):
         # ... and neither does the cancelled request
         self.assertEqual(outcome, [None])
 
+    def test_peer_pid_reaches_the_tool_context(self):
+        server = McpServer()
+        seen = []
+
+        def probe(arguments, context):
+            seen.append(context.peer_pid)
+            return {'content': [], 'isError': False}
+
+        server.register_tool('probe', 'Probe', {'type': 'object'},
+                             probe, needs_context=True)
+        server.handle(make_request('tools/call',
+                                   params={'name': 'probe',
+                                           'arguments': {}}),
+                      peer_pid=4321)
+        self.assertEqual(seen, [4321])
+
     def test_cancellation_of_unknown_request_is_ignored(self):
         server = McpServer()
         self.assertIsNone(server.handle({

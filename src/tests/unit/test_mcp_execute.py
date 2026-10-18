@@ -17,6 +17,7 @@ from unittest import mock
 import contextlib
 import io
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -156,6 +157,62 @@ class ExecuteTestCase(unittest.TestCase):
         self.assertTrue(any('cancelled by the client' in line
                             for line in recorded.output),
                         recorded.output)
+
+    def test_executions_are_correlated_in_the_log(self):
+        with self.assertLogs('debops.mcp.tools.execute',
+                             level='NOTICE') as recorded:
+            self.call_execute()
+            self.call_execute()
+        pattern = re.compile(r'\[execution (\d+)')
+        starts = [pattern.search(line).group(1)
+                  for line in recorded.output
+                  if 'Executing a playbook' in line]
+        ends = [re.search(r'execution (\d+) (\w+)', line).groups()
+                for line in recorded.output
+                if line.startswith('NOTICE') and
+                'Playbook execution' in line]
+        # Each run has its own id, and start and end lines share it
+        self.assertEqual(len(starts), 2)
+        self.assertNotEqual(starts[0], starts[1])
+        self.assertEqual(sorted(starts),
+                         sorted(execution for execution, _ in ends))
+        self.assertEqual([outcome for _, outcome in ends],
+                         ['finished', 'finished'])
+
+    def test_aborted_executions_close_the_log(self):
+        with self.assertLogs('debops.mcp.tools.execute',
+                             level='NOTICE') as recorded:
+            # Host resolution fails: the playbook target is bad
+            with mock.patch(
+                    'debops.mcp.tools.execute.AnsiblePlaybookRunner') \
+                    as runner, \
+                    mock.patch(
+                    'debops.mcp.tools.execute.AnsibleInventory'), \
+                    mock.patch('debops.mcp.tools.execute.run_hooks',
+                               return_value=True), \
+                    mock.patch(
+                    'debops.mcp.tools.execute.subprocess.run',
+                    side_effect=ValueError('no such playbook')):
+                from debops.mcp.tools.execute import _execute_playbook
+                runner.return_value.command.return_value = [
+                        'ansible-playbook', 'nosuch.yml']
+                result = _execute_playbook(self.project, self.policy,
+                                           {'playbook': 'nosuch'},
+                                           self.context, check=True)
+        self.assertTrue(result['isError'])
+        self.assertTrue(any('aborted' in line
+                            for line in recorded.output),
+                        recorded.output)
+
+    def test_log_lines_identify_the_client(self):
+        self.context = ToolContext(9, threading.Event(), peer_pid=4321)
+        with self.assertLogs('debops.mcp.tools.execute',
+                             level='NOTICE') as recorded:
+            self.call_execute()
+        start = [line for line in recorded.output
+                 if 'Executing a playbook' in line][0]
+        self.assertIn('request 9', start)
+        self.assertIn('client pid 4321', start)
 
     def test_failing_run_reports_the_exit_code(self):
         from debops.mcp.tools.execute import _execute_playbook
