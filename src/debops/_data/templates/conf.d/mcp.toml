@@ -48,6 +48,13 @@ confirm = ["run", "project_push"]
 # root; 'playbooks/**' includes the local roles in 'playbooks/roles/'.
 write_allow = ["resources/**", "playbooks/**"]
 
+# Patterns prefixed with '.debops/' or 'ansible/' are anchored at the
+# project directory instead of the view root. To let agents author
+# project skills and prompts (served from '.debops/mcp/'), allow them
+# explicitly:
+#write_allow = ["resources/**", "playbooks/**",
+#               ".debops/mcp/skills/**", ".debops/mcp/prompts/**"]
+
 # The minimum interval between git synchronizations with the origin,
 # in seconds.
 sync_interval = 60

@@ -220,7 +220,8 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                   'existing file, or 0644 for a new '
                                   'one'}},
           'required': ['path', 'content']},
-         lambda arguments: tool_view_write(project, policy, arguments)),
+         lambda arguments: tool_view_write(project, policy, arguments,
+                                           server=server)),
         ('view_delete',
          'Delete a file from the current infrastructure view, in '
          'allowed locations only (the project.mcp.write_allow policy). '
@@ -234,7 +235,8 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                   'relative to the view root, e.g. '
                                   '"playbooks/deploy.yml"'}},
           'required': ['path']},
-         lambda arguments: tool_view_delete(project, policy, arguments)),
+         lambda arguments: tool_view_delete(project, policy, arguments,
+                                            server=server)),
         ('inventory_spec',
          'Apply an inventory specification to the inventory of the '
          'current view: define groups, hosts and variables the DebOps '

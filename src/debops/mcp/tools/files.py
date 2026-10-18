@@ -180,21 +180,30 @@ def tool_inventory_query(project, arguments):
     return text_result(output)
 
 
-def _authorized_write_path(policy, relative):
-    """Resolve a view-relative write path, enforcing the write policy.
+def _authorized_write_path(project, policy, relative):
+    """Resolve a write path, enforcing the write policy.
 
-    Returns (absolute path, view-relative path). Raises ValueError with
-    the refusal reason.
+    Patterns starting with '.debops/' or 'ansible/' are anchored at the
+    project directory, so they reach the same place in legacy and
+    modern projects ('ansible/keyring/**', '.debops/mcp/...'); anything
+    else is anchored at the view root.
+
+    Returns (absolute path, display-relative path). Raises ValueError
+    with the refusal reason.
     """
     if not relative:
         raise ValueError('the "path" argument is required')
+    if relative.startswith(('.debops/', 'ansible/')):
+        root = project.path
+    else:
+        root = policy.view_root
     try:
-        path = confine_under(policy.view_root, relative)
+        path = confine_under(root, relative)
     except ValueError:
-        raise ValueError('path escapes the infrastructure view: '
+        raise ValueError('path escapes its allowed directory: '
                          + relative)
     canonical_relative = os.path.relpath(
-            path, os.path.realpath(policy.view_root))
+            path, os.path.realpath(root))
     # The deny list is unconditional, so that a misconfigured
     # 'write_allow' cannot open the secrets or the git metadata
     for part in canonical_relative.split('/'):
@@ -207,12 +216,49 @@ def _authorized_write_path(policy, relative):
     return path, canonical_relative
 
 
+def _validate_mcp_content(relative, content):
+    """Validate project MCP content at write time.
+
+    Returns an error string, or None when the content is not MCP
+    content or is valid.
+    """
+    parts = relative.split('/')
+    if parts[0:2] != ['.debops', 'mcp'] or len(parts) < 4:
+        return None
+    from ..skills import SKILL_NAME_PATTERN, _parse_frontmatter_text
+    kind = parts[2]
+    if kind == 'skills':
+        name = parts[3]
+        if not SKILL_NAME_PATTERN.match(name):
+            return 'invalid skill name: ' + name
+        if len(parts) == 5 and parts[4] == 'SKILL.md':
+            meta = _parse_frontmatter_text(content)
+            if meta.get('name', name) != name:
+                return ('the frontmatter name does not match the '
+                        'directory: ' + name)
+            if not meta.get('description'):
+                return 'the skill has no description in the frontmatter'
+    elif kind == 'prompts':
+        if len(parts) != 4 or not parts[3].endswith('.md'):
+            return 'prompts are <name>.md files: ' + relative
+        name = parts[3][:-3]
+        if not SKILL_NAME_PATTERN.match(name):
+            return 'invalid prompt name: ' + name
+        meta = _parse_frontmatter_text(content)
+        if not meta.get('description'):
+            return 'the prompt has no description in the frontmatter'
+    else:
+        return 'unknown MCP content kind: {} (expected skills/ or ' \
+               'prompts/)'.format(kind)
+    return None
+
+
 def _is_git_tracked_project(project):
     """Whether the project directory is git-tracked (work tree)."""
     return os.path.lexists(os.path.join(project.path, '.git'))
 
 
-def tool_view_write(project, policy, arguments):
+def tool_view_write(project, policy, arguments, server=None):
     relative = str(arguments.get('path') or '').strip('/')
     content = arguments.get('content')
     if not isinstance(content, str):
@@ -237,9 +283,20 @@ def tool_view_write(project, policy, arguments):
                             'init") so that changes can be committed')
 
     try:
-        path, view_relative = _authorized_write_path(policy, relative)
+        path, view_relative = _authorized_write_path(project, policy,
+                                                     relative)
     except ValueError as errmsg:
         return error_result(str(errmsg))
+
+    if (view_relative.startswith('.debops/mcp/')
+            and not policy.project_content):
+        return error_result('project MCP content is disabled by the '
+                            'policy (project.mcp.project_content)')
+
+    # Content served to the model is validated at write time
+    invalid = _validate_mcp_content(view_relative, content)
+    if invalid is not None:
+        return error_result(invalid)
 
     with exclusive_project(project, policy,
                            note='view_write ' + view_relative):
@@ -306,12 +363,28 @@ def tool_view_write(project, policy, arguments):
             return error_result('{}: {}, but the commit failed: {} '
                                 '(the change is not recorded in git)'
                                 .format(outcome, view_relative, errmsg))
+        _announce_mcp_content_change(server, view_relative)
         return text_result('{}: {} ({} bytes, mode {:04o})'.format(
                 outcome, view_relative, size,
                 stat.S_IMODE(os.stat(path).st_mode)))
 
 
-def tool_view_delete(project, policy, arguments):
+def _announce_mcp_content_change(server, view_relative):
+    """Emit the notifications for a change under '.debops/mcp/'."""
+    if server is None:
+        return
+    parts = view_relative.split('/')
+    if parts[0:2] != ['.debops', 'mcp'] or len(parts) < 3:
+        return
+    if parts[2] == 'skills':
+        server.emit_list_changed('resources')
+        if len(parts) > 3:
+            server.emit_resource_updated('skill://' + parts[3])
+    elif parts[2] == 'prompts':
+        server.emit_list_changed('prompts')
+
+
+def tool_view_delete(project, policy, arguments, server=None):
     relative = str(arguments.get('path') or '').strip('/')
 
     # Deletions are recoverable and attributable only with git
@@ -321,9 +394,15 @@ def tool_view_delete(project, policy, arguments):
                             'init") so that changes can be committed')
 
     try:
-        path, view_relative = _authorized_write_path(policy, relative)
+        path, view_relative = _authorized_write_path(project, policy,
+                                                     relative)
     except ValueError as errmsg:
         return error_result(str(errmsg))
+
+    if (view_relative.startswith('.debops/mcp/')
+            and not policy.project_content):
+        return error_result('project MCP content is disabled by the '
+                            'policy (project.mcp.project_content)')
 
     with exclusive_project(project, policy,
                            note='view_delete ' + view_relative):
@@ -336,6 +415,7 @@ def tool_view_delete(project, policy, arguments):
         except OSError as errmsg:
             return error_result('cannot delete {}: {}'.format(
                     view_relative, errmsg))
+        _announce_mcp_content_change(server, view_relative)
         # The commit is part of the tool's contract, as for view_write;
         # when it fails the file is gone but NOT recorded in git
         try:

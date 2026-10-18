@@ -26,13 +26,8 @@ SKILL_URI_PREFIX = 'skill://'
 SKILL_NAME_PATTERN = re.compile(r'^[a-z0-9-]+$')
 
 
-def _parse_frontmatter(path):
-    """Parse the YAML frontmatter of a SKILL.md file."""
-    try:
-        with open(path) as fp:
-            text = fp.read(8192)
-    except OSError:
-        return {}
+def _parse_frontmatter_text(text):
+    """Parse the YAML frontmatter of a document string."""
     lines = text.splitlines()
     if not lines or lines[0].strip() != '---':
         return {}
@@ -48,6 +43,16 @@ def _parse_frontmatter(path):
     except yaml.YAMLError:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _parse_frontmatter(path):
+    """Parse the YAML frontmatter of a SKILL.md file."""
+    try:
+        with open(path) as fp:
+            text = fp.read(8192)
+    except OSError:
+        return {}
+    return _parse_frontmatter_text(text)
 
 
 class SkillLibrary(object):

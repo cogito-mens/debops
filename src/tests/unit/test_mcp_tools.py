@@ -495,6 +495,112 @@ class ViewWriteTestCase(unittest.TestCase):
         self.assertIn('not a git repository',
                       response['content'][0]['text'])
 
+    # -- scoped writes into '.debops/mcp/' and the anchors --------------
+
+    GOOD_SKILL = ('---\nname: demo\ndescription: A demo skill\n---\n\n'
+                  '# Demo\n')
+
+    def write_scoped(self, path, content='x\n', allow=None):
+        from debops.mcp.tools.files import tool_view_write
+        if allow is not None:
+            self.project.config.raw['project'] = {
+                    'mcp': {'write_allow': allow}}
+            self.policy = McpPolicy(self.project)
+        return tool_view_write(self.project, self.policy,
+                               {'path': path, 'content': content})
+
+    def test_mcp_content_is_not_writable_by_default(self):
+        response = self.write_scoped('.debops/mcp/skills/demo/SKILL.md',
+                                     content=self.GOOD_SKILL)
+        self.assertTrue(response['isError'])
+        self.assertIn('not writable', response['content'][0]['text'])
+
+    def test_mcp_content_with_an_opt_in_pattern(self):
+        response = self.write_scoped(
+                '.debops/mcp/skills/demo/SKILL.md', content=self.GOOD_SKILL,
+                allow=['resources/**', 'playbooks/**',
+                       '.debops/mcp/skills/**'])
+        self.assertIn('created: .debops/mcp/skills/demo/SKILL.md',
+                      self.result_text(response))
+        # The project anchor: outside the view root, under the project
+        with open(os.path.join(self.tmpdir, '.debops', 'mcp', 'skills',
+                               'demo', 'SKILL.md')) as fp:
+            self.assertEqual(fp.read(), self.GOOD_SKILL)
+
+    def test_invalid_skill_content_is_refused(self):
+        bad = '---\nname: other\ndescription: Mismatch\n---\n'
+        response = self.write_scoped('.debops/mcp/skills/demo/SKILL.md',
+                                     content=bad,
+                                     allow=['.debops/mcp/skills/**'])
+        self.assertTrue(response['isError'])
+        self.assertIn('does not match', response['content'][0]['text'])
+        response = self.write_scoped('.debops/mcp/skills/demo/SKILL.md',
+                                     content='---\nname: demo\n---\n',
+                                     allow=['.debops/mcp/skills/**'])
+        self.assertTrue(response['isError'])
+        self.assertIn('no description', response['content'][0]['text'])
+
+    def test_prompt_write_and_validation(self):
+        good = '---\ndescription: A prompt\n---\n\nDo it.\n'
+        response = self.write_scoped('.debops/mcp/prompts/demo.md',
+                                     content=good,
+                                     allow=['.debops/mcp/prompts/**'])
+        self.assertIn('created:', self.result_text(response))
+        # Prompts are flat '<name>.md' files
+        response = self.write_scoped('.debops/mcp/prompts/sub/demo.md',
+                                     content=good,
+                                     allow=['.debops/mcp/prompts/**'])
+        self.assertTrue(response['isError'])
+        response = self.write_scoped('.debops/mcp/prompts/demo.md',
+                                     content='no frontmatter\n',
+                                     allow=['.debops/mcp/prompts/**'])
+        self.assertTrue(response['isError'])
+        self.assertIn('no description', response['content'][0]['text'])
+
+    def test_mcp_content_write_refused_when_content_disabled(self):
+        self.project.config.raw['project'] = {
+                'mcp': {'project_content': False,
+                        'write_allow': ['.debops/mcp/skills/**']}}
+        self.policy = McpPolicy(self.project)
+        response = self.write_scoped('.debops/mcp/skills/demo/SKILL.md',
+                                     content=self.GOOD_SKILL)
+        self.assertTrue(response['isError'])
+        self.assertIn('disabled', response['content'][0]['text'])
+
+    def test_ansible_prefix_anchors_at_the_project(self):
+        # In a legacy project the view root is 'ansible/': both
+        # spellings land in the same place
+        response = self.write_scoped('ansible/playbooks/deploy.yml',
+                                     content='---\n',
+                                     allow=['ansible/playbooks/**'])
+        self.assertIn('created: ansible/playbooks/deploy.yml',
+                      self.result_text(response))
+
+    def test_git_metadata_is_never_writable(self):
+        response = self.write_scoped('.git/config',
+                                     allow=['.git/**'])
+        self.assertTrue(response['isError'])
+        self.assertIn('denied by policy',
+                      response['content'][0]['text'])
+
+    def test_write_announces_mcp_content_changes(self):
+        events = []
+        server = type('Server', (), {
+                'emit_list_changed': lambda self, kind:
+                events.append(('list', kind)),
+                'emit_resource_updated': lambda self, uri:
+                events.append(('updated', uri)),
+        })()
+        from debops.mcp.tools.files import tool_view_write
+        self.project.config.raw['project'] = {
+                'mcp': {'write_allow': ['.debops/mcp/skills/**']}}
+        self.policy = McpPolicy(self.project)
+        tool_view_write(self.project, self.policy,
+                        {'path': '.debops/mcp/skills/demo/SKILL.md',
+                         'content': self.GOOD_SKILL}, server=server)
+        self.assertEqual(events, [('list', 'resources'),
+                                  ('updated', 'skill://demo')])
+
 
 class InventorySpecTestCase(unittest.TestCase):
 
