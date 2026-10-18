@@ -44,9 +44,13 @@ def execution_schema(policy):
     allowed = (set(EXECUTE_OPTIONS) if policy is None
                else set(policy.execute_options))
     properties = {
-        'playbook': {'type': 'string',
-                     'description': 'Playbook target, e.g. '
-                     '"service/nginx" or "site"'},
+        'playbook': {'oneOf': [{'type': 'string'},
+                               {'type': 'array',
+                                'items': {'type': 'string'},
+                                'minItems': 1}],
+                     'description': 'Playbook target or list of '
+                     'targets (run in order), e.g. "service/nginx" or '
+                     '["service/nginx", "site"]'},
     }
     for option, description in OPTION_DESCRIPTIONS.items():
         if option in allowed:
@@ -277,10 +281,11 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
     if execute_mode in ('check', 'all'):
         tools.append((
             'check',
-            'Run an Ansible playbook in check mode (no changes are '
+            'Run Ansible playbooks in check mode (no changes are '
             'made), reporting what would change. Facts are gathered '
             'live from the managed hosts. Accepts a playbook target '
-            '(see the playbooks tool) and optional limit/tags.',
+            'or a list of targets (see the playbooks tool), run in '
+            'order, and optional limit/tags.',
             execution_schema(policy),
             lambda arguments, context: tool_check(
                 project, policy, arguments, context,
@@ -290,10 +295,10 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
     if execute_mode == 'all':
         tools.append((
             'run',
-            'Run an Ansible playbook, changing the managed hosts. Use '
+            'Run Ansible playbooks, changing the managed hosts. Use '
             'the "check" tool first to preview the changes. Accepts a '
-            'playbook target (see the playbooks tool) and optional '
-            'limit/tags.',
+            'playbook target or a list of targets (see the playbooks '
+            'tool), run in order, and optional limit/tags.',
             execution_schema(policy),
             lambda arguments, context: tool_run(
                 project, policy, arguments, context,

@@ -370,6 +370,51 @@ def test_check_tool_runs_a_playbook_in_check_mode(run_debops, mcp_env,
     assert "hello from mcp" in text
 
 
+def test_check_runs_multiple_playbooks_in_order(run_debops, mcp_env,
+                                                project_dir):
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+    playbooks = project_dir / "ansible" / "playbooks"
+    playbooks.mkdir(parents=True)
+    for name in ("first", "second"):
+        (playbooks / (name + ".yml")).write_text("""---
+- name: Playbook {0}
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Say {0}
+      ansible.builtin.debug:
+        msg: "hello from {0}"
+""".format(name))
+
+    request = json.dumps({
+        "jsonrpc": "2.0", "_meta": REQUEST_META, "id": 1,
+        "method": "tools/call",
+        "params": {"name": "check",
+                   "arguments": {"playbook": ["first", "second"]}},
+    }) + "\n"
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=request)
+
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    result_text = response["result"]["content"][0]["text"]
+    assert response["result"]["isError"] is False
+    assert "exit code: 0" in result_text
+    # Both playbooks ran, in specification order
+    first = result_text.index("hello from first")
+    second = result_text.index("hello from second")
+    assert first < second
+    assert result_text.startswith("# debops check first second")
+
+
 def test_run_asks_for_confirmation_via_stdio(run_debops, mcp_env,
                                              project_dir):
     if shutil.which("ansible-playbook") is None:

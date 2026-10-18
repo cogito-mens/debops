@@ -90,6 +90,37 @@ class BuildArgsTestCase(unittest.TestCase):
         with self.assertRaises(ValueError):
             _build_ansible_args({}, check=False)
 
+    def test_multiple_playbooks_in_order(self):
+        args = _build_ansible_args(
+                {'playbook': ['service/nginx', 'site']}, check=False)
+        self.assertEqual(args, ['service/nginx', 'site'])
+
+    def test_multiple_playbooks_reject_empty_list(self):
+        with self.assertRaises(ValueError):
+            _build_ansible_args({'playbook': []}, check=False)
+
+    def test_multiple_playbooks_reject_empty_names(self):
+        with self.assertRaises(ValueError):
+            _build_ansible_args({'playbook': ['site', '']}, check=False)
+
+    def test_multiple_playbooks_reject_control_characters(self):
+        with self.assertRaises(ValueError):
+            _build_ansible_args({'playbook': ['a\nb']}, check=False)
+
+
+class ResolveHostsTestCase(unittest.TestCase):
+
+    def test_hosts_are_deduplicated_across_playbooks(self):
+        # Two playbooks reporting overlapping hosts in separate blocks
+        result = make_resolve_result(('web1', 'web2'))
+        result.stdout += ('  hosts (2):\n    web2\n    web3\n')
+        with mock.patch('debops.mcp.tools.execute.subprocess.run',
+                        return_value=result):
+            from debops.mcp.tools.execute import resolve_hosts
+            hosts = resolve_hosts({}, '/tmp', ['ansible-playbook',
+                                               'a.yml', 'b.yml'])
+        self.assertEqual(hosts, ['web1', 'web2', 'web3'])
+
 
 class ExecuteTestCase(unittest.TestCase):
 
@@ -100,7 +131,8 @@ class ExecuteTestCase(unittest.TestCase):
         self.policy = McpPolicy(self.project)
         self.context = ToolContext(1, threading.Event())
 
-    def call_execute(self, check=True, resolved=('web1',)):
+    def call_execute(self, check=True, resolved=('web1',),
+                     playbook='site'):
         from debops.mcp.tools.execute import _execute_playbook
         with mock.patch(
                 'debops.mcp.tools.execute.AnsiblePlaybookRunner') as runner, \
@@ -117,12 +149,12 @@ class ExecuteTestCase(unittest.TestCase):
             hooks.return_value = True
             popen.return_value = make_process()
             result = _execute_playbook(self.project, self.policy,
-                                       {'playbook': 'site'}, self.context,
-                                       check=check)
-        return result, inventory, hooks, popen
+                                       {'playbook': playbook},
+                                       self.context, check=check)
+        return result, runner, inventory, hooks, popen
 
     def test_successful_check(self):
-        result, inventory, hooks, popen = self.call_execute()
+        result, _runner, inventory, hooks, popen = self.call_execute()
         self.assertFalse(result['isError'])
         text = result['content'][0]['text']
         self.assertIn('exit code: 0', text)
@@ -142,7 +174,8 @@ class ExecuteTestCase(unittest.TestCase):
     def test_completion_is_logged(self):
         with self.assertLogs('debops.mcp.tools.execute',
                              level='NOTICE') as recorded:
-            result, _inventory, _hooks, _popen = self.call_execute()
+            result, _runner, _inventory, _hooks, _popen = \
+                    self.call_execute()
         self.assertFalse(result['isError'])
         self.assertTrue(any('finished' in line and 'exit code 0' in line
                             for line in recorded.output),
@@ -214,6 +247,17 @@ class ExecuteTestCase(unittest.TestCase):
         self.assertIn('request 9', start)
         self.assertIn('client pid 4321', start)
 
+    def test_multiple_playbooks_reach_the_runner_in_order(self):
+        result, runner, _inventory, _hooks, _popen = self.call_execute(
+                playbook=['a.yml', 'b.yml'])
+        self.assertFalse(result['isError'])
+        # Both playbooks, in specification order, before the options
+        runner.assert_called_once_with(
+                self.project,
+                ansible_args=['a.yml', 'b.yml', '--diff', '--check'])
+        text = result['content'][0]['text']
+        self.assertIn('# debops check a.yml b.yml', text)
+
     def test_failing_run_reports_the_exit_code(self):
         from debops.mcp.tools.execute import _execute_playbook
         with mock.patch(
@@ -280,7 +324,7 @@ class ExecuteTestCase(unittest.TestCase):
         popen.assert_not_called()
 
     def test_hosts_in_the_result_header(self):
-        result, _inventory, _hooks, _popen = self.call_execute()
+        result, _runner, _inventory, _hooks, _popen = self.call_execute()
         self.assertIn('hosts: web1', result['content'][0]['text'])
 
     def test_runner_abort_stays_off_the_protocol_channel(self):

@@ -70,16 +70,36 @@ ALLOWED_OPTIONS = {'limit': '--limit', 'tags': '--tags',
                    'skip_tags': '--skip-tags'}
 
 
+def _playbook_targets(arguments):
+    """The playbook targets of an execution, in specification order.
+
+    Accepts a single name or a list of names; each may resolve to a
+    playbook or expand to a playbook set downstream.
+    """
+    playbook = arguments.get('playbook')
+    if isinstance(playbook, str):
+        playbooks = [playbook]
+    elif isinstance(playbook, (list, tuple)):
+        playbooks = playbook
+    else:
+        playbooks = []
+    targets = []
+    for item in playbooks:
+        name = str(item)
+        if not name or '\n' in name or '\r' in name:
+            raise ValueError('invalid playbook target: {!r}'.format(item))
+        targets.append(name)
+    if not targets:
+        raise ValueError('the "playbook" argument is required')
+    return targets
+
+
 def _build_ansible_args(arguments, check, allowed_options=EXECUTE_OPTIONS):
     """Build the ansible-playbook arguments from the tool arguments.
 
     Only options permitted by the project policy are accepted.
     """
-    playbook = str(arguments.get('playbook') or '')
-    if not playbook:
-        raise ValueError('the "playbook" argument is required')
-
-    args = [playbook]
+    args = _playbook_targets(arguments)
     for option, flag in ALLOWED_OPTIONS.items():
         value = arguments.get(option)
         if value is None:
@@ -129,7 +149,13 @@ def resolve_hosts(env, cwd, command, timeout=30):
                 hosts.append(line.strip())
             else:
                 in_hosts = False
-    return hosts
+    # Multiple playbooks report their hosts in separate blocks; a host
+    # targeted by several of them counts once
+    unique = []
+    for host in hosts:
+        if host not in unique:
+            unique.append(host)
+    return unique
 
 
 def run_cancellable(command, env, cwd, context, timeout, on_line=None,
@@ -207,9 +233,13 @@ def _execute_playbook(project, policy, arguments, context, check,
                       enabled_check=None, on_disabled=None):
     mode = 'check' if check else 'run'
 
+    try:
+        targets = _playbook_targets(arguments)
+    except ValueError as errmsg:
+        return error_result(str(errmsg))
+
     with exclusive_project(project, policy,
-                           note='{} {}'.format(
-                                   mode, arguments.get('playbook', ''))):
+                           note='{} {}'.format(mode, ' '.join(targets))):
         try:
             args = _build_ansible_args(arguments, check,
                                        policy.execute_options)
@@ -323,7 +353,7 @@ def _execute_playbook(project, policy, arguments, context, check,
               extra_env={'DEBOPS_RETURN_CODE': returncode})
 
     header = '# debops {} {}\n\nexit code: {}\nhosts: {}\n\n'.format(
-            mode, args[0], returncode,
+            mode, ' '.join(targets), returncode,
             ', '.join(resolved_hosts) if resolved_hosts else '(none)')
     if status == 'disabled':
         return error_result(header + 'terminated: the MCP functionality '
