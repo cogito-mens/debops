@@ -75,6 +75,21 @@ class FormatterTestCase(unittest.TestCase):
         # The spec defaults: not read-only, destructive
         self.assertEqual(client.annotation_flags({}), ['destructive'])
 
+    def test_confirm_marker_rendered(self):
+        gated = {'name': 'run', 'description': 'Run things.',
+                 'annotations': {'destructiveHint': True},
+                 '_meta': {'org.debops/confirm': True}}
+        plain = {'name': 'check', 'description': 'Check things.',
+                 'annotations': {'destructiveHint': False}}
+        lines = client.format_tools([gated, plain])
+        self.assertIn('[destructive, confirm]', lines[1])
+        self.assertNotIn('confirm', lines[2])
+
+        detail = client.format_tool(gated)
+        self.assertIn('annotations: destructive, confirm', detail)
+        self.assertIn('confirmation: asked before the operation runs',
+                      detail)
+
     def test_format_discover(self):
         lines = client.format_discover({
             'supportedVersions': ['2026-07-28'],

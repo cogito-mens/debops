@@ -247,6 +247,19 @@ def annotation_flags(annotations):
     return flags
 
 
+def _confirm_marker(tool):
+    """Whether the tool is gated on user confirmation by the policy."""
+    return bool(tool.get('_meta', {}).get('org.debops/confirm'))
+
+
+def _tool_flags(tool):
+    """The flag list of a tool: behavior hints plus the confirm gate."""
+    flags = annotation_flags(tool.get('annotations', {}))
+    if _confirm_marker(tool):
+        flags.append('confirm')
+    return flags
+
+
 def format_discover(result):
     """Render a server/discover result as lines for humans."""
     lines = []
@@ -283,7 +296,7 @@ def format_tools(tools):
     lines = ['tools ({}):'.format(len(tools))]
     width = max([len(tool['name']) for tool in tools] + [0])
     for tool in tools:
-        flags = annotation_flags(tool.get('annotations', {}))
+        flags = _tool_flags(tool)
         suffix = ' [{}]'.format(', '.join(flags)) if flags else ''
         lines.append('    {}  {}{}'.format(
                 tool['name'].ljust(width),
@@ -317,9 +330,11 @@ def format_tool(tool):
                             tool['description'])
     else:
         lines = [tool['name']]
-    flags = annotation_flags(tool.get('annotations', {}))
+    flags = _tool_flags(tool)
     if flags:
         lines.append('annotations: {}'.format(', '.join(flags)))
+    if _confirm_marker(tool):
+        lines.append('confirmation: asked before the operation runs')
     schema = tool.get('inputSchema', {})
     properties = schema.get('properties', {})
     required = schema.get('required', [])
