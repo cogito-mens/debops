@@ -487,6 +487,53 @@ def _cat_file_children():
     return [line for line in out.splitlines() if "cat-file" in line]
 
 
+def _config_template_project(tmp_path, project_type="modern"):
+    project = make_project_at(tmp_path, project_type=project_type)
+    project.view = "system"
+    return project
+
+
+def _patch_config_template(text):
+    """Register a test-local configuration template."""
+    return mock.patch.multiple(
+            projectdir_module,
+            CONFIG_TEMPLATES={"test": "test.toml"},
+            _read_config_template=mock.Mock(return_value=text))
+
+
+def test_apply_config_template_renders_into_confd(tmp_path):
+    project = _config_template_project(tmp_path)
+    with _patch_config_template('greeting = "{{ project.name }}"\n'):
+        target = project.apply_config_template("test")
+    assert target == str(tmp_path / ".debops" / "conf.d" / "test.toml")
+    assert (tmp_path / ".debops" / "conf.d" / "test.toml").read_text() \
+        == 'greeting = "{}"\n'.format(tmp_path.name)
+
+
+def test_apply_config_template_unknown_name(tmp_path):
+    project = _config_template_project(tmp_path)
+    with _patch_config_template(""):
+        with pytest.raises(ValueError, match="unknown configuration"):
+            project.apply_config_template("nosuch")
+
+
+def test_apply_config_template_legacy_refused(tmp_path):
+    project = _config_template_project(tmp_path, project_type="legacy")
+    with _patch_config_template(""):
+        with pytest.raises(ValueError, match="modern projects only"):
+            project.apply_config_template("test")
+
+
+def test_apply_config_template_refuses_to_overwrite(tmp_path):
+    project = _config_template_project(tmp_path)
+    with _patch_config_template("one = 1\n"):
+        project.apply_config_template("test")
+        with pytest.raises(ValueError, match="--force"):
+            project.apply_config_template("test")
+        project.apply_config_template("test", force=True)
+    assert (tmp_path / ".debops" / "conf.d" / "test.toml").exists()
+
+
 def test_commit_on_an_unborn_branch(tmp_path):
     # A freshly initialized repository has no HEAD commit; the staged
     # tree is then new by definition

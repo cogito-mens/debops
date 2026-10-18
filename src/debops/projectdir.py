@@ -35,6 +35,20 @@ import re
 
 logger = logging.getLogger(__name__)
 
+# Configuration templates for '.debops/conf.d/', selected with the
+# '--config' option: template name to file name. An explicit registry
+# because the package may be installed as a zip archive, where its data
+# files cannot be listed at runtime
+CONFIG_TEMPLATE_DIR = os.path.join('_data', 'templates', 'conf.d')
+CONFIG_TEMPLATES = {}
+
+
+def _read_config_template(filename):
+    """Read a configuration template from the package data."""
+    return pkgutil.get_data('debops', os.path.join(
+            CONFIG_TEMPLATE_DIR, filename)).decode('utf-8')
+
+
 # Minimal Ansible configuration used when inspecting the inventory a
 # specification produces. It keeps the verification run independent of the
 # project's own 'ansible.cfg' and reports host patterns which do not match
@@ -256,6 +270,40 @@ class ProjectDir(object):
         except (git.exc.InvalidGitRepositoryError,
                 git.exc.NoSuchPathError):
             return False
+
+    def apply_config_template(self, name, force=False):
+        """Render a configuration template into '.debops/conf.d/'.
+
+        Templates are shipped with the package and selected by name via
+        the '--config' option; an existing file is only replaced with
+        'force'. Modern projects only; a legacy project uses
+        '.debops.cfg' for its configuration.
+        """
+        if self.project_type != 'modern':
+            raise ValueError('configuration templates are supported in '
+                             'modern projects only; a legacy project '
+                             'uses .debops.cfg for its configuration')
+        try:
+            filename = CONFIG_TEMPLATES[name]
+        except KeyError:
+            available = (', '.join(sorted(CONFIG_TEMPLATES))
+                         or 'none shipped')
+            raise ValueError('unknown configuration template: {!r} '
+                             '(available: {})'.format(name, available))
+        rendered = jinja2.Template(
+                _read_config_template(filename),
+                trim_blocks=True).render(
+                env=os.environ,
+                view=self.view,
+                default_view=self.kwargs.get('default_view', self.view),
+                project={'name': self.name, 'path': self.path,
+                         'type': self.project_type}) + '\n'
+        target = os.path.join(self.path, '.debops', 'conf.d', filename)
+        if not self._write_file(target, rendered, overwrite=force):
+            raise ValueError('{} already exists; use --force to replace '
+                             'it'.format(os.path.relpath(target,
+                                                         self.path)))
+        return target
 
     def _write_file(self, filename, *content, overwrite=False):
         """
@@ -1118,11 +1166,21 @@ class ProjectDir(object):
         if not run_hooks(self.path, 'pre-init'):
             raise RuntimeError('Hook pre-init aborted, not creating project')
 
+        config_templates = self.kwargs.get('config_templates') or []
+        if config_templates and self.project_type != 'modern':
+            raise ValueError('configuration templates are supported in '
+                             'modern projects only; a legacy project '
+                             'uses .debops.cfg for its configuration')
+
         # Let's make a new project
         if self.project_type == 'modern':
             self._create_modern_project(self.path)
         elif self.project_type == 'legacy':
             self._create_legacy_project(self.path)
+
+        # Configuration templates land in the initial commit
+        for name in config_templates:
+            self.apply_config_template(name)
 
         create_git_repo = self.kwargs.get('git', None)
         if create_git_repo:
@@ -1737,6 +1795,12 @@ class ProjectDir(object):
     def refresh(self):
         logger.debug("Refresing project directory")
 
+        config_templates = self.kwargs.get('config_templates') or []
+        if config_templates and self.project_type != 'modern':
+            raise ValueError('configuration templates are supported in '
+                             'modern projects only; a legacy project '
+                             'uses .debops.cfg for its configuration')
+
         if not run_hooks(self.path, 'pre-refresh'):
             print('Hook pre-refresh aborted, not refreshing project')
             return
@@ -1772,6 +1836,10 @@ class ProjectDir(object):
                         project_type=self.project_type)
                 self.ansible_cfg.merge_config(debops_cfg)
                 self.ansible_cfg.write_config()
+        for name in config_templates:
+            self.apply_config_template(
+                    name, force=self.kwargs.get('force', False))
+
         print('Refreshed DebOps project in', self.path,
               file=self._status_stream())
 

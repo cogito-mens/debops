@@ -80,6 +80,13 @@ Options
   to unlock the :file:`ansible/secret/` directory encrypted with EncFS or
   git-crypt. Separate multiple list entries by commas.
 
+``--config <name>``
+  Write a configuration template shipped with DebOps into the
+  :file:`.debops/conf.d/` directory, rendered with the project context
+  (modern projects only). Currently the ``mcp`` template is available, which
+  documents and sets the :command:`debops mcp` server policy. This option can
+  be specified multiple times; the written files land in the initial commit.
+
 ``--template <spec>``
   Create Ansible inventory structure in the selected or default view, described
   by a :ref:`inventory specification <inventory_specification>`. This
@@ -314,6 +321,13 @@ Options
   the default view will be refreshed. Using this option overrides the
   automatic view detection performed by DebOps based on the current working
   directory.
+
+``--config <name>``
+  Write a configuration template shipped with DebOps into the
+  :file:`.debops/conf.d/` directory (modern projects only), for example
+  ``mcp`` for the :command:`debops mcp` server policy. This option can be
+  given more than once. An existing file is kept as it is, unless the
+  ``--force`` option is used to replace it with a fresh rendering.
 
 ``--template <spec>``
   Create inventory files in the selected view, described by a :ref:`inventory

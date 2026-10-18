@@ -143,6 +143,11 @@ Commands:
         parser.add_argument('--encrypt', type=str, nargs='?',
                             choices=['encfs', 'git-crypt'],
                             help='enable encrypted secrets')
+        parser.add_argument('--config', type=str, dest='config_templates',
+                            action='append', metavar='NAME',
+                            help='write the configuration template NAME '
+                                 'into .debops/conf.d (modern projects '
+                                 'only; may be given multiple times)')
         parser.add_argument('--keys', type=str,
                             help='list of GPG recipients with secret access, '
                                  'delimited by commas')
@@ -162,6 +167,12 @@ Commands:
         parser.add_argument('-V', '--view', type=str,
                             help='select the infrastructure view '
                                  'to refresh')
+        parser.add_argument('--config', type=str, dest='config_templates',
+                            action='append', metavar='NAME',
+                            help='write the configuration template NAME '
+                                 'into .debops/conf.d (modern projects '
+                                 'only; may be given multiple times; '
+                                 '--force replaces an existing file)')
         self.add_spec_arguments(parser)
         parser.add_argument('-v', '--verbose', action="count",
                             help='increase output verbosity '
