@@ -487,6 +487,29 @@ def _cat_file_children():
     return [line for line in out.splitlines() if "cat-file" in line]
 
 
+def test_commit_on_an_unborn_branch(tmp_path):
+    # A freshly initialized repository has no HEAD commit; the staged
+    # tree is then new by definition
+    env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1",
+               GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="test@example.org",
+               GIT_COMMITTER_NAME="Test",
+               GIT_COMMITTER_EMAIL="test@example.org")
+    subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), env=env,
+                   check=True)
+    project = make_project_at(
+            tmp_path,
+            raw={"project": {"git": {"auto_commit_message":
+                                     "automatic commit"}}})
+    (tmp_path / "dirty.txt").write_text("x\n")
+
+    project.commit()
+
+    log = subprocess.run(["git", "log", "--format=%s"],
+                         cwd=str(tmp_path), env=env, capture_output=True,
+                         text=True)
+    assert log.stdout.strip() == "automatic commit"
+
+
 @pytest.mark.skipif(platform.system() != "Linux",
                     reason="helper processes are listed via ps")
 def test_commit_closes_git_helper_processes(tmp_path):

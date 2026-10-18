@@ -1598,8 +1598,13 @@ class ProjectDir(object):
             repo.git.add(all=True)
 
             # Check if there are any differences between the current HEAD
-            # and the index. If there are, we need to commit them.
-            diff_list = repo.head.commit.diff()
+            # and the index. If there are, we need to commit them. An
+            # unborn branch (no commits yet) treats the whole staged
+            # tree as new
+            if repo.head.is_valid():
+                diff_list = repo.head.commit.diff()
+            else:
+                diff_list = list(repo.index.entries)
             if diff_list:
                 if message is None:
                     try:
