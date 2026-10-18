@@ -114,6 +114,29 @@ def request_unix(path, method, params=None, timeout=5):
         client.close()
 
 
+def parse_call_arguments(pairs):
+    """Parse KEY=VALUE pairs into tool arguments.
+
+    'true'/'false' become booleans and integers become integers;
+    everything else stays a string. Raises ValueError for a pair
+    without a key or the '='.
+    """
+    arguments = {}
+    for pair in pairs:
+        key, separator, value = pair.partition('=')
+        if not separator or not key:
+            raise ValueError('not a KEY=VALUE pair: ' + pair)
+        if value.lower() in ('true', 'false'):
+            value = value.lower() == 'true'
+        else:
+            try:
+                value = int(value)
+            except ValueError:
+                pass
+        arguments[key] = value
+    return arguments
+
+
 # -- formatters for human inspection ---------------------------------------
 
 def _first_sentence(text):

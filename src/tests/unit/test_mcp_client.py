@@ -19,6 +19,22 @@ import time
 import unittest
 
 
+class CallArgumentsTestCase(unittest.TestCase):
+
+    def test_scalars(self):
+        self.assertEqual(client.parse_call_arguments(
+                ['playbook=site', 'become=true', 'count=3',
+                 'name=a=b']),
+                {'playbook': 'site', 'become': True, 'count': 3,
+                 'name': 'a=b'})
+
+    def test_bad_pairs_rejected(self):
+        with self.assertRaises(ValueError):
+            client.parse_call_arguments(['no-separator'])
+        with self.assertRaises(ValueError):
+            client.parse_call_arguments(['=no-key'])
+
+
 class FormatterTestCase(unittest.TestCase):
 
     def test_first_sentence(self):

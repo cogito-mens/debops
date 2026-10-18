@@ -448,16 +448,28 @@ Commands:
         parser = argparse.ArgumentParser(
                 parents=[self.global_parser],
                 description='bridge stdio to an MCP server UNIX socket',
-                usage='debops mcp connect [<args>] <socket>')
+                usage='debops mcp connect [<args>] <socket> '
+                      '[<key=value>...]')
         parser.add_argument('socket', type=str,
                             help='path of the MCP server UNIX socket')
-        parser.add_argument('--ping', dest='ping', action='store_true',
+        action = parser.add_mutually_exclusive_group()
+        action.add_argument('--ping', dest='ping', action='store_true',
                             help='probe the server with a server/discover '
                                  'request and print the result')
+        action.add_argument('--call', dest='call', type=str,
+                            metavar='TOOL',
+                            help='call a tool on the server and print '
+                                 'the result; tool arguments follow the '
+                                 'socket as key=value pairs')
+        parser.add_argument('arguments', type=str, nargs='*',
+                            metavar='key=value',
+                            help='arguments for --call')
         parser.add_argument('--raw', dest='raw', action='store_true',
                             help='print the server response as received '
-                                 '(only with --ping)')
-        self.args = parser.parse_args(self.args[3:])
+                                 '(only with --ping or --call)')
+        # The key=value pairs follow optionals, which plain parse_args()
+        # cannot interleave with the socket positional
+        self.args = parser.parse_intermixed_args(self.args[3:])
 
     def do_mcp_inspect(self):
         parser = argparse.ArgumentParser(

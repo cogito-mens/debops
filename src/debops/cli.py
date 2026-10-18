@@ -19,6 +19,7 @@ from .mcp.client import UnixClient
 from .mcp.transport import StdioTransport, UnixSocketTransport
 from .mcp.transport import bridge_stdio_to_unix, ping_unix
 from xdg.BaseDirectory import xdg_config_home
+import contextlib
 import json
 import logging
 import getpass
@@ -37,6 +38,24 @@ enabled = false
 '''
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _mcp_client_errors():
+    """Turn MCP client connection failures into clean CLI errors."""
+    try:
+        yield
+    except ConnectionError as errmsg:
+        print('Error:', errmsg, file=sys.stderr)
+        sys.exit(1)
+    except EOFError:
+        print('Error: the server closed the connection without '
+              'a response (the kill switch may be active)',
+              file=sys.stderr)
+        sys.exit(1)
+    except TimeoutError as errmsg:
+        print('Error:', errmsg, file=sys.stderr)
+        sys.exit(1)
 
 
 class Interpreter(object):
@@ -344,10 +363,18 @@ class Interpreter(object):
 
     def do_mcp_connect(self, args):
         self._mcp_refuse_if_disabled()
-        if args.raw and not args.ping:
-            print('Error: --raw only makes sense with --ping',
+        if args.raw and not (args.ping or args.call):
+            print('Error: --raw only makes sense with --ping or --call',
                   file=sys.stderr)
             sys.exit(2)
+        if args.arguments and not args.call:
+            print('Error: tool arguments require --call',
+                  file=sys.stderr)
+            sys.exit(2)
+        if args.call:
+            self._mcp_call(args.socket, args.call, args.arguments,
+                           args.raw)
+            return
         if not args.ping:
             try:
                 bridge_stdio_to_unix(args.socket)
@@ -359,19 +386,8 @@ class Interpreter(object):
             return
 
         started = time.monotonic()
-        try:
+        with _mcp_client_errors():
             raw = ping_unix(args.socket)
-        except ConnectionError as errmsg:
-            print('Error:', errmsg, file=sys.stderr)
-            sys.exit(1)
-        except EOFError:
-            print('Error: the server closed the connection without '
-                  'a response (the kill switch may be active)',
-                  file=sys.stderr)
-            sys.exit(1)
-        except TimeoutError as errmsg:
-            print('Error:', errmsg, file=sys.stderr)
-            sys.exit(1)
         rtt = time.monotonic() - started
 
         if args.raw:
@@ -404,6 +420,92 @@ class Interpreter(object):
         print('    capabilities: {}'.format(capabilities or '(none)'))
         print('    round-trip: {:.0f} ms'.format(rtt * 1000))
 
+    def _mcp_call(self, socket_path, tool_name, pairs, raw):
+        """Call a tool on a server and print its result ('--call')."""
+        try:
+            arguments = mcp_client.parse_call_arguments(pairs)
+        except ValueError as errmsg:
+            print('Error:', errmsg, file=sys.stderr)
+            sys.exit(2)
+
+        # Declaring elicitation support lets gated tools (a playbook run,
+        # a push) ask for confirmation, which we prompt for below
+        client = UnixClient(socket_path,
+                            capabilities={'elicitation': {'form': {}}})
+        try:
+            with _mcp_client_errors():
+                params = {'name': tool_name, 'arguments': arguments}
+                while True:
+                    response = client.request('tools/call', params)
+                    if 'error' in response:
+                        print('Error: the server returned an error: {}'
+                              .format(response['error'].get('message')),
+                              file=sys.stderr)
+                        sys.exit(1)
+                    result = response.get('result', {})
+                    if raw:
+                        print(json.dumps(response))
+                        if result.get('resultType') == 'input_required':
+                            print('The server asks for confirmation; '
+                                  're-run without --raw to answer '
+                                  'interactively', file=sys.stderr)
+                            sys.exit(1)
+                        break
+                    if result.get('resultType') != 'input_required':
+                        break
+                    answers = self._mcp_answer_elicitations(
+                            result.get('inputRequests', {}))
+                    if answers is None:
+                        sys.exit(1)
+                    params = {'name': tool_name, 'arguments': arguments,
+                              'inputResponses': answers}
+                    if 'requestState' in result:
+                        params['requestState'] = result['requestState']
+        finally:
+            client.close()
+
+        if raw:
+            return
+        for block in result.get('content', []):
+            if block.get('type') == 'text':
+                print(block.get('text', ''))
+        if result.get('isError'):
+            sys.exit(1)
+
+    def _mcp_answer_elicitations(self, input_requests):
+        """Answer elicitation requests interactively.
+
+        Returns the 'inputResponses' map for the retried request, or
+        None when the requests cannot be answered here.
+        """
+        answers = {}
+        for key, request in input_requests.items():
+            if request.get('method') != 'elicitation/create':
+                return None
+            params = request.get('params', {})
+            if params.get('mode', 'form') != 'form':
+                return None
+            if not sys.stdin.isatty():
+                print('The server asks: {}'.format(
+                        params.get('message', 'input required')),
+                      file=sys.stderr)
+                print('Re-run interactively to answer.',
+                      file=sys.stderr)
+                return None
+            print(params.get('message', 'The server asks for input:'))
+            schema = params.get('requestedSchema', {})
+            content = {}
+            for name, prop in schema.get('properties', {}).items():
+                if prop.get('type') != 'boolean':
+                    print('Error: unsupported elicitation field: '
+                          '{}'.format(name), file=sys.stderr)
+                    return None
+                reply = input('    {} [y/N] '.format(
+                        prop.get('title', name)))
+                content[name] = reply.strip().lower() in ('y', 'yes')
+            answers[key] = {'action': 'accept', 'content': content}
+        return answers
+
     def do_mcp_inspect(self, args):
         self._mcp_refuse_if_disabled()
         # With no selection, show the discovery summary
@@ -423,19 +525,9 @@ class Interpreter(object):
 
         client = UnixClient(args.socket)
         try:
-            for step in steps:
-                self._mcp_inspect_step(client, step, args)
-        except ConnectionError as errmsg:
-            print('Error:', errmsg, file=sys.stderr)
-            sys.exit(1)
-        except EOFError:
-            print('Error: the server closed the connection without '
-                  'a response (the kill switch may be active)',
-                  file=sys.stderr)
-            sys.exit(1)
-        except TimeoutError as errmsg:
-            print('Error:', errmsg, file=sys.stderr)
-            sys.exit(1)
+            with _mcp_client_errors():
+                for step in steps:
+                    self._mcp_inspect_step(client, step, args)
         finally:
             client.close()
 

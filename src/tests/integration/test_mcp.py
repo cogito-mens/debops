@@ -641,6 +641,79 @@ def test_inspect_via_socket(run_debops, mcp_env, tmp_path):
         thread.join(timeout=5)
 
 
+def test_connect_call_via_socket(run_debops, mcp_env, tmp_path):
+    socket_path = str(tmp_path / "server.sock")
+    server = McpServer()
+    server.register_tool(
+            "mop", "Mop the floors.",
+            {"type": "object",
+             "properties": {"bucket": {"type": "string"}}},
+            lambda arguments: {"content": [{"type": "text",
+                                            "text": "mopping with "
+                                            + arguments["bucket"]}],
+                               "isError": False})
+    transport = UnixSocketTransport(socket_path)
+    thread = threading.Thread(target=transport.serve, args=(server,),
+                              daemon=True)
+    thread.start()
+    try:
+        for _ in range(500):
+            if os.path.exists(socket_path):
+                break
+            time.sleep(0.01)
+
+        result = run_debops("mcp", "connect", socket_path,
+                            "--call", "mop", "bucket=zinc", env=mcp_env)
+        assert result.returncode == 0
+        assert result.stdout.strip() == "mopping with zinc"
+
+        result = run_debops("mcp", "connect", socket_path,
+                            "--call", "mop", "bucket=zinc", "--raw",
+                            env=mcp_env)
+        assert result.returncode == 0
+        response = json.loads(result.stdout)
+        assert response["result"]["isError"] is False
+
+        # A malformed pair is a usage error
+        result = run_debops("mcp", "connect", socket_path,
+                            "--call", "mop", "bogus", env=mcp_env)
+        assert result.returncode == 2
+    finally:
+        transport.shutdown()
+        thread.join(timeout=5)
+
+
+def test_connect_call_asks_for_confirmation(run_debops, mcp_env,
+                                            tmp_path):
+    socket_path = str(tmp_path / "server.sock")
+    policy = type("Policy", (), {"confirm": {"run"}})()
+    server = McpServer(policy=policy)
+    server.register_tool(
+            "run", "Run things.", {"type": "object"},
+            lambda arguments: {"content": [{"type": "text",
+                                            "text": "ran"}],
+                               "isError": False})
+    transport = UnixSocketTransport(socket_path)
+    thread = threading.Thread(target=transport.serve, args=(server,),
+                              daemon=True)
+    thread.start()
+    try:
+        for _ in range(500):
+            if os.path.exists(socket_path):
+                break
+            time.sleep(0.01)
+
+        # A non-interactive caller cannot answer the confirmation
+        result = run_debops("mcp", "connect", socket_path,
+                            "--call", "run", "playbook=site",
+                            env=mcp_env, input_text="")
+        assert result.returncode == 1
+        assert "The server asks:" in result.stderr
+    finally:
+        transport.shutdown()
+        thread.join(timeout=5)
+
+
 def test_connect_ping_missing_socket(run_debops, mcp_env, tmp_path):
     result = run_debops("mcp", "connect", str(tmp_path / "nosuch.sock"),
                         "--ping", env=mcp_env)
