@@ -13,7 +13,6 @@ import time
 
 from .collections import (COLLECTION_INDEX_TTL, galaxy_collection_list,
                           index_from_galaxy, restrict_content,
-                          tool_collection_playbook_info,
                           tool_collection_playbooks,
                           tool_collection_roles)
 from .execute import tool_check, tool_run
@@ -183,7 +182,8 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
           'required': ['playbook']},
          lambda arguments: tool_playbook_info(
              project, policy,
-             playbooks_path if bundled_content else None, arguments)),
+             playbooks_path if bundled_content else None, arguments,
+             index_provider=collection_index_provider)),
         ('collection_playbooks',
          'List the playbooks provided by an Ansible Collection visible '
          'to this project.',
@@ -197,20 +197,6 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                     'this string'}},
           'required': ['collection']},
          lambda arguments: tool_collection_playbooks(
-             collection_index_provider, arguments)),
-        ('collection_playbook_info',
-         'Describe a playbook from an Ansible Collection: its plays, '
-         'inventory groups, roles and imported playbooks.',
-         {'type': 'object',
-          'properties': {'collection': {'type': 'string',
-                                        'description': 'Collection, e.g. '
-                                        '"community.sops"'},
-                         'playbook': {'type': 'string',
-                                      'description': 'Playbook name '
-                                      'inside the collection, e.g. '
-                                      '"install"'}},
-          'required': ['collection', 'playbook']},
-         lambda arguments: tool_collection_playbook_info(
              collection_index_provider, arguments)),
         ('collection_roles',
          'List the Ansible Collections visible to this project and the '

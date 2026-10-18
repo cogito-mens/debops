@@ -417,7 +417,6 @@ class ToolsTestCase(unittest.TestCase):
         names = [tool['name'] for tool in response['result']['tools']]
         self.assertEqual(sorted(names),
                          ['ansible_facts', 'ansible_ping', 'check',
-                          'collection_playbook_info',
                           'collection_playbooks', 'collection_roles',
                           'config_get', 'inventory_query', 'playbook_info',
                           'playbooks', 'project_files', 'project_pull',
@@ -810,20 +809,26 @@ class ToolsTestCase(unittest.TestCase):
                                   {'collection': 'testns.nosuch'})
         self.assertTrue(response['result']['isError'])
 
-    def test_collection_playbook_info(self):
-        response = self.call_tool('collection_playbook_info',
-                                  {'collection': 'testns.testcoll',
-                                   'playbook': 'install'})
+    def test_playbook_info_slash_collection_form(self):
+        response = self.call_tool('playbook_info',
+                                  {'playbook': 'testns.testcoll/install'})
         text = self.result_text(response)
         self.assertIn('Execution target: `testns.testcoll/install`',
                       text)
         # The task-level include_role statement is found
         self.assertIn('- testns.testcoll.plainrole', text)
 
-    def test_collection_playbook_info_rejects_traversal(self):
-        response = self.call_tool('collection_playbook_info',
-                                  {'collection': 'testns.testcoll',
-                                   'playbook': '../roles/plainrole'})
+    def test_playbook_info_fqcn_form(self):
+        response = self.call_tool('playbook_info',
+                                  {'playbook': 'testns.testcoll.install'})
+        text = self.result_text(response)
+        # The dotted form is itself a valid execution target
+        self.assertIn('Execution target: `testns.testcoll.install`', text)
+
+    def test_playbook_info_collection_traversal_rejected(self):
+        response = self.call_tool('playbook_info',
+                                  {'playbook':
+                                   'testns.testcoll/../roles/plainrole'})
         self.assertTrue(response['result']['isError'])
 
     # -- content policy -----------------------------------------------------

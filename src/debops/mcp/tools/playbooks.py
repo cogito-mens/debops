@@ -5,6 +5,7 @@
 """Tools which describe project and bundled DebOps playbooks."""
 
 import os
+import re
 import yaml
 
 from ...constants import DEBOPS_PACKAGE_DATA
@@ -165,14 +166,60 @@ def project_playbook_dirs(project, policy):
     return result
 
 
-def resolve_debops_playbook(project, policy, playbooks_path, name):
+# A fully qualified playbook name: 'namespace.collection.playbook'
+# (playbook names may contain dashes)
+PLAYBOOK_FQCN_PATTERN = re.compile(r'^[a-z0-9_]+\.[a-z0-9_]+\.[a-z0-9_-]+$')
+
+# The collection-prefixed path form: 'namespace.collection/path/to/pb'
+PLAYBOOK_COLLECTION_PATH = re.compile(r'^([a-z0-9_]+\.[a-z0-9_]+)/(.*)$')
+
+
+def resolve_playbook(project, policy, playbooks_path, name,
+                     index_provider=None):
     """Resolve a playbook target to (path, target form).
 
-    Project playbook directories are searched first, then the bundled
+    Explicit collection references win: the 'namespace.collection/path'
+    form and the dotted fully qualified form resolve through the
+    collection index (where the content policy applies). Otherwise the
+    project playbook directories are searched first, then the bundled
     DebOps collection, mirroring the playbook runner; unlike the command
     line, direct filesystem paths outside these roots are not followed.
     """
     name = str(name or '')
+
+    if index_provider is not None:
+        collection_path = None
+        relpath = None
+        # The dotted form is used verbatim as the execution target
+        target = name
+        if PLAYBOOK_FQCN_PATTERN.match(name):
+            namespace, collection, playbook = name.split('.')
+            relpath = playbook
+            entry = index_provider().get('{}.{}'.format(namespace,
+                                                        collection))
+            if entry is not None:
+                collection_path = os.path.join(entry['path'], 'playbooks')
+        else:
+            match = PLAYBOOK_COLLECTION_PATH.match(name)
+            if match:
+                entry = index_provider().get(match.group(1))
+                if entry is not None:
+                    collection_path = os.path.join(entry['path'],
+                                                   'playbooks')
+                    relpath = match.group(2)
+                    target = target_form(name)
+        if collection_path is not None and relpath is not None:
+            if not relpath.endswith(('.yml', '.yaml')):
+                relpath += '.yml'
+            try:
+                candidate = confine_under(collection_path, relpath)
+            except ValueError:
+                return None
+            if os.path.isfile(candidate):
+                return candidate, target
+            # An explicit collection reference does not fall through
+            return None
+
     if not name.endswith(('.yml', '.yaml')):
         name += '.yml'
     try:
@@ -293,9 +340,10 @@ def tool_playbooks(project, policy, playbooks_path, arguments):
     return text_result('\n'.join([header, ''] + lines))
 
 
-def tool_playbook_info(project, policy, playbooks_path, arguments):
-    resolved = resolve_debops_playbook(project, policy, playbooks_path,
-                                       arguments.get('playbook'))
+def tool_playbook_info(project, policy, playbooks_path, arguments,
+                       index_provider=None):
+    resolved = resolve_playbook(project, policy, playbooks_path,
+                                arguments.get('playbook'), index_provider)
     if resolved is None:
         return error_result('playbook not found or invalid: {}'.format(
                 arguments.get('playbook')))

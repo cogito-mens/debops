@@ -195,37 +195,3 @@ def tool_collection_playbooks(index_provider, arguments):
         return text_result('collection {} provides no playbooks'
                            .format(collection))
     return text_result('\n'.join(lines))
-
-
-def tool_collection_playbook_info(index_provider, arguments):
-    try:
-        index = index_provider()
-    except RuntimeError as errmsg:
-        return error_result(str(errmsg))
-    collection = str(arguments.get('collection') or '')
-    entry = resolve_collection(index, collection)
-    if entry is None:
-        return error_result('collection not found or invalid: {}'
-                            .format(collection))
-
-    name = str(arguments.get('playbook') or '')
-    if not name.endswith(('.yml', '.yaml')):
-        name += '.yml'
-    playbooks_dir = os.path.join(entry['path'], 'playbooks')
-    try:
-        path = confine_under(playbooks_dir, name)
-    except ValueError:
-        return error_result('playbook not found or invalid: {}'.format(
-                arguments.get('playbook')))
-    if not os.path.isfile(path):
-        return error_result('playbook not found: {}'.format(
-                arguments.get('playbook')))
-    try:
-        with open(path) as fp:
-            plays, roles, imports, groups = parse_playbook(fp.read())
-    except (OSError, ValueError) as errmsg:
-        return error_result(str(errmsg))
-    target = '{}/{}'.format(collection, target_form(name))
-    return text_result(render_playbook_info(
-            '{}/{}'.format(collection, name), target, plays, roles,
-            imports, groups))
