@@ -637,7 +637,8 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
          'must wait for it (batched requests run concurrently).',
          {'type': 'object', 'properties': {},
           'additionalProperties': False},
-         make_sync_tool(project, policy, sync_state, 'pull')),
+         make_sync_tool(project, policy, sync_state, 'pull',
+                        server=server)),
         ('project_push',
          'Push the project\'s committed state to its git origin. Only '
          'committed history is sent; the working tree must be clean. '

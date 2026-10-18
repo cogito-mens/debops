@@ -40,13 +40,16 @@ def get_peer_credentials(connection):
     return struct.unpack('3i', credentials)
 
 
-def _write_response(server, writer, write_lock, data, peer_pid=None):
+def _write_response(server, writer, write_lock, data, peer_pid=None,
+                    dead=None):
     """Handle one message and write its response, if any.
 
     Each message runs in its own thread, so a long-running request does
     not block cancellations or later requests; writes are serialized to
     keep messages intact. The notify channel lets tools send
     server-initiated messages (progress notifications) mid-request.
+    'dead' marks the connection as gone (EOF or teardown) so that
+    long-lived streams can end.
     """
     def notify(message):
         try:
@@ -57,7 +60,7 @@ def _write_response(server, writer, write_lock, data, peer_pid=None):
             pass
 
     response = server.handle_bytes(data, notify=notify,
-                                   peer_pid=peer_pid)
+                                   peer_pid=peer_pid, dead=dead)
     if response is None:
         return
     try:
@@ -83,6 +86,7 @@ class StdioTransport(object):
         workers = []
         # On stdio the client is the parent process
         peer_pid = os.getppid()
+        dead = threading.Event()
         try:
             while True:
                 try:
@@ -95,7 +99,8 @@ class StdioTransport(object):
                     break
                 thread = threading.Thread(
                         target=_write_response,
-                        args=(server, writer, write_lock, data, peer_pid),
+                        args=(server, writer, write_lock, data, peer_pid,
+                              dead),
                         daemon=True)
                 thread.start()
                 workers.append(thread)
@@ -109,6 +114,9 @@ class StdioTransport(object):
                     break
                 worker.join(timeout=remaining)
             raise
+        finally:
+            # Long-lived streams (subscriptions) end with the channel
+            dead.set()
         # End of input (the client went away or is batching): let
         # in-flight requests finish and deliver their responses; every
         # tool is bounded (fast or 'execute_timeout'-limited)
@@ -221,6 +229,7 @@ class UnixSocketTransport(object):
         self._serving = False
 
     def _serve_connection(self, connection, server):
+        dead = threading.Event()
         try:
             pid, uid, gid = get_peer_credentials(connection)
             logger.notice('Client connected: pid=%s uid=%s gid=%s',
@@ -245,13 +254,16 @@ class UnixSocketTransport(object):
                 # not block cancellations and later requests
                 thread = threading.Thread(
                         target=_write_response,
-                        args=(server, writer, write_lock, data, pid),
+                        args=(server, writer, write_lock, data, pid,
+                              dead),
                         daemon=True)
                 thread.start()
             logger.notice('Client disconnected: pid=%s', pid)
         except OSError as errmsg:
             logger.debug('Connection ended with an error: %s', errmsg)
         finally:
+            # Long-lived streams (subscriptions) end with the channel
+            dead.set()
             self._semaphore.release()
             connection.close()
 

@@ -128,6 +128,22 @@ class SyncTestCase(unittest.TestCase):
             self.result_text(self.call_tool('project_push'))
         fresh.return_value.refresh.assert_not_called()
 
+    def test_changed_pull_announces_content_changes(self):
+        # New skills or prompts may have arrived by git
+        with mock.patch.object(self.server,
+                               'announce_content_changes') as announce:
+            self.call_tool('project_pull')
+        announce.assert_called_once()
+        (before,), _kwargs = announce.call_args
+        self.assertEqual(sorted(before), ['prompts', 'skills'])
+
+    def test_unchanged_pull_announces_nothing(self):
+        self.reports['pull'] = PULL_CLEAN
+        with mock.patch.object(self.server,
+                               'announce_content_changes') as announce:
+            self.call_tool('project_pull')
+        announce.assert_not_called()
+
     def test_pull_up_to_date(self):
         self.reports['pull'] = PULL_CLEAN
         text = self.result_text(self.call_tool('project_pull'))

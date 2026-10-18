@@ -85,6 +85,18 @@ class PromptLibrary(object):
                 prompts[name] = (path, meta)
         return prompts
 
+    def project_fingerprint(self):
+        """A {name: mtime} fingerprint of the project's own prompts.
+
+        Used to tell whether a git pull changed the served content.
+        """
+        fingerprint = {}
+        if not os.path.isdir(self.path):
+            return fingerprint
+        for name, (path, _meta) in self._prompts().items():
+            fingerprint[name] = os.stat(path).st_mtime_ns
+        return fingerprint
+
     def list(self):
         """The prompts as MCP prompt descriptors."""
         prompts = []

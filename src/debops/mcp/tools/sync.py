@@ -54,7 +54,7 @@ def render_sync_report(report):
     return '\n'.join(lines) + '\n'
 
 
-def make_sync_tool(project, policy, sync_state, direction):
+def make_sync_tool(project, policy, sync_state, direction, server=None):
     """Build the 'project_pull' / 'project_push' tool handler."""
     def tool(arguments):
         interval = policy.sync_interval if policy is not None else 60
@@ -68,6 +68,11 @@ def make_sync_tool(project, policy, sync_state, direction):
                         'git {} was performed recently; retry in {:.0f} '
                         'seconds'.format(direction, remaining))
             sync_state[direction] = now
+            # New skills and prompts can arrive by git; fingerprint the
+            # project content before the pull to tell what changed
+            before = (server.content_fingerprint()
+                      if server is not None and direction == 'pull'
+                      else None)
             try:
                 report = getattr(project, direction)()
             except ValueError as errmsg:
@@ -95,5 +100,7 @@ def make_sync_tool(project, policy, sync_state, direction):
                     logger.warning('Refresh after the pull failed: %s',
                                    errmsg)
                     report['refresh_error'] = str(errmsg)
+                if before is not None:
+                    server.announce_content_changes(before)
         return text_result(render_sync_report(report))
     return tool

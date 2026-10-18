@@ -119,6 +119,25 @@ class SkillLibrary(object):
                                   'one', name, root)
         return [skills[name] for name in sorted(skills)]
 
+    def project_fingerprint(self):
+        """A {name: mtime} fingerprint of the project's own skills.
+
+        Used to tell whether a git pull changed the served content.
+        """
+        fingerprint = {}
+        if self.project_path is None or not os.path.isdir(
+                self.project_path):
+            return fingerprint
+        for name in self._list_dir(self.project_path):
+            skill_dir = os.path.join(self.project_path, name)
+            newest = 0
+            for root, _dirs, files in os.walk(skill_dir):
+                for entry in files:
+                    newest = max(newest, os.stat(os.path.join(
+                            root, entry)).st_mtime_ns)
+            fingerprint[name] = newest
+        return fingerprint
+
     def read(self, uri):
         """Read a 'skill://' URI: a SKILL.md or a file under its skill.
 

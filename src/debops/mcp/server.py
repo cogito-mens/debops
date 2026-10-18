@@ -11,6 +11,7 @@ can hand any message to handle_bytes() independently of any other.
 """
 
 import logging
+import queue
 import threading
 
 from . import rpc
@@ -42,6 +43,8 @@ CLACKS_OVERHEAD = {'org.debops/clacksOverhead': 'GNU Terry Pratchett'}
 # multiple instances apart
 PROJECT_META_KEY = 'org.debops/project'
 VIEW_META_KEY = 'org.debops/view'
+
+SUBSCRIPTION_ID_KEY = 'io.modelcontextprotocol/subscriptionId'
 
 
 def _supports_form_elicitation(capabilities):
@@ -84,7 +87,7 @@ class RequestContext(object):
     """
 
     def __init__(self, request_id, notify=None, progress_token=None,
-                 client_capabilities=None, peer_pid=None):
+                 client_capabilities=None, peer_pid=None, dead=None):
         self.request_id = request_id
         self.notify = notify
         self.progress_token = progress_token
@@ -92,6 +95,11 @@ class RequestContext(object):
                                     if isinstance(client_capabilities, dict)
                                     else {})
         self.peer_pid = peer_pid
+        self._dead = dead
+
+    def is_dead(self):
+        """Whether the transport channel is gone (EOF, teardown)."""
+        return self._dead is not None and self._dead.is_set()
 
 
 class ToolContext(object):
@@ -191,7 +199,11 @@ class McpServer(object):
             'tools/list': self._tools_list,
             'tools/call': self._tools_call,
             'notifications/cancelled': self._cancelled,
+            'subscriptions/listen': self._subscriptions_listen,
         }
+        # Open subscription streams: request id → filter and event queue
+        self._subscriptions = {}
+        self._subscriptions_lock = threading.Lock()
         if self.skills is not None:
             self._methods['resources/list'] = self._resources_list
             self._methods['resources/read'] = self._resources_read
@@ -236,7 +248,7 @@ class McpServer(object):
             meta[VIEW_META_KEY] = self.project.view
         return meta
 
-    def handle_bytes(self, data, notify=None, peer_pid=None):
+    def handle_bytes(self, data, notify=None, peer_pid=None, dead=None):
         """Handle one raw message; return the response or None."""
         try:
             message = rpc.parse_message(data)
@@ -244,12 +256,13 @@ class McpServer(object):
             logger.warning('Rejecting an unparseable message: %s',
                            errmsg.message)
             return errmsg.to_response()
-        return self.handle(message, notify, peer_pid=peer_pid)
+        return self.handle(message, notify, peer_pid=peer_pid, dead=dead)
 
-    def handle(self, message, notify=None, peer_pid=None):
+    def handle(self, message, notify=None, peer_pid=None, dead=None):
         """Handle one parsed message; return the response or None."""
         try:
-            return self._dispatch(message, notify, peer_pid=peer_pid)
+            return self._dispatch(message, notify, peer_pid=peer_pid,
+                                  dead=dead)
         except rpc.JsonRpcError as errmsg:
             # Error responses have no '_meta' slot; the clacks overhead
             # and the server identity ride results only
@@ -259,7 +272,7 @@ class McpServer(object):
             return rpc.make_error(message.get('id'),
                                   rpc.INTERNAL_ERROR, 'Internal error')
 
-    def _dispatch(self, message, notify=None, peer_pid=None):
+    def _dispatch(self, message, notify=None, peer_pid=None, dead=None):
         """Route one parsed message to its method handler.
 
         Raises JsonRpcError for protocol-level errors; the caller turns
@@ -285,7 +298,7 @@ class McpServer(object):
         context = RequestContext(request_id, notify=notify,
                                  progress_token=progress_token,
                                  client_capabilities=capabilities,
-                                 peer_pid=peer_pid)
+                                 peer_pid=peer_pid, dead=dead)
 
         if is_notification:
             logger.info('Notification: %s', method)
@@ -328,7 +341,11 @@ class McpServer(object):
         if result is None:
             result = {}
         result.setdefault('resultType', 'complete')
-        result['_meta'] = self._base_meta()
+        # The handler's own '_meta' keys (a subscription id, ...) ride
+        # alongside the server's identity
+        meta = self._base_meta()
+        meta.update(result.get('_meta', {}))
+        result['_meta'] = meta
         return rpc.make_result(request_id, result)
 
     # -- protocol methods ---------------------------------------------------
@@ -374,12 +391,12 @@ class McpServer(object):
     def _discover(self, params, context):
         capabilities = {'tools': {}}
         if self.skills is not None:
-            capabilities['resources'] = {}
+            capabilities['resources'] = {'listChanged': True}
         # The prompts are project content, so the capability follows the
         # directory at call time
         if (self.prompts is not None and self.prompts.available()
                 and self.prompts.list()):
-            capabilities['prompts'] = {}
+            capabilities['prompts'] = {'listChanged': True}
         return {
             'supportedVersions': [PROTOCOL_VERSION],
             'capabilities': capabilities,
@@ -556,6 +573,125 @@ class McpServer(object):
         return {'contents': [{'uri': uri, 'mimeType': 'text/markdown',
                               'text': content}],
                 'ttlMs': 3600000, 'cacheScope': 'public'}
+
+    # -- subscriptions -----------------------------------------------------
+
+    def _subscribe(self, request_id, honored):
+        event_queue = queue.Queue()
+        with self._subscriptions_lock:
+            self._subscriptions[request_id] = {
+                    'filter': honored, 'queue': event_queue}
+        return event_queue
+
+    def _unsubscribe(self, request_id):
+        with self._subscriptions_lock:
+            self._subscriptions.pop(request_id, None)
+
+    def emit_list_changed(self, kind):
+        """Notify subscribers that a list ('resources', 'prompts') changed."""
+        key = kind + 'ListChanged'
+        message = {'jsonrpc': '2.0',
+                   'method': 'notifications/{}/list_changed'.format(kind),
+                   'params': {}}
+        with self._subscriptions_lock:
+            subscriptions = list(self._subscriptions.values())
+        for subscription in subscriptions:
+            if subscription['filter'].get(key):
+                subscription['queue'].put(message)
+
+    def emit_resource_updated(self, uri):
+        """Notify subscribers of a resource URI that its content changed."""
+        message = {'jsonrpc': '2.0',
+                   'method': 'notifications/resources/updated',
+                   'params': {'uri': uri}}
+        with self._subscriptions_lock:
+            subscriptions = list(self._subscriptions.values())
+        for subscription in subscriptions:
+            if uri in subscription['filter'].get('resourceSubscriptions',
+                                                 []):
+                subscription['queue'].put(message)
+
+    def content_fingerprint(self):
+        """A fingerprint of the project content served (skills, prompts)."""
+        return {
+            'skills': (self.skills.project_fingerprint()
+                       if self.skills is not None else {}),
+            'prompts': (self.prompts.project_fingerprint()
+                        if self.prompts is not None else {}),
+        }
+
+    def announce_content_changes(self, before):
+        """Emit the notifications for content changed since 'before'."""
+        after = self.content_fingerprint()
+        if before['skills'] != after['skills']:
+            self.emit_list_changed('resources')
+            for name, mtime in after['skills'].items():
+                if before['skills'].get(name) != mtime:
+                    self.emit_resource_updated(SKILL_URI_PREFIX + name)
+        if before['prompts'] != after['prompts']:
+            self.emit_list_changed('prompts')
+
+    def _subscriptions_listen(self, params, context):
+        """Open a notification stream until cancelled or disconnected.
+
+        The acknowledgment goes first, per the specification; the
+        request stays open and the stream ends with the completion
+        result.
+        """
+        request_id = context.request_id
+        notify = context.notify
+        if request_id is None or notify is None:
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_REQUEST, 'Invalid Request',
+                    data={'details': 'a subscription needs a request id '
+                          'and a notification channel'},
+                    request_id=request_id)
+        requested = params.get('notifications', {})
+        if not isinstance(requested, dict):
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_PARAMS, 'Invalid params',
+                    data={'details': "'notifications' must be an object"},
+                    request_id=request_id)
+
+        # The honored subset: unsupported types are omitted from the
+        # acknowledgment, per the specification
+        honored = {}
+        for key in ('resourcesListChanged', 'promptsListChanged'):
+            if requested.get(key):
+                honored[key] = True
+        uris = [str(uri) for uri in
+                requested.get('resourceSubscriptions', []) or []
+                if str(uri).startswith(SKILL_URI_PREFIX)]
+        if uris:
+            honored['resourceSubscriptions'] = uris
+
+        event_queue = self._subscribe(request_id, honored)
+        cancel_event = threading.Event()
+        with self._active_lock:
+            self._active_requests[request_id] = cancel_event
+        notify({'jsonrpc': '2.0',
+                'method': 'notifications/subscriptions/acknowledged',
+                'params': {'_meta': {SUBSCRIPTION_ID_KEY: request_id},
+                           'notifications': honored}})
+        logger.info('Subscription %s opened: %s', request_id,
+                    ', '.join(sorted(honored)) or '(nothing honored)')
+        try:
+            while not cancel_event.is_set() and not context.is_dead():
+                try:
+                    message = event_queue.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                message['params'].setdefault('_meta', {})[
+                        SUBSCRIPTION_ID_KEY] = request_id
+                notify(message)
+        finally:
+            self._unsubscribe(request_id)
+            with self._active_lock:
+                self._active_requests.pop(request_id, None)
+        logger.info('Subscription %s closed', request_id)
+        # The graceful end: the completion result closes the stream,
+        # tagged with the subscription id
+        return {'_meta': {SUBSCRIPTION_ID_KEY: request_id}}
 
     def _cancelled(self, params, context):
         target = params.get('requestId')
