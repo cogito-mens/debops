@@ -148,7 +148,10 @@ class FormatterTestCase(unittest.TestCase):
                                     'description': description,
                                     'inputSchema': {'type': 'object'}})
         # Wrapped to the width, continuation aligned under the text
-        self.assertTrue(all(len(line) <= 76 for line in lines))
+        # (the trailing sections — annotations, parameters, examples —
+        # are not description lines)
+        cutoff = lines.index('annotations: destructive')
+        self.assertTrue(all(len(line) <= 76 for line in lines[:cutoff]))
         indent = len('run — ')
         self.assertEqual(lines[1][:indent], ' ' * indent)
         # Nothing is truncated in the detail view
@@ -174,6 +177,30 @@ class FormatterTestCase(unittest.TestCase):
         # The continuation aligns under the description column
         column = first.index('word')
         self.assertEqual(second[:column], ' ' * column)
+
+    def test_format_examples(self):
+        lines = client.format_examples('run')
+        self.assertEqual(lines[0], 'examples:')
+        self.assertIn('debops mcp connect <socket> --call run '
+                      'playbook=service/nginx', lines[1])
+        # A tool without curated examples gets no section
+        self.assertEqual(client.format_examples('nosuch'), [])
+
+    def test_format_tool_shows_examples(self):
+        lines = client.format_tool({'name': 'run',
+                                    'description': 'Run things.',
+                                    'inputSchema': {'type': 'object'}})
+        self.assertIn('examples:', lines)
+
+    def test_all_registered_tools_have_examples(self):
+        # The curated examples must not drift from the tool surface
+        from debops.mcp.tools import TOOL_ANNOTATIONS
+        for name in client.TOOL_CALL_EXAMPLES:
+            self.assertIn(name, TOOL_ANNOTATIONS,
+                          'examples for an unknown tool: ' + name)
+        for name in TOOL_ANNOTATIONS:
+            self.assertIn(name, client.TOOL_CALL_EXAMPLES,
+                          'no examples for the tool: ' + name)
 
     def test_format_resources(self):
         lines = client.format_resources([

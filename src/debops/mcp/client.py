@@ -138,6 +138,55 @@ def parse_call_arguments(pairs):
     return arguments
 
 
+# Curated example invocations shown by 'inspect --tool', keyed by tool
+# name; each entry is the argument part of a '--call' command line (an
+# empty string for tools without parameters)
+TOOL_CALL_EXAMPLES = {
+    'project_status': [''],
+    'project_files': ['path=ansible/inventory'],
+    'project_read': ['path=ansible/inventory/hosts'],
+    'config_get': ['key=project.default_view'],
+    'inventory_query': ['action=graph',
+                        'action=host host=web1.example.com'],
+    'secret_paths': ['pattern=**/password'],
+    'playbooks': ['filter=nginx'],
+    'playbook_info': ['playbook=service/nginx'],
+    'collection_playbooks': ['collection=debops.debops'],
+    'collection_roles': ['filter=nginx'],
+    'role_info': ['name=nginx'],
+    'role_variables': ['name=nginx'],
+    'role_argspec': ['name=nginx'],
+    'role_defaults': ['name=nginx',
+                      'name=nginx detail=full filter=nginx__www'],
+    'role_tasks': ['name=nginx'],
+    'role_handlers': ['name=nginx'],
+    'role_templates': ['name=nginx'],
+    'role_files': ['name=nginx'],
+    'check': ['playbook=service/nginx',
+              'playbook=site limit=web1.example.com'],
+    'run': ['playbook=service/nginx',
+            'playbook=site limit=web1.example.com'],
+    'ansible_ping': ['hosts=webservers', 'hosts=all become=true'],
+    'ansible_facts': ['hosts=web1.example.com',
+                      'hosts=all filter=ansible_distribution*'],
+    'project_pull': [''],
+    'project_push': [''],
+}
+
+
+def format_examples(name):
+    """Render the example invocations of a tool as lines for humans."""
+    examples = TOOL_CALL_EXAMPLES.get(name)
+    if not examples:
+        return []
+    lines = ['examples:']
+    for arguments in examples:
+        suffix = ' ' + arguments if arguments else ''
+        lines.append('    debops mcp connect <socket> --call {}{}'
+                     .format(name, suffix))
+    return lines
+
+
 # -- formatters for human inspection ---------------------------------------
 
 # A sentence end: a dot followed by whitespace, but not the dot of an
@@ -270,6 +319,7 @@ def format_tool(tool):
                                      prop.get('description', '')))
     else:
         lines.append('parameters: (none)')
+    lines.extend(format_examples(tool['name']))
     return lines
 
 
