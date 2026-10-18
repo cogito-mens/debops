@@ -42,6 +42,15 @@ class FormatterTestCase(unittest.TestCase):
         self.assertEqual(client._first_sentence('Single'), 'Single')
         self.assertEqual(client._first_sentence('Spaced.\n  Out.'), 'Spaced.')
 
+    def test_first_sentence_survives_abbreviations(self):
+        self.assertEqual(
+                client._first_sentence('Playbook target, e.g. '
+                                       '"service/nginx" or "site"'),
+                'Playbook target, e.g. "service/nginx" or "site"')
+        self.assertEqual(
+                client._first_sentence('Paused, i.e. stopped. Next.'),
+                'Paused, i.e. stopped.')
+
     def test_shorten(self):
         self.assertEqual(client._shorten('short'), 'short')
         self.assertEqual(client._shorten('x' * 100), 'x' * 61 + '...')
@@ -132,6 +141,39 @@ class FormatterTestCase(unittest.TestCase):
                                     'description': 'Show the status.',
                                     'inputSchema': {'type': 'object'}})
         self.assertIn('parameters: (none)', lines)
+
+    def test_format_tool_wraps_the_description(self):
+        description = (' '.join(['word'] * 40)) + '.'
+        lines = client.format_tool({'name': 'run',
+                                    'description': description,
+                                    'inputSchema': {'type': 'object'}})
+        # Wrapped to the width, continuation aligned under the text
+        self.assertTrue(all(len(line) <= 76 for line in lines))
+        indent = len('run — ')
+        self.assertEqual(lines[1][:indent], ' ' * indent)
+        # Nothing is truncated in the detail view
+        joined = ' '.join(' '.join(lines).split())
+        self.assertEqual(joined.count('word'), 40)
+        self.assertIn('word word word.', joined)
+
+    def test_format_tool_wraps_parameter_descriptions(self):
+        lines = client.format_tool({
+            'name': 'run',
+            'description': 'Run things.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'playbook': {'type': 'string',
+                                 'description': ' '.join(['word'] * 40)},
+                },
+                'required': ['playbook'],
+            },
+        })
+        index = lines.index('parameters:')
+        first, second = lines[index + 1], lines[index + 2]
+        # The continuation aligns under the description column
+        column = first.index('word')
+        self.assertEqual(second[:column], ' ' * column)
 
     def test_format_resources(self):
         lines = client.format_resources([

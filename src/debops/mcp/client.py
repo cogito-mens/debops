@@ -11,6 +11,7 @@ server; it is not a general-purpose library.
 
 import json
 import os
+import re
 import socket
 import textwrap
 
@@ -139,12 +140,20 @@ def parse_call_arguments(pairs):
 
 # -- formatters for human inspection ---------------------------------------
 
+# A sentence end: a dot followed by whitespace, but not the dot of an
+# abbreviation ('e.g.', 'i.e.', 'etc.', 'vs.')
+_SENTENCE_END = re.compile(r'(?<!\be\.g)(?<!\bi\.e)(?<!\betc)(?<!\bvs)\.\s+')
+
+
 def _first_sentence(text):
-    """The first sentence of a description, single-spaced."""
+    """The first sentence of a description, single-spaced.
+
+    Abbreviations such as 'e.g.' do not end the sentence.
+    """
     text = ' '.join(str(text).split())
-    sentence, _, rest = text.partition('. ')
-    if rest:
-        return sentence + '.'
+    parts = _SENTENCE_END.split(text, maxsplit=1)
+    if len(parts) > 1:
+        return parts[0] + '.'
     return text
 
 
@@ -217,9 +226,31 @@ def format_tools(tools):
     return lines
 
 
+# Descriptions wrap at this width, so the output stays readable when
+# piped regardless of the terminal
+WRAP_WIDTH = 76
+
+
+def _wrap_block(prefix, text):
+    """Wrap text after a prefix; continuation lines align under it."""
+    wrapper = textwrap.TextWrapper(
+            width=WRAP_WIDTH,
+            initial_indent=prefix,
+            subsequent_indent=' ' * len(prefix))
+    return wrapper.wrap(' '.join(str(text).split()))
+
+
 def format_tool(tool):
-    """Render one tool in detail, with its parameters, for humans."""
-    lines = ['{} — {}'.format(tool['name'], tool.get('description', ''))]
+    """Render one tool in detail, with its parameters, for humans.
+
+    Descriptions are shown in full, wrapped; the list view truncates
+    instead.
+    """
+    if tool.get('description'):
+        lines = _wrap_block('{} — '.format(tool['name']),
+                            tool['description'])
+    else:
+        lines = [tool['name']]
     flags = annotation_flags(tool.get('annotations', {}))
     if flags:
         lines.append('annotations: {}'.format(', '.join(flags)))
@@ -228,13 +259,15 @@ def format_tool(tool):
     required = schema.get('required', [])
     if properties:
         lines.append('parameters:')
-        width = max(len(name) for name in properties)
+        name_width = max(len(name) + (10 if name in required else 0)
+                         for name in properties)
         for name, prop in sorted(properties.items()):
             marker = ', required' if name in required else ''
-            lines.append('    {}  ({}): {}'.format(
-                    (name + marker).ljust(width + 11),
-                    prop.get('type', '?'),
-                    _first_sentence(prop.get('description', ''))))
+            column = (name + marker).ljust(name_width)
+            prefix = '    {}  ({}): '.format(column,
+                                             prop.get('type', '?'))
+            lines.extend(_wrap_block(prefix,
+                                     prop.get('description', '')))
     else:
         lines.append('parameters: (none)')
     return lines
