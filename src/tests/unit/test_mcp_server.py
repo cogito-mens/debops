@@ -15,11 +15,17 @@ import threading
 import unittest
 
 
-def make_request(method, params=None, request_id=1, meta=None):
+def make_request(method, params=None, request_id=1, meta='default'):
     message = {'jsonrpc': '2.0', 'id': request_id, 'method': method}
     if params is not None:
         message['params'] = params
-    if meta is not None:
+    if meta == 'default':
+        # The per-request fields the specification requires
+        message['_meta'] = {
+            'io.modelcontextprotocol/protocolVersion': PROTOCOL_VERSION,
+            'io.modelcontextprotocol/clientCapabilities': {},
+        }
+    elif meta is not None:
         message['_meta'] = meta
     return message
 
@@ -34,32 +40,44 @@ class DiscoverTestCase(unittest.TestCase):
 
         result = response['result']
         self.assertEqual(result['resultType'], 'complete')
-        self.assertEqual(result['protocolVersion'], PROTOCOL_VERSION)
-        self.assertEqual(result['serverInfo']['name'], 'debops')
-        self.assertTrue(result['serverInfo']['version'])
+        self.assertEqual(result['supportedVersions'], [PROTOCOL_VERSION])
         self.assertIn('tools', result['capabilities'])
-        self.assertIsNone(result['authorization'])
+        self.assertTrue(result['instructions'])
+        self.assertEqual(result['ttlMs'], 60000)
+        self.assertEqual(result['cacheScope'], 'private')
 
-        meta = response['_meta']['io.modelcontextprotocol/serverInfo']
+        meta = result['_meta']['io.modelcontextprotocol/serverInfo']
         self.assertEqual(meta['name'], 'debops')
+        self.assertTrue(meta['version'])
 
-    def test_discover_with_protocol_version(self):
+    def test_request_without_meta_is_rejected(self):
+        server = McpServer()
+        response = server.handle(make_request('server/discover',
+                                              meta=None))
+        error = response['error']
+        self.assertEqual(error['code'], rpc.INVALID_PARAMS)
+        self.assertIn('_meta', error['data']['details'])
+
+    def test_request_without_capabilities_is_rejected(self):
         server = McpServer()
         response = server.handle(make_request(
                 'server/discover',
                 meta={'io.modelcontextprotocol/protocolVersion':
                       PROTOCOL_VERSION}))
-        self.assertIn('result', response)
+        error = response['error']
+        self.assertEqual(error['code'], rpc.INVALID_PARAMS)
+        self.assertIn('clientCapabilities', error['data']['details'])
 
     def test_unsupported_protocol_version(self):
         server = McpServer()
         response = server.handle(make_request(
                 'server/discover',
                 meta={'io.modelcontextprotocol/protocolVersion':
-                      '2025-11-25'}))
+                      '2025-11-25',
+                      'io.modelcontextprotocol/clientCapabilities': {}}))
         error = response['error']
         self.assertEqual(error['code'], rpc.UNSUPPORTED_PROTOCOL_VERSION)
-        self.assertEqual(error['data']['supported'], PROTOCOL_VERSION)
+        self.assertEqual(error['data']['supported'], [PROTOCOL_VERSION])
         self.assertEqual(error['data']['requested'], '2025-11-25')
 
 
@@ -112,8 +130,8 @@ class HandleBytesTestCase(unittest.TestCase):
 
     def test_valid_bytes(self):
         server = McpServer()
-        response = server.handle_bytes(
-                b'{"jsonrpc": "2.0", "id": 9, "method": "tools/list"}')
+        response = server.handle_bytes(json.dumps(
+                make_request('tools/list', request_id=9)).encode())
         self.assertEqual(response['id'], 9)
         self.assertIn('tools', response['result'])
 
@@ -126,7 +144,9 @@ class ToolsTestCase(unittest.TestCase):
         result = response['result']
         self.assertEqual(result['resultType'], 'complete')
         self.assertEqual(result['tools'], [])
-        self.assertIsNone(result['nextCursor'])
+        # CacheableResult: clients get a freshness hint and a scope
+        self.assertEqual(result['ttlMs'], 60000)
+        self.assertEqual(result['cacheScope'], 'private')
 
     def test_tools_call_unknown_tool(self):
         server = McpServer()
@@ -191,9 +211,9 @@ class CancellationTestCase(unittest.TestCase):
         outcome = []
 
         def call():
-            outcome.append(server.handle({
-                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                'params': {'name': 'slow', 'arguments': {}}}))
+            outcome.append(server.handle(make_request(
+                    'tools/call', params={'name': 'slow',
+                                          'arguments': {}})))
 
         thread = threading.Thread(target=call)
         thread.start()
@@ -243,7 +263,11 @@ class ProgressTestCase(unittest.TestCase):
         sent = []
         request = make_request('tools/call', params={'name': 'noisy',
                                                      'arguments': {}},
-                               meta={'progressToken': 'pt-42'})
+                               meta={'progressToken': 'pt-42',
+                                     'io.modelcontextprotocol/'
+                                     'protocolVersion': PROTOCOL_VERSION,
+                                     'io.modelcontextprotocol/'
+                                     'clientCapabilities': {}})
         response = server.handle_bytes(json.dumps(request).encode(),
                                        notify=sent.append)
         self.assertIsNotNone(response)
@@ -267,43 +291,37 @@ class ProgressTestCase(unittest.TestCase):
 
 
 class ClacksOverheadTestCase(unittest.TestCase):
-    """Every response carries the tribute in its '_meta' overhead."""
+    """Every result carries the tribute in its '_meta' overhead."""
 
-    def test_result_responses_carry_the_clacks_overhead(self):
+    def test_results_carry_the_clacks_overhead(self):
         server = McpServer()
         response = server.handle(make_request('server/discover'))
-        self.assertEqual(response['_meta']['org.debops/clacksOverhead'],
+        meta = response['result']['_meta']
+        self.assertEqual(meta['org.debops/clacksOverhead'],
                          'GNU Terry Pratchett')
-        # The discover serverInfo is intact alongside it
-        self.assertIn('io.modelcontextprotocol/serverInfo',
-                      response['_meta'])
+        self.assertIn('io.modelcontextprotocol/serverInfo', meta)
 
-    def test_error_responses_carry_the_clacks_overhead(self):
+    def test_error_responses_have_no_meta_slot(self):
         server = McpServer()
         response = server.handle(make_request('nosuch/method'))
-        self.assertEqual(response['_meta']['org.debops/clacksOverhead'],
-                         'GNU Terry Pratchett')
-
-    def test_parse_errors_carry_the_clacks_overhead(self):
-        server = McpServer()
-        response = server.handle_bytes(b'not json')
-        self.assertEqual(response['_meta']['org.debops/clacksOverhead'],
-                         'GNU Terry Pratchett')
+        self.assertNotIn('_meta', response)
+        self.assertNotIn('_meta', response['error'])
 
     def test_project_and_view_in_meta_when_present(self):
         project = type('Project', (), {'name': 'containers',
                                        'view': 'system'})()
         server = McpServer(project=project)
         response = server.handle(make_request('server/discover'))
-        self.assertEqual(response['_meta']['org.debops/project'],
+        self.assertEqual(response['result']['_meta']['org.debops/project'],
                          'containers')
-        self.assertEqual(response['_meta']['org.debops/view'], 'system')
+        self.assertEqual(response['result']['_meta']['org.debops/view'],
+                         'system')
 
     def test_no_project_no_project_meta(self):
         server = McpServer()
         response = server.handle(make_request('server/discover'))
-        self.assertNotIn('org.debops/project', response['_meta'])
-        self.assertNotIn('org.debops/view', response['_meta'])
+        self.assertNotIn('org.debops/project', response['result']['_meta'])
+        self.assertNotIn('org.debops/view', response['result']['_meta'])
 
 
 if __name__ == '__main__':

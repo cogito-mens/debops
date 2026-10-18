@@ -45,11 +45,17 @@ def mcp_env(debops_env):
     return dict(debops_env, ANSIBLE_CONFIG="")
 
 
+# The per-request "_meta" fields the specification requires
+REQUEST_META = {
+    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+    "io.modelcontextprotocol/clientCapabilities": {},
+}
+
+
 def make_discover_request(request_id=1):
     return json.dumps({
-        "jsonrpc": "2.0", "id": request_id, "method": "server/discover",
-        "params": {},
-        "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"},
+        "jsonrpc": "2.0", "_meta": REQUEST_META, "id": request_id,
+        "method": "server/discover", "params": {},
     }) + "\n"
 
 
@@ -65,9 +71,11 @@ def test_serve_stdio_round_trip(run_debops, mcp_env, project_dir):
     # Nothing except protocol messages may be written to stdout
     (response,) = read_json_lines(result.stdout)
     assert response["id"] == 1
-    assert response["result"]["protocolVersion"] == "2026-07-28"
-    assert response["result"]["serverInfo"]["name"] == "debops"
-    assert "tools" in response["result"]["capabilities"]
+    result = response["result"]
+    assert result["supportedVersions"] == ["2026-07-28"]
+    assert "tools" in result["capabilities"]
+    meta = result["_meta"]["io.modelcontextprotocol/serverInfo"]
+    assert meta["name"] == "debops"
 
 
 def test_serve_stdio_reports_parse_errors(run_debops, mcp_env,
@@ -83,7 +91,8 @@ def test_serve_stdio_reports_parse_errors(run_debops, mcp_env,
 def test_serve_stdio_reports_unknown_methods(run_debops, mcp_env,
                                              project_dir):
     # prompts/* are not implemented (skills are served as resources)
-    request = ('{"jsonrpc": "2.0", "id": 5, "method": "prompts/list"}\n')
+    request = (json.dumps({"jsonrpc": "2.0", "_meta": REQUEST_META,
+                           "id": 5, "method": "prompts/list"}) + "\n")
     result = run_debops("mcp", "serve", cwd=str(project_dir),
                         env=mcp_env, input_text=request)
 
@@ -142,7 +151,8 @@ def test_serve_exits_quietly_on_sigint(debops_source_dir, mcp_env,
 
 
 def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
-    request = ('{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}\n')
+    request = (json.dumps({"jsonrpc": "2.0", "_meta": REQUEST_META,
+                           "id": 1, "method": "tools/list"}) + "\n")
     result = run_debops("mcp", "serve", cwd=str(project_dir),
                         env=mcp_env, input_text=request)
 
@@ -163,13 +173,15 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
 
 def test_role_defaults_via_stdio(run_debops, mcp_env, project_dir):
     brief = json.dumps({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "jsonrpc": "2.0", "_meta": REQUEST_META, "id": 1,
+        "method": "tools/call",
         "params": {"name": "role_defaults",
                    "arguments": {"name": "elasticsearch",
                                  "filter": "base_packages"}},
     })
     full = json.dumps({
-        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "jsonrpc": "2.0", "_meta": REQUEST_META, "id": 2,
+        "method": "tools/call",
         "params": {"name": "role_defaults",
                    "arguments": {"name": "elasticsearch",
                                  "filter": "base_packages",
@@ -196,7 +208,8 @@ def test_project_read_via_stdio(run_debops, mcp_env, project_dir):
     (group_vars / "nginx.yml").write_text("---\nnginx__enabled: True\n")
 
     request = json.dumps({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "jsonrpc": "2.0", "_meta": REQUEST_META, "id": 1,
+        "method": "tools/call",
         "params": {"name": "project_read",
                    "arguments": {"path": "ansible/inventory/group_vars/"
                                  "all/nginx.yml"}},
@@ -221,7 +234,8 @@ def test_inventory_query_via_stdio(run_debops, mcp_env, project_dir):
     (inventory / "hosts").write_text("[testgroup]\ntesthost\n")
 
     request = json.dumps({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "jsonrpc": "2.0", "_meta": REQUEST_META, "id": 1,
+        "method": "tools/call",
         "params": {"name": "inventory_query", "arguments": {}},
     }) + "\n"
     result = run_debops("mcp", "serve", cwd=str(project_dir),
@@ -235,11 +249,13 @@ def test_inventory_query_via_stdio(run_debops, mcp_env, project_dir):
 
 def test_role_inspection_via_stdio(run_debops, mcp_env, project_dir):
     requests = (
-        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        json.dumps({"jsonrpc": "2.0", "_meta": REQUEST_META, "id": 1,
+                    "method": "tools/call",
                     "params": {"name": "role_tasks",
                                "arguments": {"name": "nginx",
                                              "file": "main"}}}) + "\n"
-        + json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        + json.dumps({"jsonrpc": "2.0", "_meta": REQUEST_META, "id": 2,
+                      "method": "tools/call",
                       "params": {"name": "role_templates",
                                  "arguments": {"name": "nginx"}}}) + "\n"
     )
@@ -261,7 +277,8 @@ def test_collection_roles_via_stdio(run_debops, mcp_env, project_dir):
         pytest.skip("ansible-galaxy is not installed")
 
     request = json.dumps({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "jsonrpc": "2.0", "_meta": REQUEST_META, "id": 1,
+        "method": "tools/call",
         "params": {"name": "collection_roles", "arguments": {}},
     }) + "\n"
     result = run_debops("mcp", "serve", cwd=str(project_dir),
@@ -278,7 +295,8 @@ def test_collection_roles_via_stdio(run_debops, mcp_env, project_dir):
 
 def test_playbooks_via_stdio(run_debops, mcp_env, project_dir):
     request = json.dumps({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "jsonrpc": "2.0", "_meta": REQUEST_META, "id": 1,
+        "method": "tools/call",
         "params": {"name": "playbooks",
                    "arguments": {"filter": "service/nginx"}},
     }) + "\n"
@@ -294,7 +312,8 @@ def test_playbooks_via_stdio(run_debops, mcp_env, project_dir):
 
 def test_playbook_info_via_stdio(run_debops, mcp_env, project_dir):
     request = json.dumps({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "jsonrpc": "2.0", "_meta": REQUEST_META, "id": 1,
+        "method": "tools/call",
         "params": {"name": "playbook_info",
                    "arguments": {"playbook": "service/nginx"}},
     }) + "\n"
@@ -335,7 +354,8 @@ def test_check_tool_runs_a_playbook_in_check_mode(run_debops, mcp_env,
 """)
 
     request = json.dumps({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "jsonrpc": "2.0", "_meta": REQUEST_META, "id": 1,
+        "method": "tools/call",
         "params": {"name": "check", "arguments": {"playbook": "custom"}},
     }) + "\n"
     result = run_debops("mcp", "serve", cwd=str(project_dir),
@@ -356,7 +376,8 @@ def test_secret_paths_via_stdio(run_debops, mcp_env, project_dir):
     (secret / "password").write_text("the password\n")
 
     request = json.dumps({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "jsonrpc": "2.0", "_meta": REQUEST_META, "id": 1,
+        "method": "tools/call",
         "params": {"name": "secret_paths",
                    "arguments": {"pattern": "**/password"}},
     }) + "\n"
@@ -383,7 +404,8 @@ def test_ansible_ping_via_stdio(run_debops, mcp_env, project_dir):
             "[local]\nlocalhost ansible_connection=local\n")
 
     request = json.dumps({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "jsonrpc": "2.0", "_meta": REQUEST_META, "id": 1,
+        "method": "tools/call",
         "params": {"name": "ansible_ping", "arguments": {"hosts": "local"}},
     }) + "\n"
     result = run_debops("mcp", "serve", cwd=str(project_dir),
@@ -450,7 +472,9 @@ def test_connect_ping(run_debops, mcp_env, tmp_path):
                             "--raw", env=mcp_env)
         assert result.returncode == 0
         response = json.loads(result.stdout)
-        assert response["result"]["serverInfo"]["name"] == "debops"
+        meta = response["result"]["_meta"]
+        server_info = meta["io.modelcontextprotocol/serverInfo"]
+        assert server_info["name"] == "debops"
     finally:
         transport.shutdown()
         thread.join(timeout=5)
@@ -519,10 +543,12 @@ def test_project_sync_via_stdio(run_debops, mcp_env, tmp_path):
                    capture_output=True)
 
     requests = (
-        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        json.dumps({"jsonrpc": "2.0", "_meta": REQUEST_META, "id": 1,
+                    "method": "tools/call",
                     "params": {"name": "project_pull",
                                "arguments": {}}}) + "\n"
-        + json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        + json.dumps({"jsonrpc": "2.0", "_meta": REQUEST_META, "id": 2,
+                      "method": "tools/call",
                       "params": {"name": "project_pull",
                                  "arguments": {}}}) + "\n"
     )
@@ -564,11 +590,13 @@ def test_check_with_limit_resolves_hosts(run_debops, mcp_env, project_dir):
 """)
 
     requests = (
-        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        json.dumps({"jsonrpc": "2.0", "_meta": REQUEST_META, "id": 1,
+                    "method": "tools/call",
                     "params": {"name": "check",
                                "arguments": {"playbook": "custom",
                                              "limit": "local"}}}) + "\n"
-        + json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        + json.dumps({"jsonrpc": "2.0", "_meta": REQUEST_META, "id": 2,
+                      "method": "tools/call",
                       "params": {"name": "check",
                                  "arguments": {"playbook": "custom",
                                                "limit": "nosuch"}}})
@@ -593,7 +621,8 @@ def test_policy_deny_hides_a_tool(run_debops, mcp_env, project_dir):
     (conf_d / "mcp.yml").write_text(
             "---\nproject:\n  mcp:\n    deny: ['role_info']\n")
 
-    request = ('{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}\n')
+    request = (json.dumps({"jsonrpc": "2.0", "_meta": REQUEST_META,
+                           "id": 1, "method": "tools/list"}) + "\n")
     result = run_debops("mcp", "serve", cwd=str(project_dir),
                         env=mcp_env, input_text=request)
 
@@ -671,7 +700,10 @@ def test_connect_bridges_stdio_to_unix_socket(run_debops, mcp_env,
         assert result.returncode == 0
         (response,) = read_json_lines(result.stdout)
         assert response["id"] == 1
-        assert response["result"]["protocolVersion"] == "2026-07-28"
+        result = response["result"]
+        assert result["supportedVersions"] == ["2026-07-28"]
+        meta = result["_meta"]["io.modelcontextprotocol/serverInfo"]
+        assert meta["name"] == "debops"
     finally:
         transport.shutdown()
         thread.join(timeout=5)

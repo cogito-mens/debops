@@ -385,9 +385,10 @@ class Interpreter(object):
                     response['error'].get('message')), file=sys.stderr)
             sys.exit(1)
         result = response.get('result', {})
-        server_info = result.get('serverInfo', {})
-        meta = response.get('_meta', {})
+        meta = result.get('_meta', {})
+        server_info = meta.get('io.modelcontextprotocol/serverInfo', {})
         capabilities = ', '.join(sorted(result.get('capabilities', {})))
+        versions = result.get('supportedVersions', [])
         print('debops mcp server at {}:'.format(args.socket))
         print('    name: {}'.format(server_info.get('name', '?')))
         if meta.get('org.debops/project') is not None:
@@ -395,8 +396,7 @@ class Interpreter(object):
         if meta.get('org.debops/view') is not None:
             print('    view: {}'.format(meta['org.debops/view']))
         print('    version: {}'.format(server_info.get('version', '?')))
-        print('    protocol: {}'.format(result.get('protocolVersion',
-                                                   '?')))
+        print('    protocol: {}'.format(', '.join(versions) or '?'))
         print('    capabilities: {}'.format(capabilities or '(none)'))
         print('    round-trip: {:.0f} ms'.format(rtt * 1000))
 

@@ -282,6 +282,7 @@ def ping_unix(path, timeout=5):
             'io.modelcontextprotocol/clientInfo': {
                 'name': 'debops', 'version': _server.__version__,
             },
+            'io.modelcontextprotocol/clientCapabilities': {},
         },
     }).encode('utf-8') + b'\n'
     try:

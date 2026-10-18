@@ -104,7 +104,8 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
         ('project_status',
          'Report the status of the DebOps project: type, current '
          'infrastructure view, inventory and secrets presence, encryption.',
-         {'type': 'object', 'properties': {}},
+         {'type': 'object', 'properties': {},
+          'additionalProperties': False},
          lambda arguments: tool_project_status(project, policy, arguments)),
         ('project_files',
          'List the files of the DebOps project, minus denied paths '
@@ -496,12 +497,14 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
          'Pull the latest project state from its git origin '
          '(fast-forward only). Use this to pick up changes made '
          'elsewhere before reading or changing the project.',
-         {'type': 'object', 'properties': {}},
+         {'type': 'object', 'properties': {},
+          'additionalProperties': False},
          make_sync_tool(project, policy, sync_state, 'pull')),
         ('project_push',
          'Push the project\'s committed state to its git origin. Only '
          'committed history is sent; the working tree must be clean.',
-         {'type': 'object', 'properties': {}},
+         {'type': 'object', 'properties': {},
+          'additionalProperties': False},
          make_sync_tool(project, policy, sync_state, 'push')),
     ])
 

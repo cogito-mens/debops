@@ -29,9 +29,11 @@ except ModuleNotFoundError:
 PROTOCOL_VERSION = '2026-07-28'
 
 PROTOCOL_VERSION_KEY = 'io.modelcontextprotocol/protocolVersion'
+CLIENT_CAPABILITIES_KEY = 'io.modelcontextprotocol/clientCapabilities'
+CLIENT_INFO_KEY = 'io.modelcontextprotocol/clientInfo'
 SERVER_INFO_KEY = 'io.modelcontextprotocol/serverInfo'
 
-# A tribute carried in the overhead of every response; '_meta' is
+# A tribute carried in the overhead of every result; '_meta' is
 # protocol metadata consumed by clients and never shown to the model,
 # and unknown namespaced keys are ignored by design
 CLACKS_OVERHEAD = {'org.debops/clacksOverhead': 'GNU Terry Pratchett'}
@@ -177,13 +179,14 @@ class McpServer(object):
     # -- transport entry point ---------------------------------------------
 
     def _base_meta(self):
-        """The '_meta' carried by every response.
+        """The '_meta' carried by every result.
 
-        Besides the clacks overhead it identifies the project and the
-        infrastructure view the server is confined to, so that clients
-        can tell multiple instances apart.
+        Besides the clacks overhead it identifies the server, the
+        project and the infrastructure view the server is confined to,
+        so that clients can tell multiple instances apart.
         """
         meta = dict(CLACKS_OVERHEAD)
+        meta[SERVER_INFO_KEY] = {'name': self.name, 'version': self.version}
         if self.project is not None:
             meta[PROJECT_META_KEY] = self.project.name
             meta[VIEW_META_KEY] = self.project.view
@@ -196,9 +199,7 @@ class McpServer(object):
         except rpc.JsonRpcError as errmsg:
             logger.warning('Rejecting an unparseable message: %s',
                            errmsg.message)
-            response = errmsg.to_response()
-            response['_meta'] = self._base_meta()
-            return response
+            return errmsg.to_response()
         return self.handle(message, notify)
 
     def handle(self, message, notify=None):
@@ -206,15 +207,13 @@ class McpServer(object):
         try:
             return self._dispatch(message, notify)
         except rpc.JsonRpcError as errmsg:
-            response = errmsg.to_response()
-            response['_meta'] = self._base_meta()
-            return response
+            # Error responses have no '_meta' slot; the clacks overhead
+            # and the server identity ride results only
+            return errmsg.to_response()
         except Exception:
             logger.exception('Internal error while handling a request')
-            response = rpc.make_error(message.get('id'),
-                                      rpc.INTERNAL_ERROR, 'Internal error')
-            response['_meta'] = self._base_meta()
-            return response
+            return rpc.make_error(message.get('id'),
+                                  rpc.INTERNAL_ERROR, 'Internal error')
 
     def _dispatch(self, message, notify=None):
         """Route one parsed message to its method handler.
@@ -230,7 +229,9 @@ class McpServer(object):
             raise rpc.JsonRpcError(rpc.INVALID_REQUEST, 'Invalid Request',
                                    request_id=request_id)
 
-        self._check_protocol_version(message, request_id)
+        # Notifications carry no '_meta' requirement; requests do
+        if not is_notification:
+            self._check_request_meta(message, request_id)
 
         meta = message.get('_meta')
         progress_token = (meta.get('progressToken')
@@ -241,7 +242,10 @@ class McpServer(object):
         if is_notification:
             logger.info('Notification: %s', method)
         else:
-            logger.info('Request: %s (id=%s)', method, request_id)
+            client = meta.get(CLIENT_INFO_KEY, {})
+            logger.info('Request: %s (id=%s, client=%s %s)', method,
+                        request_id, client.get('name', '?'),
+                        client.get('version', ''))
 
         handler = self._methods.get(method)
         if handler is None:
@@ -276,32 +280,46 @@ class McpServer(object):
         if result is None:
             result = {}
         result.setdefault('resultType', 'complete')
-        response = rpc.make_result(request_id, result)
-        response['_meta'] = self._base_meta()
-        if method == 'server/discover':
-            response['_meta'][SERVER_INFO_KEY] = {
-                'name': self.name, 'version': self.version}
-        return response
+        result['_meta'] = self._base_meta()
+        return rpc.make_result(request_id, result)
 
     # -- protocol methods ---------------------------------------------------
 
-    def _check_protocol_version(self, message, request_id):
-        """Reject requests which explicitly ask for another revision.
+    def _check_request_meta(self, message, request_id):
+        """Enforce the per-request protocol fields.
 
-        The field is mandatory in the specification, but a missing one is
-        tolerated so that simple clients and manual testing keep working.
+        Every request must carry its protocol version and client
+        capabilities in '_meta'; a missing one is malformed. A request
+        asking for another protocol revision is rejected.
         """
         meta = message.get('_meta')
         if not isinstance(meta, dict):
-            return
-        version = meta.get(PROTOCOL_VERSION_KEY)
-        if version is not None and version != PROTOCOL_VERSION:
+            logger.warning('Request without the required _meta')
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_PARAMS, 'Invalid params',
+                    data={'details': "missing required '_meta' fields: "
+                          '{} and {}'.format(PROTOCOL_VERSION_KEY,
+                                             CLIENT_CAPABILITIES_KEY)},
+                    request_id=request_id)
+        missing = [key for key in (PROTOCOL_VERSION_KEY,
+                                   CLIENT_CAPABILITIES_KEY)
+                   if meta.get(key) is None]
+        if missing:
+            logger.warning('Request without required _meta fields: %s',
+                           ', '.join(missing))
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_PARAMS, 'Invalid params',
+                    data={'details': 'missing required _meta fields: '
+                          + ', '.join(missing)},
+                    request_id=request_id)
+        version = meta[PROTOCOL_VERSION_KEY]
+        if version != PROTOCOL_VERSION:
             logger.warning('Unsupported protocol version requested: %s',
                            version)
             raise rpc.JsonRpcError(
                     rpc.UNSUPPORTED_PROTOCOL_VERSION,
                     'Unsupported protocol version',
-                    data={'supported': PROTOCOL_VERSION,
+                    data={'supported': [PROTOCOL_VERSION],
                           'requested': version},
                     request_id=request_id)
 
@@ -310,15 +328,23 @@ class McpServer(object):
         if self.skills is not None:
             capabilities['resources'] = {}
         return {
-            'protocolVersion': PROTOCOL_VERSION,
-            'serverInfo': {'name': self.name, 'version': self.version},
+            'supportedVersions': [PROTOCOL_VERSION],
             'capabilities': capabilities,
-            'authorization': None,
+            'instructions':
+                'This server exposes one DebOps project directory: '
+                'inspect its inventory, roles, playbooks and '
+                'configuration, run playbooks within the project '
+                'policy, and synchronize the project with its git '
+                'origin. Reusable DebOps workflows are available as '
+                'skill:// resources.',
+            'ttlMs': 60000, 'cacheScope': 'private',
         }
 
     def _tools_list(self, params, context):
+        # The tool set is fixed at startup; a short TTL lets clients
+        # pick up a restarted daemon's changed policy reasonably fast
         return {'tools': [tool.describe() for tool in self.tools.values()],
-                'nextCursor': None}
+                'ttlMs': 60000, 'cacheScope': 'private'}
 
     def _tools_call(self, params, context):
         name = params.get('name')
@@ -358,7 +384,10 @@ class McpServer(object):
                     self._active_requests.pop(request_id, None)
 
     def _resources_list(self, params, context):
-        return {'resources': self.skills.list(), 'nextCursor': None}
+        # The skills are static package content; they change only with
+        # a package upgrade
+        return {'resources': self.skills.list(),
+                'ttlMs': 3600000, 'cacheScope': 'public'}
 
     def _resources_read(self, params, context):
         uri = params.get('uri')
@@ -377,7 +406,8 @@ class McpServer(object):
                     rpc.INVALID_PARAMS, 'Invalid params',
                     data={'details': 'resource not found: {}'.format(uri)})
         return {'contents': [{'uri': uri, 'mimeType': 'text/markdown',
-                              'text': content}]}
+                              'text': content}],
+                'ttlMs': 3600000, 'cacheScope': 'public'}
 
     def _cancelled(self, params, context):
         target = params.get('requestId')

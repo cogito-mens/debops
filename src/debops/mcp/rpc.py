@@ -18,9 +18,12 @@ METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
 
-# Error codes reserved by the MCP specification
-UNSUPPORTED_PROTOCOL_VERSION = -32020
-REQUEST_TOO_LARGE = -32022
+# Error codes assigned by the MCP specification (its reserved range is
+# -32020 to -32099)
+UNSUPPORTED_PROTOCOL_VERSION = -32022
+
+# Implementation-defined error codes (the range -32000 to -32019)
+REQUEST_TOO_LARGE = -32000
 
 # A single message is limited in size to blunt memory-exhaustion attempts;
 # the default is generous enough for large tool outputs

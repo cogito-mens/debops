@@ -9,7 +9,7 @@ dependencies.
 """
 
 from debops.mcp.policy import McpPolicy
-from debops.mcp.server import McpServer
+from debops.mcp.server import PROTOCOL_VERSION, McpServer
 from debops.mcp.tools import register_project_tools
 from unittest import mock
 import os
@@ -17,6 +17,13 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+
+
+# The per-request '_meta' fields the specification requires
+REQUEST_META = {
+    'io.modelcontextprotocol/protocolVersion': PROTOCOL_VERSION,
+    'io.modelcontextprotocol/clientCapabilities': {},
+}
 
 
 class FilesTestCase(unittest.TestCase):
@@ -80,7 +87,8 @@ class FilesTestCase(unittest.TestCase):
 
     def call_tool(self, name, arguments=None, request_id=1):
         return self.server.handle({
-            'jsonrpc': '2.0', 'id': request_id, 'method': 'tools/call',
+            'jsonrpc': '2.0', '_meta': REQUEST_META,
+            'id': request_id, 'method': 'tools/call',
             'params': {'name': name, 'arguments': arguments or {}},
         })
 
@@ -153,7 +161,7 @@ class FilesTestCase(unittest.TestCase):
                                playbooks_path=self.tmpdir,
                                collection_index_provider=lambda: {})
         response = server.handle({
-                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1, 'method': 'tools/call',
                 'params': {'name': 'project_read',
                            'arguments': {'path': 'ansible/playbooks/'
                                          'custom.yml'}}})

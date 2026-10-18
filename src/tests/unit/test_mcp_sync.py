@@ -10,7 +10,7 @@ covered by the CLI integration tests.
 """
 
 from debops.mcp.policy import McpPolicy
-from debops.mcp.server import McpServer
+from debops.mcp.server import McpServer, PROTOCOL_VERSION
 from debops.mcp.tools import register_project_tools
 import os
 import shutil
@@ -32,6 +32,13 @@ PUSH_CLEAN = {'action': 'push', 'pushed': False, 'commits': []}
 
 def _auto_commit_noop(self, message=None):
     pass
+
+
+# The per-request '_meta' fields the specification requires
+REQUEST_META = {
+    'io.modelcontextprotocol/protocolVersion': PROTOCOL_VERSION,
+    'io.modelcontextprotocol/clientCapabilities': {},
+}
 
 
 class SyncTestCase(unittest.TestCase):
@@ -73,7 +80,8 @@ class SyncTestCase(unittest.TestCase):
 
     def call_tool(self, name, arguments=None, request_id=1):
         return self.server.handle({
-            'jsonrpc': '2.0', 'id': request_id, 'method': 'tools/call',
+            'jsonrpc': '2.0', '_meta': REQUEST_META,
+            'id': request_id, 'method': 'tools/call',
             'params': {'name': name, 'arguments': arguments or {}},
         })
 

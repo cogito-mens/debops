@@ -9,7 +9,7 @@ dependencies.
 """
 
 from debops.mcp import rpc
-from debops.mcp.server import McpServer
+from debops.mcp.server import McpServer, PROTOCOL_VERSION
 from debops.mcp.skills import SkillLibrary
 import os
 import shutil
@@ -34,6 +34,13 @@ name: other-name
 description: The name does not match the directory
 ---
 '''
+
+
+# The per-request '_meta' fields the specification requires
+REQUEST_META = {
+    'io.modelcontextprotocol/protocolVersion': PROTOCOL_VERSION,
+    'io.modelcontextprotocol/clientCapabilities': {},
+}
 
 
 class SkillLibraryTestCase(unittest.TestCase):
@@ -113,26 +120,26 @@ class ServerResourcesTestCase(unittest.TestCase):
 
     def test_discover_advertises_resources_with_a_library(self):
         server = McpServer(skills=self.library)
-        response = server.handle({'jsonrpc': '2.0', 'id': 1,
+        response = server.handle({'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
                                   'method': 'server/discover'})
         self.assertIn('resources', response['result']['capabilities'])
 
     def test_discover_without_a_library(self):
         server = McpServer()
-        response = server.handle({'jsonrpc': '2.0', 'id': 1,
+        response = server.handle({'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
                                   'method': 'server/discover'})
         self.assertNotIn('resources', response['result']['capabilities'])
 
     def test_resources_list_and_read(self):
         server = McpServer(skills=self.library)
-        response = server.handle({'jsonrpc': '2.0', 'id': 1,
+        response = server.handle({'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
                                   'method': 'resources/list',
                                   'params': {}})
         resources = response['result']['resources']
         self.assertEqual([resource['uri'] for resource in resources],
                          ['skill://good-skill'])
 
-        response = server.handle({'jsonrpc': '2.0', 'id': 2,
+        response = server.handle({'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 2,
                                   'method': 'resources/read',
                                   'params': {'uri': 'skill://good-skill'}})
         contents = response['result']['contents']
@@ -141,7 +148,7 @@ class ServerResourcesTestCase(unittest.TestCase):
 
     def test_resources_read_unknown_uri(self):
         server = McpServer(skills=self.library)
-        response = server.handle({'jsonrpc': '2.0', 'id': 3,
+        response = server.handle({'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 3,
                                   'method': 'resources/read',
                                   'params': {'uri': 'skill://nosuch'}})
         self.assertEqual(response['error']['code'], rpc.INVALID_PARAMS)
@@ -151,7 +158,7 @@ class ServerResourcesTestCase(unittest.TestCase):
 
     def test_resources_read_traversal_echoes_request_id(self):
         server = McpServer(skills=self.library)
-        response = server.handle({'jsonrpc': '2.0', 'id': 7,
+        response = server.handle({'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 7,
                                   'method': 'resources/read',
                                   'params': {'uri': 'skill://good-skill/'
                                              '../../etc/passwd'}})
@@ -160,7 +167,7 @@ class ServerResourcesTestCase(unittest.TestCase):
 
     def test_resources_read_rejects_other_schemes(self):
         server = McpServer(skills=self.library)
-        response = server.handle({'jsonrpc': '2.0', 'id': 4,
+        response = server.handle({'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 4,
                                   'method': 'resources/read',
                                   'params': {'uri': 'file:///etc/passwd'}})
         self.assertEqual(response['error']['code'], rpc.INVALID_PARAMS)

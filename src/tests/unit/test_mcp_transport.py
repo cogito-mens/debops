@@ -22,11 +22,19 @@ import time
 import unittest
 
 
+# The per-request '_meta' fields the specification requires
+REQUEST_META = {
+    'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+    'io.modelcontextprotocol/clientCapabilities': {},
+}
+
+
 def make_discover_request(request_id=1):
     return json.dumps({
         'jsonrpc': '2.0', 'id': request_id, 'method': 'server/discover',
         'params': {},
-        '_meta': {'io.modelcontextprotocol/protocolVersion': '2026-07-28'},
+        '_meta': {'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+                  'io.modelcontextprotocol/clientCapabilities': {}},
     })
 
 
@@ -68,24 +76,25 @@ class UnixSocketTransportTestCase(unittest.TestCase):
     def test_discover_round_trip(self):
         response = json.loads(self._round_trip(make_discover_request()))
         self.assertEqual(response['id'], 1)
-        self.assertEqual(response['result']['protocolVersion'],
-                         '2026-07-28')
+        self.assertEqual(response['result']['supportedVersions'],
+                         ['2026-07-28'])
 
     def test_multiple_messages_on_one_connection(self):
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.addCleanup(connection.close)
         connection.connect(self.path)
         connection.sendall(make_discover_request(1).encode('utf-8') + b'\n')
-        connection.sendall(b'{"jsonrpc": "2.0", "id": 2, '
-                           b'"method": "tools/list", "params": {}}\n')
+        connection.sendall(json.dumps({
+                'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list',
+                'params': {}, '_meta': REQUEST_META}).encode() + b'\n')
         reader = connection.makefile('rb')
         # Requests run concurrently; responses may arrive out of order
         responses = {}
         for _ in range(2):
             response = json.loads(rpc.read_message(reader))
             responses[response['id']] = response
-        self.assertEqual(responses[1]['result']['protocolVersion'],
-                         '2026-07-28')
+        self.assertEqual(responses[1]['result']['supportedVersions'],
+                         ['2026-07-28'])
         self.assertEqual(responses[2]['result']['tools'], [])
 
     def test_progress_notifications_on_the_wire(self):
@@ -113,7 +122,11 @@ class UnixSocketTransportTestCase(unittest.TestCase):
             connection.sendall(json.dumps({
                 'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                 'params': {'name': 'noisy', 'arguments': {}},
-                '_meta': {'progressToken': 'pt-9'}}).encode() + b'\n')
+                '_meta': {'progressToken': 'pt-9',
+                          'io.modelcontextprotocol/protocolVersion':
+                          '2026-07-28',
+                          'io.modelcontextprotocol/clientCapabilities':
+                          {}}}).encode() + b'\n')
             reader = connection.makefile('rb')
             # The progress notification precedes the response
             first = json.loads(rpc.read_message(reader))
@@ -151,12 +164,14 @@ class UnixSocketTransportTestCase(unittest.TestCase):
 
             connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             connection.connect(path)
-            connection.sendall(
-                    b'{"jsonrpc": "2.0", "id": 1, "method": "tools/call", '
-                    b'"params": {"name": "slow", "arguments": {}}}\n')
-            connection.sendall(
-                    b'{"jsonrpc": "2.0", "id": 2, "method": "tools/list", '
-                    b'"params": {}}\n')
+            connection.sendall(json.dumps({
+                    'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                    'params': {'name': 'slow', 'arguments': {}},
+                    '_meta': REQUEST_META}).encode() + b'\n')
+            connection.sendall(json.dumps({
+                    'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list',
+                    'params': {},
+                    '_meta': REQUEST_META}).encode() + b'\n')
             reader = connection.makefile('rb')
             first = json.loads(rpc.read_message(reader))
             self.assertEqual(first['id'], 2)
@@ -236,14 +251,14 @@ class UnixSocketTransportTestCase(unittest.TestCase):
 
     def test_ping_unix_round_trip(self):
         response = json.loads(ping_unix(self.path))
-        self.assertEqual(response['result']['serverInfo']['name'],
-                         'debops')
-        self.assertEqual(response['result']['protocolVersion'],
-                         '2026-07-28')
+        meta = response['result']['_meta']
+        self.assertEqual(meta['io.modelcontextprotocol/serverInfo']
+                         ['name'], 'debops')
+        self.assertEqual(response['result']['supportedVersions'],
+                         ['2026-07-28'])
         # The clacks overhead rides along
-        self.assertEqual(
-                response['_meta']['org.debops/clacksOverhead'],
-                'GNU Terry Pratchett')
+        self.assertEqual(meta['org.debops/clacksOverhead'],
+                         'GNU Terry Pratchett')
 
     def test_ping_unix_missing_socket(self):
         with self.assertRaises(ConnectionError):
