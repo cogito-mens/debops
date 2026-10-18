@@ -297,8 +297,15 @@ def tool_view_write(project, policy, arguments):
                 else 'created'
 
         # The commit is part of the tool's contract: an explicit,
-        # attributable record of the change
-        project.commit(message='DebOps MCP: view_write ' + view_relative)
+        # attributable record of the change. When it fails, the change
+        # has landed but is NOT recorded — the result must say so
+        try:
+            project.commit(message='DebOps MCP: view_write '
+                           + view_relative)
+        except Exception as errmsg:
+            return error_result('{}: {}, but the commit failed: {} '
+                                '(the change is not recorded in git)'
+                                .format(outcome, view_relative, errmsg))
         return text_result('{}: {} ({} bytes, mode {:04o})'.format(
                 outcome, view_relative, size,
                 stat.S_IMODE(os.stat(path).st_mode)))
@@ -329,9 +336,15 @@ def tool_view_delete(project, policy, arguments):
         except OSError as errmsg:
             return error_result('cannot delete {}: {}'.format(
                     view_relative, errmsg))
-        # The commit is part of the tool's contract, as for view_write
-        project.commit(message='DebOps MCP: view_delete '
-                       + view_relative)
+        # The commit is part of the tool's contract, as for view_write;
+        # when it fails the file is gone but NOT recorded in git
+        try:
+            project.commit(message='DebOps MCP: view_delete '
+                           + view_relative)
+        except Exception as errmsg:
+            return error_result('deleted: {}, but the commit failed: {} '
+                                '(the removal is not recorded in git)'
+                                .format(view_relative, errmsg))
         return text_result('deleted: {}'.format(view_relative))
 
 
@@ -458,7 +471,14 @@ def tool_inventory_spec(project, policy, arguments):
                 overwrite=overwrite, keep=keep)
         if result['written'] or result['removed']:
             # The commit is part of the tool's contract, as for
-            # view_write
-            project.commit(message='DebOps MCP: inventory_spec')
+            # view_write; when it fails the changes are NOT recorded
+            try:
+                project.commit(message='DebOps MCP: inventory_spec')
+            except Exception as errmsg:
+                return error_result(
+                        _inventory_spec_report(result, inventory.path,
+                                               dry_run=False)
+                        + '\nThe commit failed: {} (the changes are not '
+                        'recorded in git)\n'.format(errmsg))
         return text_result(_inventory_spec_report(
                 result, inventory.path, dry_run=False))

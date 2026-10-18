@@ -6,11 +6,14 @@
 
 import contextlib
 import fcntl
+import logging
 import os
 import re
 import shutil
 import threading
 import yaml
+
+logger = logging.getLogger(__name__)
 
 # Fold markers used in DebOps defaults files
 FOLD_MARKER = re.compile(r'^\s*#\s*(\[{3}|\]{3})\d?\s*$')
@@ -225,8 +228,16 @@ def exclusive_project(project, policy, note=''):
             try:
                 yield
             finally:
-                project.auto_commit(message='DebOps MCP: ' + note
-                                    if note else 'DebOps MCP operation')
+                # A failed ambient commit must not mask the
+                # operation's own outcome
+                try:
+                    project.auto_commit(message='DebOps MCP: ' + note
+                                        if note else
+                                        'DebOps MCP operation')
+                except Exception:
+                    logger.warning('Auto-commit after %s failed',
+                                   note or 'the operation',
+                                   exc_info=True)
 
 
 @contextlib.contextmanager

@@ -198,6 +198,28 @@ class ProjectLockTestCase(unittest.TestCase):
             pass
         self.assertEqual(calls, ['DebOps MCP: run site'])
 
+    def test_a_failed_auto_commit_does_not_mask_the_outcome(self):
+        def raising(self, message=None):
+            raise RuntimeError('disk full mid-commit')
+
+        project = type('Project', (), {
+            'path': self.tmpdir, 'name': 'project',
+            'project_type': 'legacy', 'view': 'system',
+            'config': type('Config', (), {'raw': {}})(),
+            'auto_commit': raising,
+        })()
+        policy = type('Policy', (), {
+            'view_root': os.path.join(self.tmpdir, 'ansible'),
+        })()
+        with self.assertLogs('debops.mcp.tools.common', level='WARNING') \
+                as recorded:
+            with exclusive_project(project, policy, note='run site'):
+                outcome = 'the work result'
+        # The operation's own outcome stands; the failure is logged
+        self.assertEqual(outcome, 'the work result')
+        self.assertTrue(any('Auto-commit' in line
+                            for line in recorded.output))
+
 
 if __name__ == '__main__':
     unittest.main()

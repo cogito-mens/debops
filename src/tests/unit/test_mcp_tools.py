@@ -434,6 +434,18 @@ class ViewWriteTestCase(unittest.TestCase):
         self.assertTrue(response['isError'])
         self.assertIn('No space left', response['content'][0]['text'])
 
+    def test_commit_failure_is_reported(self):
+        def raising(instance, message=None):
+            raise RuntimeError('disk full mid-commit')
+        self.project.commit = raising
+        response = self.write('playbooks/x.yml', content='---\n')
+        self.assertTrue(response['isError'])
+        text = response['content'][0]['text']
+        self.assertIn('the commit failed', text)
+        self.assertIn('not recorded', text)
+        # The write itself landed
+        self.assertEqual(self.written('playbooks/x.yml'), '---\n')
+
     # -- view_delete ---------------------------------------------------
 
     def delete(self, path):
