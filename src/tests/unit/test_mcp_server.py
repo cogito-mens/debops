@@ -305,6 +305,101 @@ class ProgressTestCase(unittest.TestCase):
         self.assertEqual(sent, [])
 
 
+class ConfirmationGateTestCase(unittest.TestCase):
+    """Tools named in the policy's confirm list ask the user first."""
+
+    def _server(self, confirm=('run',)):
+        policy = type('Policy', (), {'confirm': set(confirm)})()
+        server = McpServer(policy=policy)
+        self.ran = []
+        server.register_tool(
+                'run', 'Run things', {'type': 'object'},
+                lambda arguments: self.ran.append(arguments) or {
+                    'content': [{'type': 'text', 'text': 'ran'}],
+                    'isError': False})
+        return server
+
+    def _call(self, server, capabilities=None, input_responses=None):
+        params = {'name': 'run', 'arguments': {'playbook': 'site'}}
+        if input_responses is not None:
+            params['inputResponses'] = input_responses
+        meta = {'io.modelcontextprotocol/protocolVersion': PROTOCOL_VERSION,
+                'io.modelcontextprotocol/clientCapabilities':
+                capabilities if capabilities is not None else {}}
+        return server.handle(make_request('tools/call', params=params,
+                                          meta=meta))
+
+    def test_gated_tool_elicits_confirmation(self):
+        server = self._server()
+        response = self._call(server,
+                              capabilities={'elicitation': {'form': {}}})
+        result = response['result']
+        self.assertEqual(result['resultType'], 'input_required')
+        request = result['inputRequests']['confirmation']
+        self.assertEqual(request['method'], 'elicitation/create')
+        self.assertEqual(request['params']['mode'], 'form')
+        self.assertIn('site', request['params']['message'])
+        # The tool did not run yet
+        self.assertEqual(self.ran, [])
+
+    def test_confirmed_call_proceeds(self):
+        server = self._server()
+        response = self._call(server, input_responses={
+                'confirmation': {'action': 'accept',
+                                 'content': {'confirmed': True}}})
+        self.assertFalse(response['result']['isError'])
+        self.assertEqual(self.ran, [{'playbook': 'site'}])
+
+    def test_declined_call_errors(self):
+        server = self._server()
+        response = self._call(server, input_responses={
+                'confirmation': {'action': 'decline'}})
+        result = response['result']
+        self.assertEqual(result['resultType'], 'complete')
+        self.assertTrue(result['isError'])
+        self.assertIn('declined', result['content'][0]['text'])
+        self.assertEqual(self.ran, [])
+
+    def test_accept_without_confirmation_errors(self):
+        server = self._server()
+        response = self._call(server, input_responses={
+                'confirmation': {'action': 'accept',
+                                 'content': {'confirmed': False}}})
+        self.assertTrue(response['result']['isError'])
+        self.assertEqual(self.ran, [])
+
+    def test_no_elicitation_capability_proceeds(self):
+        server = self._server()
+        response = self._call(server, capabilities={})
+        self.assertFalse(response['result']['isError'])
+        self.assertEqual(self.ran, [{'playbook': 'site'}])
+
+    def test_url_only_capability_proceeds(self):
+        # URL-mode elicitation cannot carry the confirmation form
+        server = self._server()
+        response = self._call(server,
+                              capabilities={'elicitation': {'url': {}}})
+        self.assertFalse(response['result']['isError'])
+        self.assertEqual(self.ran, [{'playbook': 'site'}])
+
+    def test_ungated_tool_proceeds(self):
+        server = self._server(confirm=('other',))
+        response = self._call(server,
+                              capabilities={'elicitation': {'form': {}}})
+        self.assertFalse(response['result']['isError'])
+        self.assertEqual(self.ran, [{'playbook': 'site'}])
+
+    def test_no_policy_no_gate(self):
+        server = McpServer()
+        server.register_tool(
+                'run', 'Run things', {'type': 'object'},
+                lambda arguments: {'content': [], 'isError': False})
+        response = server.handle(make_request(
+                'tools/call',
+                params={'name': 'run', 'arguments': {}}))
+        self.assertFalse(response['result']['isError'])
+
+
 class ClacksOverheadTestCase(unittest.TestCase):
     """Every result carries the tribute in its '_meta' overhead."""
 

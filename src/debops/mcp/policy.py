@@ -166,6 +166,15 @@ class McpPolicy(object):
         except (TypeError, ValueError):
             self.sync_interval = 60
 
+        # Tools which ask the user for confirmation before they run, via
+        # an elicitation request. The confirmation is a courtesy for the
+        # user, not a security boundary: the client answers it, so the
+        # 'execute' gate above remains the authoritative control
+        confirm = mcp_config.get('confirm', ['run', 'project_push'])
+        if isinstance(confirm, str):
+            confirm = [confirm]
+        self.confirm = set(str(name) for name in confirm or [])
+
         # Which collection content the tools may serve. Bundled is the
         # packaged DebOps collection; external is anything else Ansible
         # can see. The project's own content is always allowed.

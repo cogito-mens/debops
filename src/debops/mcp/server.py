@@ -44,6 +44,28 @@ PROJECT_META_KEY = 'org.debops/project'
 VIEW_META_KEY = 'org.debops/view'
 
 
+def _supports_form_elicitation(capabilities):
+    """Whether the client declared form-mode elicitation support."""
+    elicitation = capabilities.get('elicitation')
+    if not isinstance(elicitation, dict):
+        return False
+    # An empty capability object declares form mode only
+    return 'form' in elicitation or not elicitation
+
+
+def _confirmation_message(tool_name, arguments):
+    """A human-readable summary of the operation to confirm."""
+    if tool_name == 'run':
+        message = ('Run playbook "{}" and change the managed hosts?'
+                   .format(arguments.get('playbook', '?')))
+        if arguments.get('limit'):
+            message += ' Limited to: {}.'.format(arguments['limit'])
+        return message
+    if tool_name == 'project_push':
+        return ("Push the project's committed history to its git origin?")
+    return 'Run the "{}" operation?'.format(tool_name)
+
+
 class RequestCancelled(Exception):
     """Raised by a tool when its request was cancelled by the client.
 
@@ -57,13 +79,18 @@ class RequestContext(object):
 
     Carries the request id and the transport-level notification channel
     (for server-initiated messages such as progress notifications), plus
-    the client's progress token when it asked for progress reports.
+    the client's progress token and capabilities from the request
+    '_meta'.
     """
 
-    def __init__(self, request_id, notify=None, progress_token=None):
+    def __init__(self, request_id, notify=None, progress_token=None,
+                 client_capabilities=None):
         self.request_id = request_id
         self.notify = notify
         self.progress_token = progress_token
+        self.client_capabilities = (client_capabilities
+                                    if isinstance(client_capabilities, dict)
+                                    else {})
 
 
 class ToolContext(object):
@@ -241,8 +268,11 @@ class McpServer(object):
         meta = message.get('_meta')
         progress_token = (meta.get('progressToken')
                           if isinstance(meta, dict) else None)
+        capabilities = (meta.get(CLIENT_CAPABILITIES_KEY)
+                        if isinstance(meta, dict) else None)
         context = RequestContext(request_id, notify=notify,
-                                 progress_token=progress_token)
+                                 progress_token=progress_token,
+                                 client_capabilities=capabilities)
 
         if is_notification:
             logger.info('Notification: %s', method)
@@ -369,6 +399,9 @@ class McpServer(object):
         # Log the argument keys only; values may contain secrets
         logger.debug('Calling tool %s with arguments: %s',
                      name, sorted(arguments))
+        gated = self._confirmation_gate(name, arguments, params, context)
+        if gated is not None:
+            return gated
         if not tool.needs_context:
             return tool.handler(arguments)
 
@@ -387,6 +420,68 @@ class McpServer(object):
             if request_id is not None:
                 with self._active_lock:
                     self._active_requests.pop(request_id, None)
+
+    def _confirmation_gate(self, name, arguments, params, context):
+        """Gate a tool on explicit user confirmation, via elicitation.
+
+        Returns None when the call may proceed, otherwise the result to
+        send back: an elicitation request ('input_required') when the
+        user still has to answer, or the refusal as a tool error. The
+        confirmation is a courtesy for the user, not a security
+        boundary — the client answers it; the 'project.mcp.execute'
+        policy remains the authoritative control.
+        """
+        if self.policy is None or name not in self.policy.confirm:
+            return None
+
+        # The retry of a confirmed call carries the user's answer
+        responses = params.get('inputResponses')
+        if isinstance(responses, dict) and 'confirmation' in responses:
+            answer = responses.get('confirmation') or {}
+            content = answer.get('content') or {}
+            if (answer.get('action') == 'accept'
+                    and content.get('confirmed') is True):
+                logger.notice('Tool %s confirmed by the user', name)
+                return None
+            logger.notice('Tool %s declined by the user', name)
+            return {'resultType': 'complete',
+                    'content': [{'type': 'text',
+                                 'text': 'The operation was declined '
+                                         'by the user.'}],
+                    'isError': True}
+
+        if not _supports_form_elicitation(context.client_capabilities):
+            # A client which cannot ask may not block the work; the
+            # skip is written to the audit log
+            logger.notice('Tool %s runs without user confirmation: '
+                          'the client cannot elicit', name)
+            return None
+
+        return {'resultType': 'input_required',
+                'inputRequests': {
+                    'confirmation': {
+                        'method': 'elicitation/create',
+                        'params': {
+                            'mode': 'form',
+                            'message': _confirmation_message(name,
+                                                             arguments),
+                            'requestedSchema': {
+                                'type': 'object',
+                                'properties': {
+                                    'confirmed': {
+                                        'type': 'boolean',
+                                        'title': 'Confirm',
+                                        'description':
+                                            'I understand and want to '
+                                            'proceed',
+                                        'default': False,
+                                    },
+                                },
+                                'required': ['confirmed'],
+                            },
+                        },
+                    },
+                }}
 
     def _resources_list(self, params, context):
         # The skills are static package content; they change only with

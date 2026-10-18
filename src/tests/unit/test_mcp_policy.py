@@ -109,6 +109,30 @@ class ToolAccessTestCase(unittest.TestCase):
         self.assertTrue(policy.is_tool_allowed('role_info'))
 
 
+class ConfirmationPolicyTestCase(unittest.TestCase):
+
+    def _policy(self, mcp_config):
+        return McpPolicy(FakeProject('/srv/projects/example',
+                                     raw_config={'project': {'mcp':
+                                                             mcp_config}}))
+
+    def test_default_confirmations(self):
+        policy = self._policy({})
+        self.assertEqual(policy.confirm, {'run', 'project_push'})
+
+    def test_confirm_list_overrides(self):
+        policy = self._policy({'confirm': ['run']})
+        self.assertEqual(policy.confirm, {'run'})
+
+    def test_confirm_empty_disables(self):
+        policy = self._policy({'confirm': []})
+        self.assertEqual(policy.confirm, set())
+
+    def test_confirm_string_normalized(self):
+        policy = self._policy({'confirm': 'run'})
+        self.assertEqual(policy.confirm, {'run'})
+
+
 class ContentPolicyTestCase(unittest.TestCase):
 
     def _policy(self, mcp_config):

@@ -369,6 +369,71 @@ def test_check_tool_runs_a_playbook_in_check_mode(run_debops, mcp_env,
     assert "hello from mcp" in text
 
 
+def test_run_asks_for_confirmation_via_stdio(run_debops, mcp_env,
+                                             project_dir):
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+
+    # 'run' is registered only when the project policy allows changes
+    confd = project_dir / ".debops" / "conf.d"
+    confd.mkdir(parents=True)
+    (confd / "mcp.toml").write_text('[project.mcp]\nexecute = "all"\n')
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+    playbooks = project_dir / "ansible" / "playbooks"
+    playbooks.mkdir(parents=True)
+    (playbooks / "custom.yml").write_text("""---
+- name: Test play
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Say hello
+      ansible.builtin.debug:
+        msg: hello from mcp
+""")
+
+    # The client declares form-mode elicitation support
+    elicit_meta = dict(REQUEST_META, **{
+            "io.modelcontextprotocol/clientCapabilities":
+            {"elicitation": {"form": {}}}})
+    requests = (
+        json.dumps({"jsonrpc": "2.0", "_meta": elicit_meta, "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "run",
+                               "arguments": {"playbook": "custom"}}}) + "\n"
+        # The retry carries the user's answer, with a fresh request id
+        + json.dumps({"jsonrpc": "2.0", "_meta": elicit_meta, "id": 2,
+                      "method": "tools/call",
+                      "params": {
+                          "name": "run",
+                          "arguments": {"playbook": "custom"},
+                          "inputResponses": {
+                              "confirmation": {
+                                  "action": "accept",
+                                  "content": {"confirmed": True}}}}})
+        + "\n"
+    )
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=requests)
+
+    assert result.returncode == 0
+    responses = {response["id"]: response
+                 for response in read_json_lines(result.stdout)}
+    first = responses[1]["result"]
+    assert first["resultType"] == "input_required"
+    confirmation = first["inputRequests"]["confirmation"]
+    assert confirmation["method"] == "elicitation/create"
+    assert confirmation["params"]["mode"] == "form"
+    assert "custom" in confirmation["params"]["message"]
+    second = responses[2]["result"]
+    assert second["isError"] is False
+    assert "hello from mcp" in second["content"][0]["text"]
+
+
 def test_secret_paths_via_stdio(run_debops, mcp_env, project_dir):
     secret = (project_dir / "ansible" / "secret" / "credentials"
               / "host1.example.com")
