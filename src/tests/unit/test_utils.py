@@ -125,3 +125,24 @@ def test_host_is_controller_rejects_other_systems(monkeypatch):
     monkeypatch.setattr(utils.distro, "id", fail)
 
     assert utils.host_is_controller() is False
+
+
+def test_set_process_name_roundtrip(tmp_path, monkeypatch):
+    """The Linux process name changes and can be restored."""
+    if utils.platform.system() != "Linux":
+        pytest.skip("process naming is Linux-only")
+    original = open("/proc/self/comm").read().strip()
+    try:
+        utils.set_process_name("debops-test")
+        assert open("/proc/self/comm").read().strip() == "debops-test"
+    finally:
+        utils.set_process_name(original)
+    assert open("/proc/self/comm").read().strip() == original
+
+
+def test_set_process_name_is_a_noop_off_linux(monkeypatch):
+    monkeypatch.setattr(utils.platform, "system", lambda: "Darwin")
+    # A no-op: no exception, and the name is untouched
+    before = open("/proc/self/comm").read().strip()
+    utils.set_process_name("debops-test")
+    assert open("/proc/self/comm").read().strip() == before

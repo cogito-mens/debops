@@ -4,6 +4,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 from .constants import DEBOPS_USER_HOME_DIR
+import ctypes
 import distro
 import os
 import platform
@@ -33,6 +34,23 @@ def strtobool(value):
     elif value in ("n", "no", "f", "false", "off", "0"):
         return False
     raise ValueError
+
+
+def set_process_name(name):
+    """Set the process name shown by 'top' and 'ps -o comm' (Linux).
+
+    The name is cosmetic, so a failure (a non-Linux platform, a
+    restricted environment) must never break the caller. The kernel
+    truncates the name to 15 bytes.
+    """
+    if platform.system() != 'Linux':
+        return
+    try:
+        libc = ctypes.CDLL(None)
+        # PR_SET_NAME = 15
+        libc.prctl(15, name.encode('utf-8'), 0, 0, 0)
+    except (AttributeError, OSError):
+        pass
 
 
 def write_file(path, content, overwrite=False):

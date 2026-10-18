@@ -18,10 +18,12 @@ from .mcp import client as mcp_client
 from .mcp.client import UnixClient
 from .mcp.transport import StdioTransport, UnixSocketTransport
 from .mcp.transport import bridge_stdio_to_unix, ping_unix
+from .utils import set_process_name
 from xdg.BaseDirectory import xdg_config_home
 import contextlib
 import json
 import logging
+import platform
 import getpass
 import sys
 import os
@@ -335,8 +337,13 @@ class Interpreter(object):
             print('Error:', errmsg, file=sys.stderr)
             sys.exit(1)
 
-        logger.notice('Serving project \'%s\' at %s, view \'%s\'',
-                      project.name, project.path, project.view)
+        set_process_name('debops-mcp')
+        logger.notice('Serving project \'%s\' at %s, view \'%s\' '
+                      '(pid %s)', project.name, project.path,
+                      project.view, os.getpid())
+        logger.notice('Interpreter: %s (%s %s)', sys.executable,
+                      platform.python_implementation(),
+                      platform.python_version())
         killswitch = KillSwitch()
         policy = McpPolicy(project)
         server = McpServer(project=project, policy=policy,
@@ -363,6 +370,7 @@ class Interpreter(object):
 
     def do_mcp_connect(self, args):
         self._mcp_refuse_if_disabled()
+        set_process_name('debops-mcp-conn')
         if args.raw and not (args.ping or args.call):
             print('Error: --raw only makes sense with --ping or --call',
                   file=sys.stderr)
@@ -508,6 +516,7 @@ class Interpreter(object):
 
     def do_mcp_inspect(self, args):
         self._mcp_refuse_if_disabled()
+        set_process_name('debops-mcp-conn')
         # With no selection, show the discovery summary
         nothing = not any((args.discover, args.tools, args.tool,
                            args.resources, args.prompts))
