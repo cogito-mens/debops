@@ -109,6 +109,26 @@ class ToolAccessTestCase(unittest.TestCase):
         self.assertTrue(policy.is_tool_allowed('role_info'))
 
 
+class ResourcePolicyTestCase(unittest.TestCase):
+
+    def _policy(self, mcp_config):
+        return McpPolicy(FakeProject('/srv/projects/example',
+                                     raw_config={'project': {'mcp':
+                                                             mcp_config}}))
+
+    def test_min_free_default(self):
+        self.assertEqual(self._policy({}).min_free_bytes,
+                         64 * 1024 * 1024)
+
+    def test_min_free_override(self):
+        self.assertEqual(self._policy({'min_free_mb': 128})
+                         .min_free_bytes, 128 * 1024 * 1024)
+
+    def test_min_free_bad_value_falls_back(self):
+        self.assertEqual(self._policy({'min_free_mb': 'lots'})
+                         .min_free_bytes, 64 * 1024 * 1024)
+
+
 class ConfirmationPolicyTestCase(unittest.TestCase):
 
     def _policy(self, mcp_config):

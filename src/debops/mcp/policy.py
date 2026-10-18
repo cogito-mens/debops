@@ -188,6 +188,16 @@ class McpPolicy(object):
             confirm = [confirm]
         self.confirm = set(str(name) for name in confirm or [])
 
+        # Free disk space the write operations require on the project's
+        # filesystem; below this they refuse, because a git operation
+        # which dies mid-write can leave a broken repository. An
+        # absolute floor: a percentage means nothing on its own
+        try:
+            self.min_free_bytes = (int(mcp_config.get('min_free_mb', 64))
+                                   * 1024 * 1024)
+        except (TypeError, ValueError):
+            self.min_free_bytes = 64 * 1024 * 1024
+
         # Which collection content the tools may serve. Bundled is the
         # packaged DebOps collection; external is anything else Ansible
         # can see. The project's own content is always allowed.

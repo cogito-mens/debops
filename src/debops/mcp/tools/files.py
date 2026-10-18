@@ -266,28 +266,33 @@ def tool_view_write(project, policy, arguments):
             # Atomic write: a temporary file in the same directory,
             # renamed
             directory = os.path.dirname(path)
-            os.makedirs(directory, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(dir=directory,
-                                       prefix='.view-write-')
-            done = False
             try:
-                with os.fdopen(fd, 'w') as fp:
-                    fp.write(content)
-                if mode is not None:
-                    os.chmod(tmp, mode)
-                elif old_mode is not None:
-                    # The rename would otherwise reset the permissions
-                    os.chmod(tmp, old_mode)
-                else:
-                    os.chmod(tmp, 0o644)
-                os.replace(tmp, path)
-                done = True
-            finally:
-                if not done:
-                    try:
-                        os.unlink(tmp)
-                    except OSError:
-                        pass
+                os.makedirs(directory, exist_ok=True)
+                fd, tmp = tempfile.mkstemp(dir=directory,
+                                           prefix='.view-write-')
+                done = False
+                try:
+                    with os.fdopen(fd, 'w') as fp:
+                        fp.write(content)
+                    if mode is not None:
+                        os.chmod(tmp, mode)
+                    elif old_mode is not None:
+                        # The rename would otherwise reset the
+                        # permissions
+                        os.chmod(tmp, old_mode)
+                    else:
+                        os.chmod(tmp, 0o644)
+                    os.replace(tmp, path)
+                    done = True
+                finally:
+                    if not done:
+                        try:
+                            os.unlink(tmp)
+                        except OSError:
+                            pass
+            except OSError as errmsg:
+                return error_result('cannot write {}: {}'.format(
+                        view_relative, errmsg))
             outcome = 'overwritten' if old_content is not None \
                 else 'created'
 
@@ -319,7 +324,11 @@ def tool_view_delete(project, policy, arguments):
             return error_result('file not found: ' + view_relative)
         if not os.path.isfile(path):
             return error_result('not a regular file: ' + view_relative)
-        os.unlink(path)
+        try:
+            os.unlink(path)
+        except OSError as errmsg:
+            return error_result('cannot delete {}: {}'.format(
+                    view_relative, errmsg))
         # The commit is part of the tool's contract, as for view_write
         project.commit(message='DebOps MCP: view_delete '
                        + view_relative)

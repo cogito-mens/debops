@@ -408,6 +408,32 @@ class ViewWriteTestCase(unittest.TestCase):
         response = self.write('playbooks/sub')
         self.assertTrue(response['isError'])
 
+    def test_disk_full_is_a_clean_refusal(self):
+        # Through the registered server, so the refusal is converted
+        # to a tool error instead of raising through the dispatch
+        self.project.config.raw['project'] = {
+                'mcp': {'min_free_mb': 2 ** 40}}
+        server = McpServer(project=self.project,
+                           policy=McpPolicy(self.project))
+        register_project_tools(server, roles_path=self.tmpdir)
+        response = server.handle({
+                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
+                'method': 'tools/call',
+                'params': {'name': 'view_write',
+                           'arguments': {'path': 'playbooks/x.yml',
+                                         'content': '---\n'}}})
+        result = response['result']
+        self.assertTrue(result['isError'])
+        self.assertIn('not enough free disk space',
+                      result['content'][0]['text'])
+
+    def test_write_failure_is_a_clean_error(self):
+        with mock.patch('debops.mcp.tools.files.os.replace',
+                        side_effect=OSError(28, 'No space left')):
+            response = self.write('playbooks/x.yml', content='---\n')
+        self.assertTrue(response['isError'])
+        self.assertIn('No space left', response['content'][0]['text'])
+
     # -- view_delete ---------------------------------------------------
 
     def delete(self, path):

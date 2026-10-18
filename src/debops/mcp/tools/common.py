@@ -8,6 +8,7 @@ import contextlib
 import fcntl
 import os
 import re
+import shutil
 import threading
 import yaml
 
@@ -146,6 +147,35 @@ class ReadWriteLock(object):
 PROJECT_LOCK = ReadWriteLock()
 
 
+class ProjectResourceError(RuntimeError):
+    """An exclusive operation refused before it started (disk full)."""
+
+
+def check_free_space(policy):
+    """Refuse when the project's filesystem is nearly full.
+
+    A write which dies mid-way — a git object, a checkout — can leave
+    state behind that a later commit would happily pick up. An absolute
+    floor is used: a percentage means nothing on its own.
+    """
+    min_free = getattr(policy, 'min_free_bytes', 64 * 1024 * 1024)
+    # The view root may not exist yet (a fresh skeleton); the
+    # filesystem of the nearest existing ancestor is the one being
+    # written to
+    path = policy.view_root
+    while not os.path.exists(path):
+        parent = os.path.dirname(path)
+        if parent == path:
+            return
+        path = parent
+    free = shutil.disk_usage(path).free
+    if free < min_free:
+        raise ProjectResourceError(
+                'not enough free disk space: {} MiB left, the policy '
+                'requires {} MiB (project.mcp.min_free_mb)'.format(
+                    free // (1024 * 1024), min_free // (1024 * 1024)))
+
+
 def _project_lock_path(project, policy):
     """The flock file for cross-process exclusion on this project."""
     git_dir = os.path.join(project.path, '.git')
@@ -185,7 +215,11 @@ def exclusive_project(project, policy, note=''):
     lock, in that order. On exit, pending changes are committed (when
     the project has automatic commits enabled, which is the default),
     so the tree stays clean by construction.
+
+    The operation is refused before it starts when the filesystem is
+    nearly full.
     """
+    check_free_space(policy)
     with PROJECT_LOCK.write():
         with project_flock(project, policy, exclusive=True):
             try:

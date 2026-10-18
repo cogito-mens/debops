@@ -22,7 +22,8 @@ from .files import (tool_config_get, tool_inventory_query,
 from .hosts import tool_ansible_facts, tool_ansible_ping
 from .playbooks import (COLLECTION_PLAYBOOKS, tool_playbook_info,
                         tool_playbooks)
-from .common import shared_project
+from .common import ProjectResourceError, shared_project
+from .common import error_result as _error_result
 from .project import tool_project_status
 from .roles import (COLLECTION_ROLES, project_role_paths, tool_role_argspec,
                     tool_role_defaults, tool_role_files, tool_role_handlers,
@@ -126,6 +127,16 @@ def _wrap_shared_lock(project, policy, handler):
         with shared_project(project, policy):
             return handler(arguments, *rest)
     return locked
+
+
+def _wrap_resource_errors(handler):
+    """Turn a pre-start refusal (disk full, ...) into a tool error."""
+    def wrapped(arguments, *rest):
+        try:
+            return handler(arguments, *rest)
+        except ProjectResourceError as errmsg:
+            return _error_result(str(errmsg))
+    return wrapped
 
 
 def register_project_tools(server, roles_path=COLLECTION_ROLES,
@@ -644,6 +655,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
     for entry in tools:
         name, description, schema, handler = entry[:4]
         needs_context = entry[4] if len(entry) > 4 else False
+        handler = _wrap_resource_errors(handler)
         if name in READ_LOCKED_TOOLS:
             handler = _wrap_shared_lock(project, policy, handler)
         if policy is None or policy.is_tool_allowed(name):
