@@ -297,3 +297,30 @@ def tool_view_write(project, policy, arguments):
         return text_result('{}: {} ({} bytes, mode {:04o})'.format(
                 outcome, view_relative, size,
                 stat.S_IMODE(os.stat(path).st_mode)))
+
+
+def tool_view_delete(project, policy, arguments):
+    relative = str(arguments.get('path') or '').strip('/')
+
+    # Deletions are recoverable and attributable only with git
+    if not _is_git_tracked_project(project):
+        return error_result('the project directory is not a git '
+                            'repository; initialize it ("debops project '
+                            'init") so that changes can be committed')
+
+    try:
+        path, view_relative = _authorized_write_path(policy, relative)
+    except ValueError as errmsg:
+        return error_result(str(errmsg))
+
+    with exclusive_project(project, policy,
+                           note='view_delete ' + view_relative):
+        if not os.path.lexists(path):
+            return error_result('file not found: ' + view_relative)
+        if not os.path.isfile(path):
+            return error_result('not a regular file: ' + view_relative)
+        os.unlink(path)
+        # The commit is part of the tool's contract, as for view_write
+        project.commit(message='DebOps MCP: view_delete '
+                       + view_relative)
+        return text_result('deleted: {}'.format(view_relative))

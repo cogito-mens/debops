@@ -161,6 +161,7 @@ TOOL_CALL_EXAMPLES = {
     'project_read': ['path=ansible/inventory/hosts'],
     'view_write': ['path=resources/scripts/hello.sh '
                    'content="#!/bin/sh" mode=0755'],
+    'view_delete': ['path=playbooks/deploy.yml'],
     'config_get': ['key=project.default_view'],
     'inventory_query': ['action=graph',
                         'action=host host=web1.example.com'],

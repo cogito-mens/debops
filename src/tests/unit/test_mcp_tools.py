@@ -407,6 +407,55 @@ class ViewWriteTestCase(unittest.TestCase):
         response = self.write('playbooks/sub')
         self.assertTrue(response['isError'])
 
+    # -- view_delete ---------------------------------------------------
+
+    def delete(self, path):
+        from debops.mcp.tools.files import tool_view_delete
+        return tool_view_delete(self.project, self.policy,
+                                {'path': path})
+
+    def test_delete(self):
+        self.write('playbooks/deploy.yml', content='---\n')
+        response = self.delete('playbooks/deploy.yml')
+        self.assertIn('deleted: playbooks/deploy.yml',
+                      self.result_text(response))
+        self.assertFalse(os.path.exists(
+                os.path.join(self.view_root, 'playbooks', 'deploy.yml')))
+        self.assertEqual(self.commits[-1],
+                         'DebOps MCP: view_delete playbooks/deploy.yml')
+
+    def test_delete_missing_file_is_an_error(self):
+        response = self.delete('playbooks/nosuch.yml')
+        self.assertTrue(response['isError'])
+        self.assertIn('not found', response['content'][0]['text'])
+
+    def test_delete_refuses_directories(self):
+        os.makedirs(os.path.join(self.view_root, 'playbooks', 'sub'))
+        response = self.delete('playbooks/sub')
+        self.assertTrue(response['isError'])
+
+    def test_delete_escape_is_rejected(self):
+        response = self.delete('../outside.yml')
+        self.assertTrue(response['isError'])
+
+    def test_delete_secret_is_never_allowed(self):
+        response = self.delete('secret/password')
+        self.assertTrue(response['isError'])
+        self.assertIn('denied by policy',
+                      response['content'][0]['text'])
+
+    def test_delete_outside_the_allowlist_is_rejected(self):
+        response = self.delete('inventory/hosts')
+        self.assertTrue(response['isError'])
+        self.assertIn('not writable', response['content'][0]['text'])
+
+    def test_delete_non_git_project_is_refused(self):
+        shutil.rmtree(os.path.join(self.tmpdir, '.git'))
+        response = self.delete('playbooks/deploy.yml')
+        self.assertTrue(response['isError'])
+        self.assertIn('not a git repository',
+                      response['content'][0]['text'])
+
 
 class ToolsTestCase(unittest.TestCase):
 
@@ -584,7 +633,7 @@ class ToolsTestCase(unittest.TestCase):
                           'role_argspec', 'role_defaults', 'role_files',
                           'role_handlers', 'role_info', 'role_tasks',
                           'role_templates', 'role_variables',
-                          'secret_paths', 'view_write'])
+                          'secret_paths', 'view_delete', 'view_write'])
 
     def test_tool_annotations(self):
         # 'run' is only registered when the policy allows changes
