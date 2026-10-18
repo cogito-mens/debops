@@ -273,10 +273,21 @@ def _execute_playbook(project, policy, arguments, context, check,
                                 line.rstrip(),
                                 progress=next(progress_counter))
 
+            started = time.monotonic()
             output, returncode, status = run_cancellable(
                     command, env=env, cwd=project.path, context=context,
                     timeout=policy.execute_timeout, on_line=on_line,
                     enabled_check=enabled_check, on_disabled=on_disabled)
+            # The outcome completes the audit trail the start lines open
+            ended = {
+                'done': 'finished',
+                'cancelled': 'cancelled by the client',
+                'timeout': 'killed: it exceeded the timeout',
+                'disabled': 'terminated: the kill switch was flipped',
+            }[status]
+            logger.notice('Playbook execution %s after %.0f s '
+                          '(exit code %s)', ended,
+                          time.monotonic() - started, returncode)
         finally:
             if unlocked:
                 inventory.lock()

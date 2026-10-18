@@ -138,6 +138,25 @@ class ExecuteTestCase(unittest.TestCase):
         hook_names = [call[0][1] for call in hooks.call_args_list]
         self.assertEqual(hook_names, ['pre-check', 'post-check'])
 
+    def test_completion_is_logged(self):
+        with self.assertLogs('debops.mcp.tools.execute',
+                             level='NOTICE') as recorded:
+            result, _inventory, _hooks, _popen = self.call_execute()
+        self.assertFalse(result['isError'])
+        self.assertTrue(any('finished' in line and 'exit code 0' in line
+                            for line in recorded.output),
+                        recorded.output)
+
+    def test_cancellation_is_logged(self):
+        self.context.cancelled.set()
+        with self.assertLogs('debops.mcp.tools.execute',
+                             level='NOTICE') as recorded:
+            with self.assertRaises(RequestCancelled):
+                self.call_execute()
+        self.assertTrue(any('cancelled by the client' in line
+                            for line in recorded.output),
+                        recorded.output)
+
     def test_failing_run_reports_the_exit_code(self):
         from debops.mcp.tools.execute import _execute_playbook
         with mock.patch(
