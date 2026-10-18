@@ -12,6 +12,7 @@ fixture Ansible Collection.
 from debops.mcp.policy import McpPolicy
 from debops.mcp.server import McpServer, PROTOCOL_VERSION
 from debops.mcp.tools import register_project_tools
+from debops.mcp.tools.playbooks import playbook_summary
 import os
 import shutil
 import tempfile
@@ -763,6 +764,50 @@ class ToolsTestCase(unittest.TestCase):
         self.assertTrue(response['result']['isError'])
 
     # -- playbooks ----------------------------------------------------------
+
+    def _write_playbook(self, name, text):
+        path = os.path.join(self.tmpdir, name)
+        with open(path, 'w') as fp:
+            fp.write(text)
+        return path
+
+    def test_playbook_summary_single_play(self):
+        path = self._write_playbook('single.yml', '''---
+- name: Only play
+  hosts: all
+''')
+        self.assertEqual(playbook_summary(path),
+                         'Only play (hosts: all)')
+
+    def test_playbook_summary_multiple_plays(self):
+        path = self._write_playbook('multi.yml', '''---
+- name: First play
+  hosts: all
+- name: Second play
+  hosts: web
+- hosts: db
+''')
+        self.assertEqual(playbook_summary(path),
+                         'First play (+2 plays) (hosts: all, web, db)')
+
+    def test_playbook_summary_unnamed_plays(self):
+        path = self._write_playbook('unnamed.yml', '''---
+- hosts: all
+- hosts: web
+''')
+        self.assertEqual(playbook_summary(path),
+                         '2 plays (hosts: all, web)')
+
+    def test_playbook_summary_import_only(self):
+        path = self._write_playbook('imports.yml', '''---
+- import_playbook: a.yml
+- import_playbook: b.yml
+''')
+        self.assertEqual(playbook_summary(path), 'imports 2 playbooks')
+        path = self._write_playbook('one-import.yml', '''---
+- import_playbook: a.yml
+''')
+        self.assertEqual(playbook_summary(path), 'imports 1 playbook')
 
     def test_playbooks_list(self):
         response = self.call_tool('playbooks')

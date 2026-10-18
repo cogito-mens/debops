@@ -125,16 +125,34 @@ def list_playbooks(root):
 
 
 def playbook_summary(path):
-    """A one-line summary of a playbook: first play name, host groups."""
+    """A one-line summary of a playbook: plays, host groups, imports.
+
+    A multi-play playbook is named by its first play with a play count;
+    a playbook of pure 'import_playbook' statements is described by its
+    imports.
+    """
     try:
         with open(path) as fp:
-            plays, _roles, _imports, groups = parse_playbook(fp.read())
+            plays, _roles, imports, groups = parse_playbook(fp.read())
     except (OSError, ValueError):
         return ''
-    name = plays[0]['name'] if plays else ''
-    if name and groups:
-        return '{} (hosts: {})'.format(name, ', '.join(groups))
-    return name or ', '.join(groups)
+    parts = []
+    if plays:
+        name = plays[0]['name']
+        if len(plays) > 1:
+            if name:
+                parts.append('{} (+{} plays)'.format(name,
+                                                     len(plays) - 1))
+            else:
+                parts.append('{} plays'.format(len(plays)))
+        elif name:
+            parts.append(name)
+    if groups:
+        parts.append('(hosts: {})'.format(', '.join(groups)))
+    if not plays and imports:
+        parts.append('imports {} playbook{}'.format(
+                len(imports), '' if len(imports) == 1 else 's'))
+    return ' '.join(parts)
 
 
 def target_form(relative_path):
