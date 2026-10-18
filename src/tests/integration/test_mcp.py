@@ -416,6 +416,68 @@ def test_check_runs_multiple_playbooks_in_order(run_debops, mcp_env,
     assert result_text.startswith("# debops check first second")
 
 
+def test_write_check_run_loop_via_stdio(run_debops, mcp_env,
+                                        project_dir):
+    """The loop the write tools exist for: write a playbook, see it
+    listed, run it in check mode; the writes are committed."""
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+
+    # The write tools require a git-tracked project
+    env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1",
+               GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="t@example.org",
+               GIT_COMMITTER_NAME="Test",
+               GIT_COMMITTER_EMAIL="t@example.org")
+    subprocess.run(["git", "init", "-q"], cwd=str(project_dir), env=env,
+                   check=True)
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+
+    playbook = """---
+- name: Written by the agent
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Say hi
+      ansible.builtin.debug:
+        msg: written by mcp
+"""
+
+    def call(name, arguments):
+        # Dependent steps go in separate invocations: the server
+        # handles a batch concurrently, with no ordering guarantee
+        request = json.dumps({
+                "jsonrpc": "2.0", "_meta": REQUEST_META, "id": 1,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments}}) + "\n"
+        result = run_debops("mcp", "serve", cwd=str(project_dir),
+                            env=mcp_env, input_text=request)
+        assert result.returncode == 0
+        (response,) = read_json_lines(result.stdout)
+        return response["result"]
+
+    written = call("view_write", {"path": "playbooks/written.yml",
+                                  "content": playbook})
+    assert "created: playbooks/written.yml" in written["content"][0]["text"]
+    listed = call("playbooks", {"filter": "written"})
+    assert "written" in listed["content"][0]["text"]
+    checked = call("check", {"playbook": "written"})
+    assert checked["isError"] is False
+    assert "written by mcp" in checked["content"][0]["text"]
+
+    # The write was committed with MCP provenance
+    log = subprocess.run(["git", "log", "--format=%s", "-1"],
+                         cwd=str(project_dir), env=env,
+                         capture_output=True, text=True)
+    assert "DebOps MCP: view_write playbooks/written.yml" in log.stdout
+
+
 def test_run_asks_for_confirmation_via_stdio(run_debops, mcp_env,
                                              project_dir):
     if shutil.which("ansible-playbook") is None:
