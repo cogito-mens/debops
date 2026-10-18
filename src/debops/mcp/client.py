@@ -87,6 +87,21 @@ class UnixClient(object):
         """Send one request; return the parsed response."""
         return json.loads(self.request_raw(method, params))
 
+    @property
+    def inflight_id(self):
+        """The id of the most recently sent request."""
+        return self._next_id - 1
+
+    def notify(self, method, params=None):
+        """Send a notification; no response is expected or read."""
+        self._connect()
+        message = {'jsonrpc': '2.0', 'method': method,
+                   '_meta': request_meta(self._capabilities)}
+        if params is not None:
+            message['params'] = params
+        self._connection.sendall(json.dumps(message).encode('utf-8')
+                                 + b'\n')
+
     def close(self):
         if self._connection is not None:
             self._connection.close()

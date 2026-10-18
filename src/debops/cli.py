@@ -381,7 +381,7 @@ class Interpreter(object):
             sys.exit(2)
         if args.call:
             self._mcp_call(args.socket, args.call, args.arguments,
-                           args.raw)
+                           args.raw, timeout=args.timeout)
             return
         if not args.ping:
             try:
@@ -395,7 +395,9 @@ class Interpreter(object):
 
         started = time.monotonic()
         with _mcp_client_errors():
-            raw = ping_unix(args.socket)
+            raw = ping_unix(args.socket,
+                            timeout=args.timeout if args.timeout
+                            is not None else 5)
         rtt = time.monotonic() - started
 
         if args.raw:
@@ -428,7 +430,8 @@ class Interpreter(object):
         print('    capabilities: {}'.format(capabilities or '(none)'))
         print('    round-trip: {:.0f} ms'.format(rtt * 1000))
 
-    def _mcp_call(self, socket_path, tool_name, pairs, raw):
+    def _mcp_call(self, socket_path, tool_name, pairs, raw,
+                  timeout=None):
         """Call a tool on a server and print its result ('--call')."""
         try:
             arguments = mcp_client.parse_call_arguments(pairs)
@@ -437,14 +440,30 @@ class Interpreter(object):
             sys.exit(2)
 
         # Declaring elicitation support lets gated tools (a playbook run,
-        # a push) ask for confirmation, which we prompt for below
-        client = UnixClient(socket_path,
+        # a push) ask for confirmation, which we prompt for below.
+        # Executions run long, so there is no client-side timeout by
+        # default; the server bounds them with 'execute_timeout'
+        client = UnixClient(socket_path, timeout=timeout,
                             capabilities={'elicitation': {'form': {}}})
         try:
             with _mcp_client_errors():
                 params = {'name': tool_name, 'arguments': arguments}
                 while True:
-                    response = client.request('tools/call', params)
+                    try:
+                        response = client.request('tools/call', params)
+                    except KeyboardInterrupt:
+                        # Tell the server to cancel the in-flight
+                        # request instead of letting the work run on
+                        try:
+                            client.notify('notifications/cancelled',
+                                          {'requestId':
+                                           client.inflight_id})
+                        except Exception:
+                            # Best effort; the client is exiting anyway
+                            pass
+                        print('Interrupted; asked the server to cancel '
+                              'the request', file=sys.stderr)
+                        sys.exit(130)
                     if 'error' in response:
                         print('Error: the server returned an error: {}'
                               .format(response['error'].get('message')),
@@ -461,8 +480,13 @@ class Interpreter(object):
                         break
                     if result.get('resultType') != 'input_required':
                         break
-                    answers = self._mcp_answer_elicitations(
-                            result.get('inputRequests', {}))
+                    try:
+                        answers = self._mcp_answer_elicitations(
+                                result.get('inputRequests', {}))
+                    except KeyboardInterrupt:
+                        # Nothing in flight; just leave
+                        print(file=sys.stderr)
+                        sys.exit(130)
                     if answers is None:
                         sys.exit(1)
                     params = {'name': tool_name, 'arguments': arguments,

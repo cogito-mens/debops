@@ -248,6 +248,15 @@ class UnixClientTestCase(unittest.TestCase):
         response = client.request_unix(self.path, 'server/discover')
         self.assertIn(b'supportedVersions', response)
 
+    def test_notify_does_not_disturb_requests(self):
+        with client.UnixClient(self.path) as connection:
+            connection.notify('notifications/cancelled',
+                              {'requestId': 'nosuch'})
+            response = connection.request('tools/list')
+        # The notification consumed no request id and no response slot
+        self.assertEqual(response['id'], 1)
+        self.assertEqual(response['result']['tools'], [])
+
     def test_connection_error(self):
         with self.assertRaises(ConnectionError):
             client.request_unix(os.path.join(self.tmpdir, 'absent.sock'),

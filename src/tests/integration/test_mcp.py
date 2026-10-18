@@ -714,6 +714,94 @@ def test_connect_call_asks_for_confirmation(run_debops, mcp_env,
         thread.join(timeout=5)
 
 
+def test_connect_call_timeout(run_debops, mcp_env, tmp_path):
+    socket_path = str(tmp_path / "server.sock")
+    server = McpServer()
+
+    def slow(arguments, context):
+        # A slow tool which notices cancellation and reports
+        if context.cancelled.wait(3):
+            raise RequestCancelled()
+        return {"content": [{"type": "text", "text": "finally"}],
+                "isError": False}
+
+    server.register_tool("slow", "A slow tool.", {"type": "object"},
+                         slow, needs_context=True)
+    transport = UnixSocketTransport(socket_path)
+    thread = threading.Thread(target=transport.serve, args=(server,),
+                              daemon=True)
+    thread.start()
+    try:
+        for _ in range(500):
+            if os.path.exists(socket_path):
+                break
+            time.sleep(0.01)
+
+        # With a timeout, the client gives up while the tool runs on
+        result = run_debops("mcp", "connect", socket_path,
+                            "--call", "slow", "--timeout", "0.5",
+                            env=mcp_env)
+        assert result.returncode == 1
+        assert "no response within" in result.stderr
+
+        # Without one, the client waits for the tool to finish
+        result = run_debops("mcp", "connect", socket_path,
+                            "--call", "slow", env=mcp_env)
+        assert result.returncode == 0
+        assert "finally" in result.stdout
+    finally:
+        transport.shutdown()
+        thread.join(timeout=5)
+
+
+def test_connect_call_interrupt_cancels(debops_source_dir, mcp_env,
+                                        tmp_path):
+    socket_path = str(tmp_path / "server.sock")
+    server = McpServer()
+    cancelled = threading.Event()
+
+    def slow(arguments, context):
+        if context.cancelled.wait(30):
+            cancelled.set()
+            raise RequestCancelled()
+        return {"content": [{"type": "text", "text": "finally"}],
+                "isError": False}
+
+    server.register_tool("slow", "A slow tool.", {"type": "object"},
+                         slow, needs_context=True)
+    transport = UnixSocketTransport(socket_path)
+    thread = threading.Thread(target=transport.serve, args=(server,),
+                              daemon=True)
+    thread.start()
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+            [debops_source_dir,
+             env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    env.update(mcp_env)
+    try:
+        for _ in range(500):
+            if os.path.exists(socket_path):
+                break
+            time.sleep(0.01)
+
+        process = subprocess.Popen(
+                [sys.executable, "-m", "debops", "mcp", "connect",
+                 socket_path, "--call", "slow"],
+                env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE)
+        time.sleep(1)
+        process.send_signal(signal.SIGINT)
+        _stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 130
+        assert b"asked the server to cancel" in stderr
+        # The cancellation reached the server: the tool noticed
+        assert cancelled.wait(10)
+    finally:
+        transport.shutdown()
+        thread.join(timeout=5)
+
+
 def test_connect_ping_missing_socket(run_debops, mcp_env, tmp_path):
     result = run_debops("mcp", "connect", str(tmp_path / "nosuch.sock"),
                         "--ping", env=mcp_env)

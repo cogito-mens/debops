@@ -464,6 +464,12 @@ Commands:
         parser.add_argument('arguments', type=str, nargs='*',
                             metavar='key=value',
                             help='arguments for --call')
+        parser.add_argument('--timeout', dest='timeout', type=float,
+                            metavar='SECONDS',
+                            help='how long to wait for the server '
+                                 '(default: 5 s for --ping; no limit '
+                                 'for --call, Ctrl-C cancels the '
+                                 'request on the server)')
         parser.add_argument('--raw', dest='raw', action='store_true',
                             help='print the server response as received '
                                  '(only with --ping or --call)')
