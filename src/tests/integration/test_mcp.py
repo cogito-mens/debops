@@ -91,15 +91,26 @@ def test_serve_stdio_reports_parse_errors(run_debops, mcp_env,
 
 def test_serve_stdio_reports_unknown_methods(run_debops, mcp_env,
                                              project_dir):
-    # prompts/* are not implemented (skills are served as resources)
     request = (json.dumps({"jsonrpc": "2.0", "_meta": REQUEST_META,
-                           "id": 5, "method": "prompts/list"}) + "\n")
+                           "id": 5, "method": "prompts/get",
+                           "params": {"name": "nosuch"}}) + "\n")
     result = run_debops("mcp", "serve", cwd=str(project_dir),
                         env=mcp_env, input_text=request)
 
     assert result.returncode == 0
     (response,) = read_json_lines(result.stdout)
     assert response["id"] == 5
+    assert response["error"]["code"] == -32602
+
+    # A truly unknown method is still reported
+    request = (json.dumps({"jsonrpc": "2.0", "_meta": REQUEST_META,
+                           "id": 6, "method": "nosuch/method"}) + "\n")
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=request)
+
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    assert response["id"] == 6
     assert response["error"]["code"] == -32601
 
 

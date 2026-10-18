@@ -214,6 +214,16 @@ class McpPolicy(object):
                           'bundled=%s external=%s',
                           self.bundled_content, self.external_content)
 
+        # The project's own MCP content ('.debops/mcp/skills/' and
+        # '.debops/mcp/prompts/') is served when present; the directory
+        # is the opt-in
+        content = mcp_config.get('project_content', True)
+        if isinstance(content, str):
+            content = strtobool(content)
+        self.project_content = bool(content)
+        if not self.project_content:
+            logger.notice('Project MCP content disabled by policy')
+
         # A glob allowlist of hosts the exec tools may contact; empty
         # means every host in the inventory is allowed
         self.ansible_hosts = [str(entry) for entry in

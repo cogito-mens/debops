@@ -107,6 +107,48 @@ class SkillLibraryTestCase(unittest.TestCase):
         self.assertIsNone(self.library.read('skill://nosuch'))
 
 
+class ProjectSkillsTestCase(unittest.TestCase):
+    """Project skills merge with the package skills and shadow them."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-pskills-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        self.package = os.path.join(self.tmpdir, 'package')
+        self.project = os.path.join(self.tmpdir, 'project')
+        for root, name, description in (
+                (self.package, 'shared', 'The packaged skill'),
+                (self.package, 'packaged', 'Only in the package'),
+                (self.project, 'shared', 'The project override'),
+                (self.project, 'local', 'Only in the project')):
+            os.makedirs(os.path.join(root, name))
+            with open(os.path.join(root, name, 'SKILL.md'), 'w') as fp:
+                fp.write('---\nname: {}\ndescription: {}\n---\n\n'
+                         '# {}\n'.format(name, description, name))
+        self.library = SkillLibrary(self.package,
+                                    project_path=self.project)
+
+    def test_list_merges_and_shadows(self):
+        skills = {skill['name']: skill for skill in self.library.list()}
+        self.assertEqual(sorted(skills),
+                         ['local', 'packaged', 'shared'])
+        # The project skill shadows the packaged one
+        self.assertEqual(skills['shared']['description'],
+                         'The project override')
+
+    def test_read_prefers_the_project(self):
+        content = self.library.read('skill://shared')
+        self.assertIn('The project override',
+                      content.split('description: ')[1])
+        # Package-only skills still resolve
+        self.assertIn('packaged',
+                      self.library.read('skill://packaged'))
+
+    def test_no_project_path(self):
+        library = SkillLibrary(self.package)
+        names = [skill['name'] for skill in library.list()]
+        self.assertEqual(sorted(names), ['packaged', 'shared'])
+
+
 class ServerResourcesTestCase(unittest.TestCase):
 
     def setUp(self):

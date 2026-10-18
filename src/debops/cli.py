@@ -12,6 +12,7 @@ from .ansibleplaybookrunner import AnsiblePlaybookRunner
 from .envrunner import EnvRunner
 from .mcp.server import McpServer
 from .mcp.policy import McpPolicy, KillSwitch
+from .mcp.prompts import PromptLibrary
 from .mcp.skills import SkillLibrary
 from .mcp.tools import register_project_tools
 from .mcp import client as mcp_client
@@ -346,8 +347,18 @@ class Interpreter(object):
                       platform.python_version())
         killswitch = KillSwitch()
         policy = McpPolicy(project)
+        project_content = None
+        prompts = None
+        if policy.project_content:
+            project_content = os.path.join(project.path, '.debops', 'mcp')
+            prompts = PromptLibrary(os.path.join(project_content,
+                                                 'prompts'))
         server = McpServer(project=project, policy=policy,
-                           skills=SkillLibrary(), killswitch=killswitch)
+                           skills=SkillLibrary(
+                               project_path=(os.path.join(project_content,
+                                                          'skills')
+                                             if project_content else None)),
+                           prompts=prompts, killswitch=killswitch)
         register_project_tools(server,
                                enabled_check=killswitch.is_enabled)
         try:

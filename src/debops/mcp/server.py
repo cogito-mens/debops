@@ -168,7 +168,7 @@ class McpServer(object):
     """Dispatch MCP requests to their handlers."""
 
     def __init__(self, name='debops', version=None, project=None,
-                 policy=None, skills=None, killswitch=None):
+                 policy=None, skills=None, prompts=None, killswitch=None):
         self.name = name
         self.version = version or __version__
         # The project directory the server is confined to; tools resolve
@@ -177,6 +177,8 @@ class McpServer(object):
         self.policy = policy
         # The skill library served as resources; None when absent
         self.skills = skills
+        # The prompt library; None when absent
+        self.prompts = prompts
         # The kill switch; None means always enabled
         self.killswitch = killswitch
         self.tools = {}
@@ -193,6 +195,9 @@ class McpServer(object):
         if self.skills is not None:
             self._methods['resources/list'] = self._resources_list
             self._methods['resources/read'] = self._resources_read
+        if self.prompts is not None:
+            self._methods['prompts/list'] = self._prompts_list
+            self._methods['prompts/get'] = self._prompts_get
 
     def register_tool(self, name, description, input_schema, handler,
                       output_schema=None, needs_context=False,
@@ -370,6 +375,11 @@ class McpServer(object):
         capabilities = {'tools': {}}
         if self.skills is not None:
             capabilities['resources'] = {}
+        # The prompts are project content, so the capability follows the
+        # directory at call time
+        if (self.prompts is not None and self.prompts.available()
+                and self.prompts.list()):
+            capabilities['prompts'] = {}
         return {
             'supportedVersions': [PROTOCOL_VERSION],
             'capabilities': capabilities,
@@ -495,6 +505,31 @@ class McpServer(object):
                         },
                     },
                 }}
+
+    def _prompts_list(self, params, context):
+        return {'prompts': self.prompts.list(),
+                'ttlMs': 60000, 'cacheScope': 'private'}
+
+    def _prompts_get(self, params, context):
+        name = params.get('name')
+        if not isinstance(name, str) or not name:
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_PARAMS, 'Invalid params',
+                    data={'details': "missing prompt 'name'"})
+        arguments = params.get('arguments', {})
+        if not isinstance(arguments, dict):
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_PARAMS, 'Invalid params',
+                    data={'details': "'arguments' must be an object"})
+        try:
+            rendered = self.prompts.render(name, arguments)
+        except ValueError as errmsg:
+            raise rpc.JsonRpcError(rpc.INVALID_PARAMS, 'Invalid params',
+                                   data={'details': str(errmsg)})
+        return {'description': rendered['description'],
+                'messages': [{'role': 'user',
+                              'content': {'type': 'text',
+                                          'text': rendered['text']}}]}
 
     def _resources_list(self, params, context):
         # The skills are static package content; they change only with

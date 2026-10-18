@@ -51,18 +51,32 @@ def _parse_frontmatter(path):
 
 
 class SkillLibrary(object):
-    """List and read the skills shipped with the package."""
+    """List and read skills: the project's own, then the package's.
 
-    def __init__(self, path=None):
+    A project skill ('.debops/mcp/skills/<name>/') shadows a package
+    skill of the same name, the way project roles shadow collection
+    roles.
+    """
+
+    def __init__(self, path=None, project_path=None):
         self.path = path or os.path.join(DEBOPS_PACKAGE_DATA, 'skills')
+        self.project_path = project_path
 
-    def list(self):
-        """The skills as MCP resource descriptors."""
-        skills = []
-        if not os.path.isdir(self.path):
+    @property
+    def _roots(self):
+        roots = []
+        if self.project_path is not None:
+            roots.append(self.project_path)
+        roots.append(self.path)
+        return roots
+
+    def _list_dir(self, path):
+        """The valid skills of one directory, as name → descriptor."""
+        skills = {}
+        if not os.path.isdir(path):
             return skills
-        for entry in sorted(os.listdir(self.path)):
-            skill_dir = os.path.join(self.path, entry)
+        for entry in sorted(os.listdir(path)):
+            skill_dir = os.path.join(path, entry)
             skill_file = os.path.join(skill_dir, 'SKILL.md')
             if not os.path.isdir(skill_dir):
                 continue
@@ -85,13 +99,25 @@ class SkillLibrary(object):
                 logger.warning('Ignoring skill %s: no description in the '
                                'frontmatter', entry)
                 continue
-            skills.append({
+            skills[entry] = {
                 'uri': SKILL_URI_PREFIX + entry,
                 'name': entry,
                 'description': str(meta.get('description', '')),
                 'mimeType': 'text/markdown',
-            })
+            }
         return skills
+
+    def list(self):
+        """The skills as MCP resource descriptors, project first."""
+        skills = {}
+        for root in self._roots:
+            for name, descriptor in self._list_dir(root).items():
+                if name not in skills:
+                    skills[name] = descriptor
+                else:
+                    logger.notice('Skill %s in %s shadows the packaged '
+                                  'one', name, root)
+        return [skills[name] for name in sorted(skills)]
 
     def read(self, uri):
         """Read a 'skill://' URI: a SKILL.md or a file under its skill.
@@ -105,10 +131,13 @@ class SkillLibrary(object):
         name = parts[0]
         if not SKILL_NAME_PATTERN.match(name):
             raise ValueError('invalid skill name: ' + name)
-        skill_dir = os.path.join(self.path, name)
         relpath = 'SKILL.md' if len(parts) == 1 else '/'.join(parts[1:])
-        target = confine_under(skill_dir, relpath)
-        if not os.path.isfile(target):
-            return None
-        with open(target) as fp:
-            return fp.read()
+        for root in self._roots:
+            skill_dir = os.path.join(root, name)
+            if not os.path.isdir(skill_dir):
+                continue
+            target = confine_under(skill_dir, relpath)
+            if os.path.isfile(target):
+                with open(target) as fp:
+                    return fp.read()
+        return None

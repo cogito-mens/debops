@@ -216,6 +216,15 @@ class ContentPolicyTestCase(unittest.TestCase):
         self.assertFalse(policy.bundled_content)
         self.assertTrue(policy.external_content)
 
+    def test_project_content_default_on(self):
+        self.assertTrue(self._policy({}).project_content)
+
+    def test_project_content_off(self):
+        self.assertFalse(self._policy({'project_content': False})
+                         .project_content)
+        self.assertFalse(self._policy({'project_content': 'no'})
+                         .project_content)
+
 
 class KillSwitchTestCase(unittest.TestCase):
 
