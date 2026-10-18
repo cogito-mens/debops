@@ -182,6 +182,11 @@ class McpPolicy(object):
                           'bundled=%s external=%s',
                           self.bundled_content, self.external_content)
 
+        # A glob allowlist of hosts the exec tools may contact; empty
+        # means every host in the inventory is allowed
+        self.exec_hosts = [str(entry) for entry in
+                           mcp_config.get('exec_hosts', []) or []]
+
         options = mcp_config.get('execute_options')
         if options is None:
             options = EXECUTE_OPTIONS

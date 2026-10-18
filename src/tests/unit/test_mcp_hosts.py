@@ -5,7 +5,7 @@
 """Tests for the host query tools.
 
 Written with 'unittest' so that the suite runs under pytest without extra
-dependencies. The ansible subprocess is mocked.
+dependencies. The ansible subprocesses are mocked.
 """
 
 from debops.mcp.policy import McpPolicy
@@ -61,50 +61,53 @@ class HostsTestCase(unittest.TestCase):
             'jsonrpc': '2.0', 'id': request_id, 'method': 'tools/call',
             'params': {'name': name, 'arguments': arguments}})
 
-    def _popen(self, **kwargs):
-        return mock.patch(
-                'debops.mcp.tools.execute.subprocess.Popen', **kwargs)
+    def _run(self, name, arguments, module_output=PING_OK, module_rc=0,
+             resolved=('web1',), poll=None):
+        """Call a tool with both ansible subprocesses mocked."""
+        list_result = mock.Mock()
+        list_result.returncode = 0
+        list_result.stdout = ('  hosts ({}):\n'.format(len(resolved))
+                              + ''.join('    {}\n'.format(host)
+                                        for host in resolved))
+        list_result.stderr = ''
+        with mock.patch('debops.mcp.tools.execute.subprocess.Popen') \
+                as popen, \
+                mock.patch('debops.mcp.tools.hosts.subprocess.run',
+                           return_value=list_result), \
+                mock.patch('debops.mcp.tools.hosts.AnsibleInventory'):
+            popen.return_value = make_process(returncode=module_rc,
+                                              output=module_output,
+                                              poll=poll)
+            return popen, self.call_tool(name, arguments)
 
     def test_ping(self):
-        with self._popen() as popen, \
-                mock.patch('debops.mcp.tools.hosts.AnsibleInventory'):
-            popen.return_value = make_process(output=PING_OK)
-            response = self.call_tool('exec_ping', {'hosts': 'web1'})
+        popen, response = self._run('exec_ping', {'hosts': 'web1'})
         command = popen.call_args[0][0]
         self.assertEqual(command[:4],
                          ['ansible', 'web1', '-m', 'ansible.builtin.ping'])
         self.assertNotIn('--become', command)
-        self.assertIn('pong', response['result']['content'][0]['text'])
+        text = response['result']['content'][0]['text']
+        self.assertIn('pong', text)
+        self.assertIn('Hosts: web1', text)
 
     def test_become_flag(self):
-        with self._popen() as popen, \
-                mock.patch('debops.mcp.tools.hosts.AnsibleInventory'):
-            popen.return_value = make_process(output=PING_OK)
-            self.call_tool('exec_ping',
-                           {'hosts': 'web1', 'become': True})
-        command = popen.call_args[0][0]
-        self.assertIn('--become', command)
+        popen, _response = self._run('exec_ping', {'hosts': 'web1',
+                                                   'become': True})
+        self.assertIn('--become', popen.call_args[0][0])
 
     def test_facts_are_rendered_as_yaml(self):
-        with self._popen() as popen, \
-                mock.patch('debops.mcp.tools.hosts.AnsibleInventory'):
-            popen.return_value = make_process(output=FACTS_OK)
-            response = self.call_tool('exec_facts', {'hosts': 'web1'})
-        command = popen.call_args[0][0]
-        self.assertEqual(command[:4],
-                         ['ansible', 'web1', '-m', 'ansible.builtin.setup'])
+        _popen, response = self._run('exec_facts', {'hosts': 'web1'},
+                                     module_output=FACTS_OK)
         text = response['result']['content'][0]['text']
         self.assertIn('## web1.example.com', text)
         self.assertIn('ansible_distribution: Debian', text)
 
     def test_facts_filter(self):
-        with self._popen() as popen, \
-                mock.patch('debops.mcp.tools.hosts.AnsibleInventory'):
-            popen.return_value = make_process(output=FACTS_OK)
-            self.call_tool('exec_facts', {'hosts': 'web1',
-                                          'filter': 'ansible_local*'})
-        command = popen.call_args[0][0]
-        self.assertEqual(command[-2:], ['-a', 'filter=ansible_local*'])
+        popen, _response = self._run('exec_facts',
+                                     {'hosts': 'web1',
+                                      'filter': 'ansible_local*'})
+        self.assertEqual(popen.call_args[0][0][-2:],
+                         ['-a', 'filter=ansible_local*'])
 
     def test_invalid_host_pattern(self):
         response = self.call_tool('exec_ping', {'hosts': 'a b'})
@@ -124,21 +127,54 @@ class HostsTestCase(unittest.TestCase):
         self.assertTrue(response['result']['isError'])
 
     def test_unreachable_host_is_an_error_result(self):
-        with self._popen() as popen, \
-                mock.patch('debops.mcp.tools.hosts.AnsibleInventory'):
-            popen.return_value = make_process(
-                    returncode=4,
-                    output='web1 | UNREACHABLE! => {...}\n')
-            response = self.call_tool('exec_ping', {'hosts': 'web1'})
+        _popen, response = self._run(
+                'exec_ping', {'hosts': 'web1'}, module_rc=4,
+                module_output='web1 | UNREACHABLE! => {...}\n')
         self.assertTrue(response['result']['isError'])
         self.assertIn('UNREACHABLE',
+                      response['result']['content'][0]['text'])
+
+    def test_pattern_matching_nothing_is_an_error(self):
+        _popen, response = self._run('exec_ping', {'hosts': 'nosuch'},
+                                     resolved=())
+        self.assertTrue(response['result']['isError'])
+        self.assertIn('matches no hosts',
+                      response['result']['content'][0]['text'])
+
+    def test_exec_hosts_allowlist(self):
+        self.project.config.raw['project'] = {'mcp': {
+                'exec_hosts': ['db*']}}
+        server = McpServer(project=self.project,
+                           policy=McpPolicy(self.project))
+        register_project_tools(server, roles_path=self.tmpdir,
+                               playbooks_path=self.tmpdir,
+                               collection_index_provider=lambda: {})
+        list_result = mock.Mock()
+        list_result.returncode = 0
+        list_result.stdout = '  hosts (1):\n    web1\n'
+        list_result.stderr = ''
+        with mock.patch('debops.mcp.tools.hosts.subprocess.run',
+                        return_value=list_result), \
+                mock.patch('debops.mcp.tools.hosts.AnsibleInventory'):
+            response = server.handle({
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'name': 'exec_ping',
+                           'arguments': {'hosts': 'web1'}}})
+        self.assertTrue(response['result']['isError'])
+        self.assertIn('exec_hosts',
                       response['result']['content'][0]['text'])
 
     def test_cancellation(self):
         from debops.mcp.tools.hosts import tool_exec_ping
         self.context.cancelled.set()
-        with self._popen() as popen, \
+        with mock.patch('debops.mcp.tools.execute.subprocess.Popen') \
+                as popen, \
+                mock.patch('debops.mcp.tools.hosts.subprocess.run') \
+                as resolve, \
                 mock.patch('debops.mcp.tools.hosts.AnsibleInventory'):
+            resolve.return_value = mock.Mock(
+                    returncode=0, stdout='  hosts (1):\n    web1\n',
+                    stderr='')
             popen.return_value = make_process(returncode=-15,
                                               poll=[None, None])
             with self.assertRaises(RequestCancelled):

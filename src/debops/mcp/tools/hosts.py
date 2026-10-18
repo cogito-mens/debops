@@ -9,10 +9,12 @@ modules are not. The commands contact live hosts but change nothing;
 they are serialized with playbook executions.
 """
 
+import fnmatch
 import json
 import logging
 import os
 import re
+import subprocess
 import yaml
 
 from ...ansible.inventory import AnsibleInventory
@@ -100,6 +102,24 @@ def _render_facts(output):
     return '\n\n'.join(rendered)
 
 
+def _resolve_hosts(env, cwd, ansible, pattern):
+    """Resolve a host pattern to concrete host names in the inventory.
+
+    Turns the pattern into an auditable list before anything runs, and
+    catches patterns which match nothing.
+    """
+    result = subprocess.run(
+            [ansible, pattern, '--list-hosts'],
+            env=env, cwd=cwd, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, universal_newlines=True, timeout=30)
+    if result.returncode != 0:
+        raise ValueError('cannot resolve the host pattern: '
+                         + result.stderr.strip()[-500:])
+    # Hosts are listed one per line, indented under the 'hosts:' header
+    return [line.strip() for line in result.stdout.splitlines()
+            if line.startswith('    ')]
+
+
 def _exec(project, policy, arguments, context, module, module_filter):
     hosts = str(arguments.get('hosts') or '')
     if not _validate_host_pattern(hosts):
@@ -120,7 +140,6 @@ def _exec(project, policy, arguments, context, module, module_filter):
                                 'only): {!r}'.format(module_filter))
         command.extend(['-a', 'filter=' + module_filter])
 
-    logger.notice('Querying hosts: %s', ' '.join(command))
     with _EXECUTION_LOCK:
         inventory = AnsibleInventory(project, name=project.view)
         unlocked = False
@@ -128,6 +147,30 @@ def _exec(project, policy, arguments, context, module, module_filter):
             unlocked = inventory.unlock()
             env = os.environ.copy()
             env.update(project.config._env_vars)
+
+            # Resolve the pattern to concrete hosts first: the inventory
+            # is the security boundary, and the resolution is the audit
+            # trail and the policy enforcement point
+            try:
+                resolved = _resolve_hosts(env, project.path, ansible,
+                                          hosts)
+            except (ValueError, subprocess.TimeoutExpired,
+                    FileNotFoundError) as errmsg:
+                return error_result(str(errmsg))
+            if not resolved:
+                return error_result('the pattern matches no hosts in the '
+                                    'inventory: {}'.format(hosts))
+            rejected = [host for host in resolved
+                        if policy.exec_hosts
+                        and not any(fnmatch.fnmatch(host, allowed)
+                                    for allowed in policy.exec_hosts)]
+            if rejected:
+                return error_result('not allowed by the project policy '
+                                    '(project.mcp.exec_hosts): '
+                                    + ', '.join(rejected))
+
+            logger.notice('Querying hosts: %s → %s', hosts,
+                          ', '.join(resolved))
             timeout = min(policy.execute_timeout if policy is not None
                           else 3600, EXEC_TIMEOUT_LIMIT)
             output, returncode, status = run_cancellable(
@@ -146,10 +189,11 @@ def _exec(project, policy, arguments, context, module, module_filter):
                             'disabled mid-run (the kill switch)')
 
     if module == 'ansible.builtin.ping':
-        text = '# ping {}\n\n{}'.format(hosts, output)
+        text = '# ping {}\n\nHosts: {}\n\n{}'.format(
+                hosts, ', '.join(resolved), output)
     else:
-        text = '# facts for {}\n\n{}'.format(hosts,
-                                             _render_facts(output))
+        text = '# facts for {}\n\nHosts: {}\n\n{}'.format(
+                hosts, ', '.join(resolved), _render_facts(output))
     # ansible returns non-zero when any host failed
     if returncode != 0:
         return error_result(text)
