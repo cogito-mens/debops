@@ -16,6 +16,7 @@ run with a request context so that clients can cancel them.
 
 import collections
 import contextlib
+import fnmatch
 import io
 import itertools
 import logging
@@ -84,6 +85,40 @@ def _build_ansible_args(arguments, check, allowed_options=EXECUTE_OPTIONS):
         # Mirror the 'debops check' section
         args.extend(['--diff', '--check'])
     return args
+
+
+def resolve_hosts(env, cwd, command, timeout=30):
+    """Resolve the host pattern of an ansible command to concrete hosts.
+
+    Runs the command with '--list-hosts' (no execution) and returns the
+    host names it would touch. Works for 'ansible <pattern>' and for
+    'ansible-playbook <playbook> [--limit <pattern>]'.
+    """
+    result = subprocess.run(
+            command + ['--list-hosts'], env=env, cwd=cwd,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True, timeout=timeout)
+    if result.returncode != 0:
+        # Ansible reports the cause in [ERROR] lines; everything else
+        # (warnings, deprecation noise) would drown it in a tail slice
+        errors = [line for line in result.stderr.splitlines()
+                  if line.startswith(('[ERROR]', 'ERROR'))]
+        raise ValueError('\n'.join(errors) if errors
+                         else (result.stderr.strip()[-500:]
+                               or 'cannot resolve the host pattern'))
+    # Hosts are listed one per line, indented under a 'hosts (N):' header
+    hosts = []
+    in_hosts = False
+    for line in result.stdout.splitlines():
+        if re.match(r'^\s*hosts \(\d+\):', line):
+            in_hosts = True
+            continue
+        if in_hosts:
+            if line.startswith('    '):
+                hosts.append(line.strip())
+            else:
+                in_hosts = False
+    return hosts
 
 
 def run_cancellable(command, env, cwd, context, timeout, on_line=None,
@@ -198,6 +233,34 @@ def _execute_playbook(project, policy, arguments, context, check,
             env = os.environ.copy()
             env.update(project.config._env_vars)
 
+            # Resolve the affected hosts before running: the inventory
+            # is the security boundary, and the resolution is the audit
+            # trail and the policy enforcement point
+            try:
+                resolved_hosts = resolve_hosts(env, project.path, command)
+            except (ValueError, subprocess.TimeoutExpired,
+                    FileNotFoundError) as errmsg:
+                return error_result('cannot resolve the affected hosts: '
+                                    + str(errmsg))
+            rejected = [host for host in resolved_hosts
+                        if policy.execute_hosts
+                        and not any(fnmatch.fnmatch(host, allowed)
+                                    for allowed in policy.execute_hosts)]
+            if rejected:
+                return error_result(
+                        'not allowed by the project policy '
+                        '(project.mcp.execute_hosts): '
+                        + ', '.join(rejected))
+            if resolved_hosts:
+                shown = resolved_hosts[:8]
+                logger.notice('The execution affects %s host(s): %s',
+                              len(resolved_hosts), ', '.join(shown) + (
+                                  ', and {} more'.format(
+                                          len(resolved_hosts) - 8)
+                                  if len(resolved_hosts) > 8 else ''))
+            else:
+                logger.notice('The execution matches no hosts')
+
             # Play and task headers become progress notifications
             progress_counter = itertools.count(1)
             last_progress = [0.0]
@@ -223,8 +286,9 @@ def _execute_playbook(project, policy, arguments, context, check,
     run_hooks(project.path, 'post-' + mode,
               extra_env={'DEBOPS_RETURN_CODE': returncode})
 
-    header = '# debops {} {}\n\nexit code: {}\n\n'.format(
-            mode, args[0], returncode)
+    header = '# debops {} {}\n\nexit code: {}\nhosts: {}\n\n'.format(
+            mode, args[0], returncode,
+            ', '.join(resolved_hosts) if resolved_hosts else '(none)')
     if status == 'disabled':
         return error_result(header + 'terminated: the MCP functionality '
                             'was disabled mid-run (the kill switch)\n\n'

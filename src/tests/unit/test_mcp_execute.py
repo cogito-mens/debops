@@ -47,6 +47,15 @@ def make_process(returncode=0, output='play recap\n', poll=None):
     return process
 
 
+def make_resolve_result(hosts=('web1',), returncode=0, stderr=''):
+    result = mock.Mock()
+    result.returncode = returncode
+    result.stdout = ('  hosts ({}):\n'.format(len(hosts))
+                     + ''.join('    {}\n'.format(host) for host in hosts))
+    result.stderr = stderr
+    return result
+
+
 class BuildArgsTestCase(unittest.TestCase):
 
     def test_check_appends_check_and_diff(self):
@@ -83,13 +92,15 @@ class ExecuteTestCase(unittest.TestCase):
         self.policy = McpPolicy(self.project)
         self.context = ToolContext(1, threading.Event())
 
-    def call_execute(self, check=True):
+    def call_execute(self, check=True, resolved=('web1',)):
         from debops.mcp.tools.execute import _execute_playbook
         with mock.patch(
                 'debops.mcp.tools.execute.AnsiblePlaybookRunner') as runner, \
                 mock.patch(
                 'debops.mcp.tools.execute.AnsibleInventory') as inventory, \
                 mock.patch('debops.mcp.tools.execute.run_hooks') as hooks, \
+                mock.patch('debops.mcp.tools.execute.subprocess.run',
+                           return_value=make_resolve_result(resolved)), \
                 mock.patch(
                 'debops.mcp.tools.execute.subprocess.Popen') as popen:
             runner.return_value.command.return_value = [
@@ -127,6 +138,8 @@ class ExecuteTestCase(unittest.TestCase):
                 mock.patch('debops.mcp.tools.execute.AnsibleInventory'), \
                 mock.patch('debops.mcp.tools.execute.run_hooks',
                            return_value=True), \
+                mock.patch('debops.mcp.tools.execute.subprocess.run',
+                           return_value=make_resolve_result()), \
                 mock.patch(
                 'debops.mcp.tools.execute.subprocess.Popen') as popen:
             popen.return_value = make_process(returncode=2,
@@ -138,6 +151,54 @@ class ExecuteTestCase(unittest.TestCase):
         self.assertTrue(result['isError'])
         self.assertIn('exit code: 2', result['content'][0]['text'])
         self.assertIn('failed!', result['content'][0]['text'])
+
+    def test_unresolvable_limit_is_an_error(self):
+        from debops.mcp.tools.execute import _execute_playbook
+        with mock.patch(
+                'debops.mcp.tools.execute.AnsiblePlaybookRunner'), \
+                mock.patch('debops.mcp.tools.execute.AnsibleInventory'), \
+                mock.patch('debops.mcp.tools.execute.run_hooks',
+                           return_value=True), \
+                mock.patch('debops.mcp.tools.execute.subprocess.run',
+                           return_value=make_resolve_result(
+                               (), returncode=1,
+                               stderr='... leaves us with no hosts to '
+                               'target.')), \
+                mock.patch(
+                'debops.mcp.tools.execute.subprocess.Popen') as popen:
+            result = _execute_playbook(self.project, self.policy,
+                                       {'playbook': 'site',
+                                        'limit': 'nosuch'}, self.context,
+                                       check=True)
+        self.assertTrue(result['isError'])
+        self.assertIn('no hosts to target', result['content'][0]['text'])
+        popen.assert_not_called()
+
+    def test_execute_hosts_allowlist(self):
+        from debops.mcp.tools.execute import _execute_playbook
+        project = FakeProject(self.tmpdir,
+                              {'project': {'mcp': {'execute_hosts':
+                                                   ['db*']}}})
+        policy = McpPolicy(project)
+        with mock.patch(
+                'debops.mcp.tools.execute.AnsiblePlaybookRunner'), \
+                mock.patch('debops.mcp.tools.execute.AnsibleInventory'), \
+                mock.patch('debops.mcp.tools.execute.run_hooks',
+                           return_value=True), \
+                mock.patch('debops.mcp.tools.execute.subprocess.run',
+                           return_value=make_resolve_result()), \
+                mock.patch(
+                'debops.mcp.tools.execute.subprocess.Popen') as popen:
+            result = _execute_playbook(project, policy,
+                                       {'playbook': 'site'}, self.context,
+                                       check=True)
+        self.assertTrue(result['isError'])
+        self.assertIn('execute_hosts', result['content'][0]['text'])
+        popen.assert_not_called()
+
+    def test_hosts_in_the_result_header(self):
+        result, _inventory, _hooks, _popen = self.call_execute()
+        self.assertIn('hosts: web1', result['content'][0]['text'])
 
     def test_runner_abort_stays_off_the_protocol_channel(self):
         """A runner which prints and exits becomes an error result."""
@@ -169,6 +230,8 @@ class ExecuteTestCase(unittest.TestCase):
                 mock.patch('debops.mcp.tools.execute.AnsibleInventory'), \
                 mock.patch('debops.mcp.tools.execute.run_hooks',
                            return_value=True), \
+                mock.patch('debops.mcp.tools.execute.subprocess.run',
+                           return_value=make_resolve_result()), \
                 mock.patch(
                 'debops.mcp.tools.execute.subprocess.Popen') as popen:
             popen.return_value = make_process(returncode=-15,
@@ -190,6 +253,8 @@ class ExecuteTestCase(unittest.TestCase):
                 mock.patch('debops.mcp.tools.execute.AnsibleInventory'), \
                 mock.patch('debops.mcp.tools.execute.run_hooks',
                            return_value=False), \
+                mock.patch('debops.mcp.tools.execute.subprocess.run',
+                           return_value=make_resolve_result()), \
                 mock.patch(
                 'debops.mcp.tools.execute.subprocess.Popen') as popen:
             result = _execute_playbook(self.project, self.policy,
@@ -207,6 +272,8 @@ class ExecuteTestCase(unittest.TestCase):
                 mock.patch('debops.mcp.tools.execute.AnsibleInventory'), \
                 mock.patch('debops.mcp.tools.execute.run_hooks',
                            return_value=True), \
+                mock.patch('debops.mcp.tools.execute.subprocess.run',
+                           return_value=make_resolve_result()), \
                 mock.patch(
                 'debops.mcp.tools.execute.subprocess.Popen') as popen:
             popen.return_value = make_process(returncode=-15,
@@ -227,6 +294,8 @@ class ExecuteTestCase(unittest.TestCase):
                 mock.patch('debops.mcp.tools.execute.AnsibleInventory'), \
                 mock.patch('debops.mcp.tools.execute.run_hooks',
                            return_value=True), \
+                mock.patch('debops.mcp.tools.execute.subprocess.run',
+                           return_value=make_resolve_result()), \
                 mock.patch(
                 'debops.mcp.tools.execute.subprocess.Popen') as popen:
             popen.return_value = make_process(returncode=-9,
@@ -354,6 +423,8 @@ class ProgressTestCase(unittest.TestCase):
                 mock.patch('debops.mcp.tools.execute.AnsibleInventory'), \
                 mock.patch('debops.mcp.tools.execute.run_hooks',
                            return_value=True), \
+                mock.patch('debops.mcp.tools.execute.subprocess.run',
+                           return_value=make_resolve_result()), \
                 mock.patch(
                 'debops.mcp.tools.execute.subprocess.Popen') as popen:
             popen.return_value = make_process(output=output)

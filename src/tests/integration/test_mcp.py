@@ -542,6 +542,52 @@ def test_project_sync_via_stdio(run_debops, mcp_env, tmp_path):
     assert "retry in" in second["content"][0]["text"]
 
 
+def test_check_with_limit_resolves_hosts(run_debops, mcp_env, project_dir):
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+    playbooks = project_dir / "ansible" / "playbooks"
+    playbooks.mkdir(parents=True)
+    (playbooks / "custom.yml").write_text("""---
+- name: Test play
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Say hello
+      ansible.builtin.debug:
+        msg: hello from mcp
+""")
+
+    requests = (
+        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "check",
+                               "arguments": {"playbook": "custom",
+                                             "limit": "local"}}}) + "\n"
+        + json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                      "params": {"name": "check",
+                                 "arguments": {"playbook": "custom",
+                                               "limit": "nosuch"}}})
+        + "\n"
+    )
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=requests)
+
+    assert result.returncode == 0
+    responses = {response["id"]: response
+                 for response in read_json_lines(result.stdout)}
+    first = responses[1]["result"]["content"][0]["text"]
+    assert "hosts: localhost" in first
+    second = responses[2]["result"]
+    assert second["isError"] is True
+    assert "no hosts to target" in second["content"][0]["text"]
+
+
 def test_policy_deny_hides_a_tool(run_debops, mcp_env, project_dir):
     conf_d = project_dir / ".debops" / "conf.d"
     conf_d.mkdir(parents=True)

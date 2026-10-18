@@ -72,7 +72,7 @@ class HostsTestCase(unittest.TestCase):
         list_result.stderr = ''
         with mock.patch('debops.mcp.tools.execute.subprocess.Popen') \
                 as popen, \
-                mock.patch('debops.mcp.tools.hosts.subprocess.run',
+                mock.patch('debops.mcp.tools.execute.subprocess.run',
                            return_value=list_result), \
                 mock.patch('debops.mcp.tools.hosts.AnsibleInventory'):
             popen.return_value = make_process(returncode=module_rc,
@@ -153,7 +153,7 @@ class HostsTestCase(unittest.TestCase):
         list_result.returncode = 0
         list_result.stdout = '  hosts (1):\n    web1\n'
         list_result.stderr = ''
-        with mock.patch('debops.mcp.tools.hosts.subprocess.run',
+        with mock.patch('debops.mcp.tools.execute.subprocess.run',
                         return_value=list_result), \
                 mock.patch('debops.mcp.tools.hosts.AnsibleInventory'):
             response = server.handle({
@@ -169,7 +169,7 @@ class HostsTestCase(unittest.TestCase):
         self.context.cancelled.set()
         with mock.patch('debops.mcp.tools.execute.subprocess.Popen') \
                 as popen, \
-                mock.patch('debops.mcp.tools.hosts.subprocess.run') \
+                mock.patch('debops.mcp.tools.execute.subprocess.run') \
                 as resolve, \
                 mock.patch('debops.mcp.tools.hosts.AnsibleInventory'):
             resolve.return_value = mock.Mock(

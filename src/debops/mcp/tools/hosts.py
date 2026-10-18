@@ -20,7 +20,7 @@ import yaml
 from ...ansible.inventory import AnsibleInventory
 from ..server import RequestCancelled
 from .common import error_result, text_result
-from .execute import _EXECUTION_LOCK, run_cancellable
+from .execute import _EXECUTION_LOCK, resolve_hosts, run_cancellable
 
 logger = logging.getLogger(__name__)
 
@@ -102,24 +102,6 @@ def _render_facts(output):
     return '\n\n'.join(rendered)
 
 
-def _resolve_hosts(env, cwd, ansible, pattern):
-    """Resolve a host pattern to concrete host names in the inventory.
-
-    Turns the pattern into an auditable list before anything runs, and
-    catches patterns which match nothing.
-    """
-    result = subprocess.run(
-            [ansible, pattern, '--list-hosts'],
-            env=env, cwd=cwd, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, universal_newlines=True, timeout=30)
-    if result.returncode != 0:
-        raise ValueError('cannot resolve the host pattern: '
-                         + result.stderr.strip()[-500:])
-    # Hosts are listed one per line, indented under the 'hosts:' header
-    return [line.strip() for line in result.stdout.splitlines()
-            if line.startswith('    ')]
-
-
 def _exec(project, policy, arguments, context, module, module_filter):
     hosts = str(arguments.get('hosts') or '')
     if not _validate_host_pattern(hosts):
@@ -152,8 +134,8 @@ def _exec(project, policy, arguments, context, module, module_filter):
             # is the security boundary, and the resolution is the audit
             # trail and the policy enforcement point
             try:
-                resolved = _resolve_hosts(env, project.path, ansible,
-                                          hosts)
+                resolved = resolve_hosts(env, project.path,
+                                         [ansible, hosts])
             except (ValueError, subprocess.TimeoutExpired,
                     FileNotFoundError) as errmsg:
                 return error_result(str(errmsg))

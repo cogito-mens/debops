@@ -186,6 +186,9 @@ class McpPolicy(object):
         # means every host in the inventory is allowed
         self.exec_hosts = [str(entry) for entry in
                            mcp_config.get('exec_hosts', []) or []]
+        # Same, for hosts a playbook execution may touch
+        self.execute_hosts = [str(entry) for entry in
+                              mcp_config.get('execute_hosts', []) or []]
 
         options = mcp_config.get('execute_options')
         if options is None:
