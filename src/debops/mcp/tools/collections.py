@@ -162,36 +162,67 @@ def tool_collection_roles(index_provider, arguments):
     return text_result('\n'.join([header, ''] + lines))
 
 
+def _playbook_lines(fqcn, entry, name_filter, match_qualified):
+    """The playbook listing lines of one collection.
+
+    With 'match_qualified' (the all-collections listing) the filter
+    matches the full 'namespace.collection/path' target form; in the
+    single-collection listing it matches the path alone.
+    """
+    playbooks_dir = os.path.join(entry['path'], 'playbooks')
+    lines = []
+    if not os.path.isdir(playbooks_dir):
+        return lines
+    for relpath in list_playbooks(playbooks_dir):
+        target = '{}/{}'.format(fqcn, target_form(relpath))
+        matched = target if match_qualified else relpath
+        if name_filter and name_filter not in matched.lower():
+            continue
+        line = '- `{}`'.format(target)
+        summary = playbook_summary(os.path.join(playbooks_dir, relpath))
+        if summary:
+            line += ' — {}'.format(summary)
+        lines.append(line)
+    return lines
+
+
 def tool_collection_playbooks(index_provider, arguments):
     try:
         index = index_provider()
     except RuntimeError as errmsg:
         return error_result(str(errmsg))
-    collection = str(arguments.get('collection') or '')
-    entry = resolve_collection(index, collection)
-    if entry is None:
-        return error_result('collection not found or invalid: {}'
-                            .format(collection))
-
-    playbooks_dir = os.path.join(entry['path'], 'playbooks')
-    if not os.path.isdir(playbooks_dir):
-        return text_result('collection {} provides no playbooks'
-                           .format(collection))
 
     name_filter = str(arguments.get('filter') or '').lower()
-    lines = ['# Playbooks in {} ({})'.format(
-            collection, entry['version'] or 'unknown version'), '']
+    collection = str(arguments.get('collection') or '')
+    if collection:
+        entry = resolve_collection(index, collection)
+        if entry is None:
+            return error_result('collection not found or invalid: {}'
+                                .format(collection))
+        lines = _playbook_lines(collection, entry, name_filter,
+                                match_qualified=False)
+        if not lines:
+            return text_result('collection {} provides no playbooks'
+                               .format(collection))
+        header = '# Playbooks in {} ({})'.format(
+                collection, entry['version'] or 'unknown version')
+        return text_result('\n'.join([header, ''] + lines))
+
+    lines = []
     total = 0
-    for relpath in list_playbooks(playbooks_dir):
-        if name_filter and name_filter not in relpath.lower():
+    for fqcn in sorted(index):
+        entries = _playbook_lines(fqcn, index[fqcn], name_filter,
+                                  match_qualified=True)
+        if not entries:
             continue
-        line = '- `{}/{}`'.format(collection, target_form(relpath))
-        summary = playbook_summary(os.path.join(playbooks_dir, relpath))
-        if summary:
-            line += ' — {}'.format(summary)
-        lines.append(line)
-        total += 1
-    if not total:
-        return text_result('collection {} provides no playbooks'
-                           .format(collection))
-    return text_result('\n'.join(lines))
+        version = index[fqcn]['version']
+        lines.append('## {}{}'.format(
+                fqcn, ' ({})'.format(version) if version else ''))
+        lines.extend(entries)
+        lines.append('')
+        total += len(entries)
+    if not lines:
+        return text_result('no collections with playbooks found')
+    header = '# Collections with playbooks visible to Ansible ' \
+        '({})'.format(total)
+    return text_result('\n'.join([header, ''] + lines))

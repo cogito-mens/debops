@@ -846,6 +846,25 @@ class ToolsTestCase(unittest.TestCase):
                                   {'collection': 'testns.nosuch'})
         self.assertTrue(response['result']['isError'])
 
+    def test_collection_playbooks_all_collections(self):
+        response = self.call_tool('collection_playbooks')
+        text = self.result_text(response)
+        self.assertIn('# Collections with playbooks visible to Ansible '
+                      '(1)', text)
+        self.assertIn('## testns.testcoll (1.0.0)', text)
+        self.assertIn('- `testns.testcoll/install` — Install the thing '
+                      '(hosts: localhost)', text)
+
+    def test_collection_playbooks_all_collections_filtered(self):
+        # The filter matches the qualified 'namespace.collection/path'
+        response = self.call_tool('collection_playbooks',
+                                  {'filter': 'testcoll/inst'})
+        self.assertIn('install', self.result_text(response))
+        response = self.call_tool('collection_playbooks',
+                                  {'filter': 'nomatch'})
+        self.assertIn('no collections with playbooks found',
+                      self.result_text(response))
+
     def test_playbook_info_slash_collection_form(self):
         response = self.call_tool('playbook_info',
                                   {'playbook': 'testns.testcoll/install'})

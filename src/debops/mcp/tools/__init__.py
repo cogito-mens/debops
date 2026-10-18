@@ -249,17 +249,21 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
              playbooks_path if bundled_content else None, arguments,
              index_provider=collection_index_provider)),
         ('collection_playbooks',
-         'List the playbooks provided by an Ansible Collection visible '
-         'to this project.',
+         'List the playbooks of Ansible Collections visible to this '
+         'project, grouped by collection; with "collection", only that '
+         'one. Use this to find playbooks outside of the bundled '
+         'DebOps collection.',
          {'type': 'object',
           'properties': {'collection': {'type': 'string',
                                         'description': 'Collection, e.g. '
-                                        '"community.sops"'},
+                                        '"community.sops" (default: all '
+                                        'collections)'},
                          'filter': {'type': 'string',
                                     'description': 'Only include '
-                                    'playbooks whose path contains '
-                                    'this string'}},
-          'required': ['collection']},
+                                    'playbooks whose target '
+                                    '("namespace.collection/path") '
+                                    'contains this string'}},
+          'required': []},
          lambda arguments: tool_collection_playbooks(
              collection_index_provider, arguments)),
         ('collection_roles',
