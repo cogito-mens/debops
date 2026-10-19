@@ -312,10 +312,27 @@ def tool_view_write(project, policy, arguments, server=None):
     if invalid is not None:
         return error_result(invalid)
 
-    with exclusive_project(project, policy,
-                           note='view_write ' + view_relative):
+    def announce():
+        _announce_mcp_content_change(server, view_relative)
+    return _write_committed(project, policy, path, view_relative,
+                            content, mode, 'view_write ' + view_relative,
+                            after=announce)
+
+
+def _write_committed(project, policy, path, display, content, mode,
+                     note, after=None):
+    """Write content to an authorized path atomically and commit it.
+
+    Returns the tool result. The caller authorizes the path; this
+    handles the file mechanics: the unchanged short-circuit, the mode
+    handling (preserved on overwrite, 0644 for new files), the atomic
+    rename, and the commit with MCP provenance. 'after' runs once the
+    change is committed.
+    """
+    size = len(content.encode('utf-8'))
+    with exclusive_project(project, policy, note=note):
         if os.path.lexists(path) and not os.path.isfile(path):
-            return error_result('not a regular file: ' + view_relative)
+            return error_result('not a regular file: ' + display)
         old_content = None
         old_mode = None
         if os.path.isfile(path):
@@ -324,13 +341,13 @@ def tool_view_write(project, policy, arguments, server=None):
                     old_content = fp.read().decode('utf-8')
                 except UnicodeDecodeError:
                     return error_result('not a UTF-8 text file: '
-                                        + view_relative)
+                                        + display)
             old_mode = stat.S_IMODE(os.stat(path).st_mode)
 
         if old_content == content:
             if mode is None or mode == old_mode:
                 return text_result('unchanged: {} ({} bytes)'.format(
-                        view_relative, size))
+                        display, size))
             os.chmod(path, mode)
             outcome = 'mode changed'
         else:
@@ -363,23 +380,23 @@ def tool_view_write(project, policy, arguments, server=None):
                             pass
             except OSError as errmsg:
                 return error_result('cannot write {}: {}'.format(
-                        view_relative, errmsg))
+                        display, errmsg))
             outcome = 'overwritten' if old_content is not None \
                 else 'created'
 
-        # The commit is part of the tool's contract: an explicit,
-        # attributable record of the change. When it fails, the change
-        # has landed but is NOT recorded — the result must say so
+        # The commit is part of the contract: an explicit, attributable
+        # record of the change. When it fails, the change has landed
+        # but is NOT recorded — the result must say so
         try:
-            project.commit(message='DebOps MCP: view_write '
-                           + view_relative)
+            project.commit(message='DebOps MCP: ' + note)
         except Exception as errmsg:
             return error_result('{}: {}, but the commit failed: {} '
                                 '(the change is not recorded in git)'
-                                .format(outcome, view_relative, errmsg))
-        _announce_mcp_content_change(server, view_relative)
+                                .format(outcome, display, errmsg))
+        if after is not None:
+            after()
         return text_result('{}: {} ({} bytes, mode {:04o})'.format(
-                outcome, view_relative, size,
+                outcome, display, size,
                 stat.S_IMODE(os.stat(path).st_mode)))
 
 
