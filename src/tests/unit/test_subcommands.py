@@ -360,3 +360,26 @@ def test_parse_mcp_instance():
     assert parse_mcp_instance("containers") == ("containers", None)
     with pytest.raises(ValueError):
         parse_mcp_instance("x-")
+
+
+def test_mcp_configure_parses():
+    args = parse_cli("mcp", "configure", "-H", "opencode").args
+
+    assert args.harness == "opencode"
+    assert args.filename is None
+    assert args.socket is None
+
+
+def test_mcp_configure_options():
+    args = parse_cli("mcp", "configure", "--harness", "claude",
+                     "-f", "custom.json",
+                     "--socket", "/run/debops-mcp/x-system.sock").args
+
+    assert args.harness == "claude"
+    assert args.filename == "custom.json"
+    assert args.socket == "/run/debops-mcp/x-system.sock"
+
+
+def test_mcp_configure_requires_a_known_harness():
+    with pytest.raises(SystemExit):
+        parse_cli("mcp", "configure", "-H", "windsurf")

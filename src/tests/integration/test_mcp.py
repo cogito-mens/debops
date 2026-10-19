@@ -1509,3 +1509,29 @@ def test_connect_bridges_stdio_to_unix_socket(run_debops, mcp_env,
     finally:
         transport.shutdown()
         thread.join(timeout=5)
+
+
+def test_configure_harness(run_debops, mcp_env, project_dir):
+    result = run_debops("mcp", "configure", "-H", "opencode",
+                        cwd=str(project_dir), env=mcp_env)
+    assert result.returncode == 0
+    assert "Created" in result.stdout
+
+    config_path = project_dir / ".opencode" / "opencode.json"
+    config = json.loads(config_path.read_text())
+    entry = config["mcp"]["servers"]["debops"]
+    assert entry["command"] == ["debops", "mcp", "serve"]
+    assert entry["protocol"] == "2026-07-28"
+
+    # A rerun notices there is nothing to do
+    result = run_debops("mcp", "configure", "-H", "opencode",
+                        cwd=str(project_dir), env=mcp_env)
+    assert "Unchanged" in result.stdout
+
+
+def test_configure_harness_refuses_a_non_project(run_debops, mcp_env,
+                                                 tmp_path):
+    result = run_debops("mcp", "configure", "-H", "claude",
+                        cwd=str(tmp_path), env=mcp_env)
+    assert result.returncode == 1
+    assert "not found" in result.stderr

@@ -20,6 +20,7 @@ from .mcp import client as mcp_client
 from .mcp.client import UnixClient
 from .mcp.transport import StdioTransport, UnixSocketTransport
 from .mcp.transport import bridge_stdio_to_unix, ping_unix
+from .mcp.harnesses import configure_harness, fragment_for_display
 from .hooks import run_hooks
 from .utils import set_process_name
 from xdg.BaseDirectory import xdg_config_home
@@ -114,10 +115,18 @@ class Interpreter(object):
                 self.do_mcp_connect(self.parsed_args.args)
             elif self.parsed_args.command == 'inspect':
                 self.do_mcp_inspect(self.parsed_args.args)
+            elif self.parsed_args.command == 'configure':
+                self.do_mcp_configure(self.parsed_args.args)
             elif self.parsed_args.command == 'skills':
                 self.do_mcp_skills(self.parsed_args.args)
             elif self.parsed_args.command == 'disable':
                 self.do_mcp_disable(self.parsed_args.args)
+            else:
+                # The parser accepted a command this dispatch does not
+                # know; the two lists drifted
+                print('Error: unimplemented mcp command:',
+                      self.parsed_args.command, file=sys.stderr)
+                sys.exit(1)
 
     def do_project_init(self, args):
         try:
@@ -695,6 +704,28 @@ class Interpreter(object):
         elif step == 'resources':
             print('\n'.join(mcp_client.format_resources(
                     result.get('resources', []))))
+
+    def do_mcp_configure(self, args):
+        self._mcp_refuse_if_disabled()
+        # The configuration belongs to the project the harness starts in
+        try:
+            project = ProjectDir(path=args.project_dir, config=self.config)
+        except (IsADirectoryError, NotADirectoryError) as errmsg:
+            print('Error:', errmsg, file=sys.stderr)
+            sys.exit(1)
+        try:
+            status, lines = configure_harness(
+                    project.path, args.harness, filename=args.filename,
+                    socket_path=args.socket)
+        except ValueError as errmsg:
+            print('Error:', errmsg, file=sys.stderr)
+            print()
+            print('The entry to add by hand:')
+            print()
+            print(fragment_for_display(args.harness, args.socket))
+            sys.exit(1)
+        for line in lines:
+            print(line)
 
     def do_mcp_skills(self, args):
         self._mcp_refuse_if_disabled()

@@ -451,6 +451,8 @@ Commands:
     serve    run an MCP server over stdio or a UNIX socket
     connect  bridge stdio to an MCP server UNIX socket
     inspect  inspect an MCP server on a UNIX socket
+    configure  write the client configuration of an LLM harness
+               (OpenCode, Claude Code, Codex) into the project
     skills   list or print the DebOps skills shipped with the package
     disable  disable the MCP functionality on this host or account
              (the kill switch)''')
@@ -575,6 +577,29 @@ Commands:
                             help='list the prompts the server exposes')
         parser.add_argument('--raw', dest='raw', action='store_true',
                             help='print the server responses as received')
+        self.args = parser.parse_args(self.args[3:])
+
+    def do_mcp_configure(self):
+        from .mcp.harnesses import HARNESSES
+        parser = argparse.ArgumentParser(
+                parents=[self.global_parser],
+                description='write the client configuration of an LLM '
+                            'harness into the project directory',
+                usage='debops mcp configure [<args>]',
+                epilog='Default files: ' + '; '.join(
+                        '{}: {}'.format(name, harness.default_filename)
+                        for name, harness in sorted(HARNESSES.items())))
+        parser.add_argument('-H', '--harness', required=True,
+                            choices=sorted(HARNESSES),
+                            help='the harness to configure')
+        parser.add_argument('-f', '--filename', type=str, metavar='PATH',
+                            help='write to PATH instead of the harness '
+                                 'default (relative to the project '
+                                 'directory, or absolute)')
+        parser.add_argument('--socket', type=str, metavar='PATH',
+                            help='connect to a daemon socket at PATH '
+                                 'instead of spawning the server over '
+                                 'stdio')
         self.args = parser.parse_args(self.args[3:])
 
     def do_mcp_skills(self):
