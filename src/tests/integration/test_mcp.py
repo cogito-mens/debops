@@ -1235,16 +1235,16 @@ def test_project_sync_via_stdio(run_debops, mcp_env, tmp_path):
     result = run_debops("mcp", "serve", cwd=str(project_dir),
                         env=mcp_env, input_text=requests)
 
-    assert result.returncode == 0
+    assert result.returncode == 0, result.stderr
     responses = {response["id"]: response
                  for response in read_json_lines(result.stdout)}
     first = responses[1]["result"]
-    assert first["isError"] is False
-    assert "Already up to date" in first["content"][0]["text"]
+    assert first["isError"] is False, first
+    assert "Already up to date" in first["content"][0]["text"], first
     # The second, immediate call is throttled
     second = responses[2]["result"]
-    assert second["isError"] is True
-    assert "retry in" in second["content"][0]["text"]
+    assert second["isError"] is True, second
+    assert "retry in" in second["content"][0]["text"], second
 
 
 def test_pull_refreshes_the_project_via_stdio(run_debops, mcp_env,
@@ -1291,11 +1291,11 @@ def test_pull_refreshes_the_project_via_stdio(run_debops, mcp_env,
     result = run_debops("mcp", "serve", cwd=str(project_dir),
                         env=mcp_env, input_text=request)
 
-    assert result.returncode == 0
+    assert result.returncode == 0, result.stderr
     (response,) = read_json_lines(result.stdout)
     text = response["result"]["content"][0]["text"]
-    assert response["result"]["isError"] is False
-    assert "project refreshed" in text
+    assert response["result"]["isError"] is False, response["result"]
+    assert "project refreshed" in text, response["result"]
     # ansible.cfg was regenerated and carries the pulled configuration
     ansible_cfg = (project_dir / "ansible.cfg").read_text()
     assert "force_color" in ansible_cfg

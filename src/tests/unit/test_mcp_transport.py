@@ -101,6 +101,9 @@ class UnixSocketTransportTestCase(unittest.TestCase):
             if os.path.exists(self.path):
                 break
             time.sleep(0.01)
+        else:
+            self.fail('the server socket did not appear within 5 '
+                      'seconds: ' + self.path)
         self.addCleanup(self._stop_server)
 
     def _stop_server(self):
