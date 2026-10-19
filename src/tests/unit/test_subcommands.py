@@ -289,3 +289,74 @@ def test_config_get_format_choice():
                             "project.name")
 
     assert subcommands.args.format == "json"
+
+
+def test_mcp_serve_defaults():
+    args = parse_cli("mcp", "serve").args
+
+    assert args.instance is None
+    assert args.view is None
+    assert args.socket is None
+    # The socket gets 0660 by default, so that the members of the
+    # service account's group can connect
+    assert args.socket_mode == 0o660
+    assert args.project_dir == os.getcwd()
+
+
+def test_mcp_serve_instance_derives_the_project_and_view():
+    args = parse_cli("mcp", "serve", "--instance", "containers-system",
+                     "--instance-root", "/srv/projects").args
+
+    assert args.project_dir == "/srv/projects/containers"
+    assert args.view == "system"
+
+
+def test_mcp_serve_instance_splits_at_the_last_dash():
+    args = parse_cli("mcp", "serve", "--instance", "my-infra-prod",
+                     "--instance-root", "/srv/projects").args
+
+    assert args.project_dir == "/srv/projects/my-infra"
+    assert args.view == "prod"
+
+
+def test_mcp_serve_instance_without_a_view_uses_the_project_default():
+    args = parse_cli("mcp", "serve", "--instance", "containers",
+                     "--instance-root", "/srv/projects").args
+
+    assert args.project_dir == "/srv/projects/containers"
+    assert args.view is None
+
+
+def test_mcp_serve_instance_requires_the_root():
+    # The instances root is a deployment decision; there is no default
+    with pytest.raises(SystemExit):
+        parse_cli("mcp", "serve", "--instance", "containers-system")
+
+
+def test_mcp_serve_instance_rejects_an_explicit_view():
+    with pytest.raises(SystemExit):
+        parse_cli("mcp", "serve", "--instance", "containers-system",
+                  "-V", "other")
+
+
+def test_mcp_serve_instance_rejects_an_explicit_project_dir():
+    with pytest.raises(SystemExit):
+        parse_cli("mcp", "serve", "--instance", "containers-system",
+                  "--project-dir", "/elsewhere")
+
+
+@pytest.mark.parametrize("name", ["", "x-", "-x", "-", "a/b", ".x"])
+def test_mcp_serve_rejects_bad_instance_names(name):
+    with pytest.raises(SystemExit):
+        parse_cli("mcp", "serve", "--instance", name)
+
+
+def test_parse_mcp_instance():
+    from debops.subcommands import parse_mcp_instance
+
+    assert parse_mcp_instance("containers-system") == \
+        ("containers", "system")
+    assert parse_mcp_instance("my-infra-prod") == ("my-infra", "prod")
+    assert parse_mcp_instance("containers") == ("containers", None)
+    with pytest.raises(ValueError):
+        parse_mcp_instance("x-")

@@ -4,6 +4,7 @@
 
 import argparse
 import os
+import re
 import sys
 
 # Detect the DebOps version from the Python module. If the version is not
@@ -13,6 +14,34 @@ try:
     from .__version__ import __version__
 except ModuleNotFoundError:
     __version__ = "0.0.0"
+
+
+# Instance names name a project directory and, after the last dash, an
+# infrastructure view; they land in socket file names and unit names
+_MCP_INSTANCE_PATTERN = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+
+
+def parse_mcp_instance(name):
+    """Split an MCP instance name into (project, view).
+
+    '<project>-<view>' splits at the last dash, so project names may
+    contain dashes and view names may not. A name without a dash leaves
+    the view as None; the project's default view then decides. Raises
+    ValueError for names which cannot name a directory and a socket.
+    """
+    name = str(name or '')
+    if not _MCP_INSTANCE_PATTERN.match(name):
+        raise ValueError(
+                'invalid instance name: {!r} (expected '
+                "'<project>-<view>' or '<project>')".format(name))
+    if '-' not in name:
+        return name, None
+    project, view = name.rsplit('-', 1)
+    if not view:
+        raise ValueError(
+                'invalid instance name: {!r} (the view after the last '
+                "'-' is empty)".format(name))
+    return project, view
 
 
 class Subcommands(object):
@@ -442,6 +471,17 @@ Commands:
         parser.add_argument('-V', '--view', type=str,
                             help='select the infrastructure view '
                                  'to serve')
+        parser.add_argument('--instance', type=str, metavar='NAME',
+                            help='serve the named instance from the '
+                                 'instances root: NAME is '
+                                 "'<project>-<view>' (split at the last "
+                                 "dash) or '<project>' for the default "
+                                 'view; the project directory resolves '
+                                 'to <root>/<project>')
+        parser.add_argument('--instance-root', type=str, metavar='PATH',
+                            help='the directory which holds the named '
+                                 'project instances (required with '
+                                 '--instance)')
         parser.add_argument('--socket', type=str, metavar='PATH',
                             help='listen on a UNIX socket at PATH instead '
                                  'of serving on stdio')
@@ -455,6 +495,28 @@ Commands:
                             help='maximum number of concurrent connections '
                                  '(default: %(default)s)')
         self.args = parser.parse_args(self.args[3:])
+
+        if self.args.instance is not None:
+            if self.args.view is not None:
+                parser.error('--instance already names the view; '
+                             'do not combine it with --view')
+            # The global parser's default is the current directory;
+            # anything else means the user passed --project-dir
+            if self.args.project_dir != os.getcwd():
+                parser.error('--instance and --project-dir exclude '
+                             'each other')
+            # No default: where the instances live is a deployment
+            # decision, made by whoever provisions the daemon
+            if self.args.instance_root is None:
+                parser.error('--instance requires --instance-root')
+            try:
+                instance_project, instance_view = parse_mcp_instance(
+                        self.args.instance)
+            except ValueError as errmsg:
+                parser.error(str(errmsg))
+            self.args.project_dir = os.path.join(
+                    self.args.instance_root, instance_project)
+            self.args.view = instance_view
 
     def do_mcp_connect(self):
         parser = argparse.ArgumentParser(
