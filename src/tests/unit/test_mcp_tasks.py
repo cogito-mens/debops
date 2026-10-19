@@ -80,14 +80,16 @@ class TaskTestCase(unittest.TestCase):
 
     def call(self, name, arguments=None, meta=None, request_id=1):
         return self.server.handle({
-                'jsonrpc': '2.0', '_meta': meta or TASKS_META,
+                'jsonrpc': '2.0',
                 'id': request_id, 'method': 'tools/call',
-                'params': {'name': name, 'arguments': arguments or {}}})
+                'params': {'_meta': meta or TASKS_META,
+                           'name': name, 'arguments': arguments or {}}})
 
     def task_call(self, method, params, request_id=2):
         return self.server.handle({
-                'jsonrpc': '2.0', '_meta': TASKS_META,
-                'id': request_id, 'method': method, 'params': params})
+                'jsonrpc': '2.0',
+                'id': request_id, 'method': method,
+                'params': dict(params or {}, _meta=TASKS_META)})
 
     def wait_task(self, task_id, timeout=10):
         deadline = time.monotonic() + timeout
@@ -113,8 +115,9 @@ class TaskTestCase(unittest.TestCase):
 
     def test_discover_advertises_the_extension(self):
         result = self.server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
-                'method': 'server/discover', 'params': {}})['result']
+                'jsonrpc': '2.0', 'id': 1,
+                'method': 'server/discover',
+                'params': {'_meta': REQUEST_META}})['result']
         self.assertIn(TASKS_EXTENSION,
                       result['capabilities']['extensions'])
 
@@ -142,8 +145,9 @@ class TaskTestCase(unittest.TestCase):
 
     def test_task_methods_require_the_capability(self):
         response = self.server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
-                'method': 'tasks/get', 'params': {'taskId': 'nosuch'}})
+                'jsonrpc': '2.0', 'id': 1,
+                'method': 'tasks/get',
+                'params': {'_meta': REQUEST_META, 'taskId': 'nosuch'}})
         self.assertEqual(response['error']['code'], -32021)
         self.assertIn(TASKS_EXTENSION,
                       response['error']['data']['requiredCapabilities']

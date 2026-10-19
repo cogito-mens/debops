@@ -162,44 +162,49 @@ class ServerResourcesTestCase(unittest.TestCase):
 
     def test_discover_advertises_resources_with_a_library(self):
         server = McpServer(skills=self.library)
-        response = server.handle({'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
-                                  'method': 'server/discover'})
+        response = server.handle({'jsonrpc': '2.0', 'id': 1,
+                                  'method': 'server/discover',
+                                  'params': {'_meta': REQUEST_META}})
         self.assertIn('resources', response['result']['capabilities'])
 
     def test_discover_without_a_library(self):
         server = McpServer()
-        response = server.handle({'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
-                                  'method': 'server/discover'})
+        response = server.handle({'jsonrpc': '2.0', 'id': 1,
+                                  'method': 'server/discover',
+                                  'params': {'_meta': REQUEST_META}})
         self.assertNotIn('resources', response['result']['capabilities'])
 
     def test_resources_list_and_read(self):
         server = McpServer(skills=self.library)
-        response = server.handle({'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
+        response = server.handle({'jsonrpc': '2.0', 'id': 1,
                                   'method': 'resources/list',
-                                  'params': {}})
+                                  'params': {'_meta': REQUEST_META}})
         resources = response['result']['resources']
         self.assertEqual([resource['uri'] for resource in resources],
                          ['skill://good-skill'])
 
-        response = server.handle({'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 2,
+        response = server.handle({'jsonrpc': '2.0', 'id': 2,
                                   'method': 'resources/read',
-                                  'params': {'uri': 'skill://good-skill'}})
+                                  'params': {'_meta': REQUEST_META,
+                                             'uri': 'skill://good-skill'}})
         contents = response['result']['contents']
         self.assertEqual(contents[0]['text'], GOOD_SKILL)
         self.assertEqual(contents[0]['mimeType'], 'text/markdown')
 
     def test_resources_list_rejects_a_cursor(self):
         server = McpServer(skills=self.library)
-        response = server.handle({'jsonrpc': '2.0', '_meta': REQUEST_META,
+        response = server.handle({'jsonrpc': '2.0',
                                   'id': 1, 'method': 'resources/list',
-                                  'params': {'cursor': 'e30='}})
+                                  'params': {'_meta': REQUEST_META,
+                                             'cursor': 'e30='}})
         self.assertEqual(response['error']['code'], rpc.INVALID_PARAMS)
 
     def test_resources_read_unknown_uri(self):
         server = McpServer(skills=self.library)
-        response = server.handle({'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 3,
+        response = server.handle({'jsonrpc': '2.0', 'id': 3,
                                   'method': 'resources/read',
-                                  'params': {'uri': 'skill://nosuch'}})
+                                  'params': {'_meta': REQUEST_META,
+                                             'uri': 'skill://nosuch'}})
         self.assertEqual(response['error']['code'], rpc.INVALID_PARAMS)
         self.assertIn('not found', response['error']['data']['details'])
         # The error echoes the request id
@@ -207,18 +212,20 @@ class ServerResourcesTestCase(unittest.TestCase):
 
     def test_resources_read_traversal_echoes_request_id(self):
         server = McpServer(skills=self.library)
-        response = server.handle({'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 7,
+        response = server.handle({'jsonrpc': '2.0', 'id': 7,
                                   'method': 'resources/read',
-                                  'params': {'uri': 'skill://good-skill/'
+                                  'params': {'_meta': REQUEST_META,
+                                             'uri': 'skill://good-skill/'
                                              '../../etc/passwd'}})
         self.assertEqual(response['error']['code'], rpc.INVALID_PARAMS)
         self.assertEqual(response['id'], 7)
 
     def test_resources_read_rejects_other_schemes(self):
         server = McpServer(skills=self.library)
-        response = server.handle({'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 4,
+        response = server.handle({'jsonrpc': '2.0', 'id': 4,
                                   'method': 'resources/read',
-                                  'params': {'uri': 'file:///etc/passwd'}})
+                                  'params': {'_meta': REQUEST_META,
+                                             'uri': 'file:///etc/passwd'}})
         self.assertEqual(response['error']['code'], rpc.INVALID_PARAMS)
         self.assertIn('unsupported URI scheme',
                       response['error']['data']['details'])

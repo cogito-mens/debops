@@ -478,11 +478,19 @@ class McpServer(object):
                     data={'supported': [PROTOCOL_VERSION]},
                     request_id=request_id)
 
+        # The request metadata rides in 'params._meta', per the spec
+        params = message.get('params')
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            raise rpc.JsonRpcError(rpc.INVALID_PARAMS, 'Invalid params',
+                                   request_id=request_id)
+
         # Notifications carry no '_meta' requirement; requests do
         if not is_notification:
-            self._check_request_meta(message, request_id)
+            self._check_request_meta(params, request_id)
 
-        meta = message.get('_meta')
+        meta = params.get('_meta')
         progress_token = (meta.get('progressToken')
                           if isinstance(meta, dict) else None)
         capabilities = (meta.get(CLIENT_CAPABILITIES_KEY)
@@ -510,13 +518,6 @@ class McpServer(object):
                                    data={'method': method},
                                    request_id=request_id)
 
-        params = message.get('params')
-        if params is None:
-            params = {}
-        if not isinstance(params, dict):
-            raise rpc.JsonRpcError(rpc.INVALID_PARAMS, 'Invalid params',
-                                   request_id=request_id)
-
         try:
             result = handler(params, context)
         except RequestCancelled:
@@ -542,19 +543,20 @@ class McpServer(object):
 
     # -- protocol methods ---------------------------------------------------
 
-    def _check_request_meta(self, message, request_id):
+    def _check_request_meta(self, params, request_id):
         """Enforce the per-request protocol fields.
 
         Every request must carry its protocol version and client
-        capabilities in '_meta'; a missing one is malformed. A request
-        asking for another protocol revision is rejected.
+        capabilities in 'params._meta'; a missing one is malformed. A
+        request asking for another protocol revision is rejected.
         """
-        meta = message.get('_meta')
+        meta = params.get('_meta')
         if not isinstance(meta, dict):
             logger.warning('Request without the required _meta')
             raise rpc.JsonRpcError(
                     rpc.INVALID_PARAMS, 'Invalid params',
-                    data={'details': "missing required '_meta' fields: "
+                    data={'details': "missing required '_meta' fields "
+                          "(they belong in 'params._meta'): "
                           '{} and {}'.format(PROTOCOL_VERSION_KEY,
                                              CLIENT_CAPABILITIES_KEY)},
                     request_id=request_id)

@@ -61,11 +61,12 @@ class SubscriptionStreamTestCase(unittest.TestCase):
     def _listen(self, connection, notifications, request_id=1,
                 meta=None):
         connection.sendall(json.dumps({
-                'jsonrpc': '2.0', '_meta': meta or REQUEST_META,
+                'jsonrpc': '2.0',
                 'id': request_id,
                 'method': 'subscriptions/listen',
-                'params': {'notifications': notifications}}).encode()
-                + b'\n')
+                'params': {'_meta': meta or REQUEST_META,
+                           'notifications': notifications}
+                }).encode() + b'\n')
 
     def test_ack_comes_first_and_notifications_follow(self):
         connection = self._open()
@@ -165,10 +166,11 @@ class SubscriptionStreamTestCase(unittest.TestCase):
         connection = self._open()
         reader = connection.makefile('rb')
         connection.sendall(json.dumps({
-                'jsonrpc': '2.0', '_meta': tasks_meta, 'id': 10,
+                'jsonrpc': '2.0', 'id': 10,
                 'method': 'tools/call',
-                'params': {'name': 'slowish', 'arguments': {}}})
-                .encode() + b'\n')
+                'params': {'_meta': tasks_meta,
+                           'name': 'slowish', 'arguments': {}},
+                }).encode() + b'\n')
         created = json.loads(rpc.read_message(reader))
         task_id = created['result']['taskId']
 

@@ -70,9 +70,10 @@ class HostsTestCase(unittest.TestCase):
 
     def call_tool(self, name, arguments, request_id=1):
         return self.server.handle({
-            'jsonrpc': '2.0', '_meta': REQUEST_META,
+            'jsonrpc': '2.0',
             'id': request_id, 'method': 'tools/call',
-            'params': {'name': name, 'arguments': arguments}})
+            'params': {'_meta': REQUEST_META,
+                       'name': name, 'arguments': arguments}})
 
     def _run(self, name, arguments, module_output=PING_OK, module_rc=0,
              resolved=('web1',), poll=None):
@@ -181,8 +182,8 @@ class HostsTestCase(unittest.TestCase):
                         return_value=list_result), \
                 mock.patch('debops.mcp.tools.hosts.AnsibleInventory'):
             response = server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1, 'method': 'tools/call',
-                'params': {'name': 'ansible_ping',
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'_meta': REQUEST_META, 'name': 'ansible_ping',
                            'arguments': {'hosts': 'web1'}}})
         self.assertTrue(response['result']['isError'])
         self.assertIn('ansible_hosts',

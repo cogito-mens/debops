@@ -87,9 +87,10 @@ class FilesTestCase(unittest.TestCase):
 
     def call_tool(self, name, arguments=None, request_id=1):
         return self.server.handle({
-            'jsonrpc': '2.0', '_meta': REQUEST_META,
+            'jsonrpc': '2.0',
             'id': request_id, 'method': 'tools/call',
-            'params': {'name': name, 'arguments': arguments or {}},
+            'params': {'_meta': REQUEST_META,
+                       'name': name, 'arguments': arguments or {}},
         })
 
     def result_text(self, response):
@@ -161,8 +162,8 @@ class FilesTestCase(unittest.TestCase):
                                playbooks_path=self.tmpdir,
                                collection_index_provider=lambda: {})
         response = server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1, 'method': 'tools/call',
-                'params': {'name': 'project_read',
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'_meta': REQUEST_META, 'name': 'project_read',
                            'arguments': {'path': 'ansible/playbooks/'
                                          'custom.yml'}}})
         self.assertTrue(response['result']['isError'])

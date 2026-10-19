@@ -417,9 +417,9 @@ class ViewWriteTestCase(unittest.TestCase):
                            policy=McpPolicy(self.project))
         register_project_tools(server, roles_path=self.tmpdir)
         response = server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
+                'jsonrpc': '2.0', 'id': 1,
                 'method': 'tools/call',
-                'params': {'name': 'view_write',
+                'params': {'_meta': REQUEST_META, 'name': 'view_write',
                            'arguments': {'path': 'playbooks/x.yml',
                                          'content': '---\n'}}})
         result = response['result']
@@ -727,8 +727,8 @@ class OverridesWriteTestCase(unittest.TestCase):
         server = McpServer(project=self.project, policy=self.policy)
         register_project_tools(server, roles_path=self.tmpdir)
         response = server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
-                'method': 'tools/list', 'params': {}})
+                'jsonrpc': '2.0', 'id': 1,
+                'method': 'tools/list', 'params': {'_meta': REQUEST_META, }})
         names = [tool['name'] for tool in response['result']['tools']]
         self.assertNotIn('overrides_write', names)
 
@@ -738,8 +738,8 @@ class OverridesWriteTestCase(unittest.TestCase):
         server = McpServer(project=self.project, policy=policy)
         register_project_tools(server, roles_path=self.tmpdir)
         response = server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
-                'method': 'tools/list', 'params': {}})
+                'jsonrpc': '2.0', 'id': 1,
+                'method': 'tools/list', 'params': {'_meta': REQUEST_META, }})
         names = [tool['name'] for tool in response['result']['tools']]
         self.assertIn('overrides_write', names)
 
@@ -1067,9 +1067,10 @@ class ToolsTestCase(unittest.TestCase):
 
     def call_tool(self, name, arguments=None, request_id=1):
         return self.server.handle({
-            'jsonrpc': '2.0', '_meta': REQUEST_META,
+            'jsonrpc': '2.0',
             'id': request_id, 'method': 'tools/call',
-            'params': {'name': name, 'arguments': arguments or {}},
+            'params': {'_meta': REQUEST_META, 'name': name,
+                       'arguments': arguments or {}},
         })
 
     def result_text(self, response):
@@ -1161,8 +1162,8 @@ class ToolsTestCase(unittest.TestCase):
 
     def test_tools_are_listed(self):
         response = self.server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1, 'method': 'tools/list',
-                'params': {}})
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list',
+                'params': {'_meta': REQUEST_META, }})
         names = [tool['name'] for tool in response['result']['tools']]
         self.assertEqual(sorted(names),
                          ['ansible_facts', 'ansible_ping', 'check',
@@ -1204,8 +1205,8 @@ class ToolsTestCase(unittest.TestCase):
                            policy=McpPolicy(self.project))
         register_project_tools(server, roles_path=self.roles_path)
         response = server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
-                'method': 'tools/list', 'params': {}})
+                'jsonrpc': '2.0', 'id': 1,
+                'method': 'tools/list', 'params': {'_meta': REQUEST_META, }})
         annotations = {tool['name']: tool.get('annotations', {})
                        for tool in response['result']['tools']}
         # Pure reads are marked read-only
@@ -1227,8 +1228,8 @@ class ToolsTestCase(unittest.TestCase):
                            policy=McpPolicy(self.project))
         register_project_tools(server, roles_path=self.roles_path)
         response = server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
-                'method': 'tools/list', 'params': {}})
+                'jsonrpc': '2.0', 'id': 1,
+                'method': 'tools/list', 'params': {'_meta': REQUEST_META, }})
         return {tool['name']: tool
                 for tool in response['result']['tools']}
 
@@ -1275,8 +1276,8 @@ class ToolsTestCase(unittest.TestCase):
                            policy=McpPolicy(self.project))
         register_project_tools(server, roles_path=self.roles_path)
         response = server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1, 'method': 'tools/list',
-                'params': {}})
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list',
+                'params': {'_meta': REQUEST_META, }})
         names = [tool['name'] for tool in response['result']['tools']]
         self.assertNotIn('role_info', names)
 
@@ -1352,8 +1353,8 @@ class ToolsTestCase(unittest.TestCase):
                 playbooks_path=self.playbooks_path,
                 collection_index_provider=lambda: self.collection_index)
         response = server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1, 'method': 'tools/call',
-                'params': {'name': 'role_info',
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'_meta': REQUEST_META, 'name': 'role_info',
                            'arguments': {'name': 'testrole'}}})
         self.assertIn('en/stable-3.2/',
                       response['result']['content'][0]['text'])
@@ -1506,8 +1507,9 @@ class ToolsTestCase(unittest.TestCase):
         register_project_tools(server, roles_path=self.roles_path,
                                collection_index_provider=failing_provider)
         response = server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1, 'method': 'tools/call',
-                'params': {'name': 'collection_roles', 'arguments': {}}})
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'_meta': REQUEST_META,
+                           'name': 'collection_roles', 'arguments': {}}})
         self.assertTrue(response['result']['isError'])
         self.assertIn('ansible-galaxy',
                       response['result']['content'][0]['text'])
@@ -1644,8 +1646,8 @@ class ToolsTestCase(unittest.TestCase):
                 playbooks_path=self.playbooks_path,
                 collection_index_provider=lambda: self.collection_index)
         response = server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1, 'method': 'tools/call',
-                'params': {'name': 'playbooks', 'arguments': {}}})
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'_meta': REQUEST_META, 'name': 'playbooks', 'arguments': {}}})
         text = response['result']['content'][0]['text']
         self.assertIn('## Playbook sets (view configuration)', text)
         self.assertIn('- `web` → service/nginx, service/php_fpm', text)
@@ -1863,15 +1865,15 @@ class ToolsTestCase(unittest.TestCase):
         server = self._server_with_policy({'bundled_content': False})
         # The project role still works...
         response = server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1, 'method': 'tools/call',
-                'params': {'name': 'role_info',
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'_meta': REQUEST_META, 'name': 'role_info',
                            'arguments': {'name': 'shadowrole'}}})
         self.assertIn('The project copy',
                       response['result']['content'][0]['text'])
         # ... and the bundled-only role is not found
         response = server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 2, 'method': 'tools/call',
-                'params': {'name': 'role_info',
+                'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
+                'params': {'_meta': REQUEST_META, 'name': 'role_info',
                            'arguments': {'name': 'testrole'}}})
         self.assertTrue(response['result']['isError'])
 
@@ -1888,8 +1890,8 @@ class ToolsTestCase(unittest.TestCase):
     def test_bundled_content_off_removes_collection_playbooks(self):
         server = self._server_with_policy({'bundled_content': False})
         response = server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1, 'method': 'tools/call',
-                'params': {'name': 'playbooks', 'arguments': {}}})
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'_meta': REQUEST_META, 'name': 'playbooks', 'arguments': {}}})
         text = response['result']['content'][0]['text']
         self.assertIn('Project playbooks', text)
         self.assertNotIn('DebOps collection', text)
@@ -1912,8 +1914,9 @@ class ToolsTestCase(unittest.TestCase):
         server = self._server_with_policy({'external_content': False},
                                           index=index)
         response = server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1, 'method': 'tools/call',
-                'params': {'name': 'collection_roles', 'arguments': {}}})
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'_meta': REQUEST_META,
+                           'name': 'collection_roles', 'arguments': {}}})
         text = response['result']['content'][0]['text']
         self.assertIn('debops.debops', text)
         self.assertIn('local.local', text)

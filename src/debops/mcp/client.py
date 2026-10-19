@@ -62,11 +62,11 @@ class UnixClient(object):
     def request_raw(self, method, params=None):
         """Send one request; return the raw response line (bytes)."""
         self._connect()
+        # The request metadata rides in 'params._meta', per the spec
+        request_params = dict(params or {})
+        request_params['_meta'] = request_meta(self._capabilities)
         message = {'jsonrpc': '2.0', 'id': self._next_id,
-                   'method': method,
-                   '_meta': request_meta(self._capabilities)}
-        if params is not None:
-            message['params'] = params
+                   'method': method, 'params': request_params}
         self._next_id += 1
         try:
             self._connection.sendall(json.dumps(message).encode('utf-8')
@@ -95,10 +95,10 @@ class UnixClient(object):
     def notify(self, method, params=None):
         """Send a notification; no response is expected or read."""
         self._connect()
+        notify_params = dict(params or {})
+        notify_params['_meta'] = request_meta(self._capabilities)
         message = {'jsonrpc': '2.0', 'method': method,
-                   '_meta': request_meta(self._capabilities)}
-        if params is not None:
-            message['params'] = params
+                   'params': notify_params}
         self._connection.sendall(json.dumps(message).encode('utf-8')
                                  + b'\n')
 

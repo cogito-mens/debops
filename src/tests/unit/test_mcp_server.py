@@ -24,16 +24,19 @@ from unittest import mock
 
 def make_request(method, params=None, request_id=1, meta='default'):
     message = {'jsonrpc': '2.0', 'id': request_id, 'method': method}
-    if params is not None:
-        message['params'] = params
     if meta == 'default':
         # The per-request fields the specification requires
-        message['_meta'] = {
+        meta = {
             'io.modelcontextprotocol/protocolVersion': PROTOCOL_VERSION,
             'io.modelcontextprotocol/clientCapabilities': {},
         }
-    elif meta is not None:
-        message['_meta'] = meta
+    # The request metadata rides in 'params._meta', per the spec; a
+    # deliberately malformed (non-dict) params passes through untouched
+    if meta is not None and (params is None or isinstance(params, dict)):
+        params = dict(params or {})
+        params['_meta'] = meta
+    if params is not None:
+        message['params'] = params
     return message
 
 

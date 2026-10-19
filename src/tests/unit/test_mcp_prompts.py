@@ -158,8 +158,9 @@ class ServerPromptsTestCase(unittest.TestCase):
 
     def call(self, method, params):
         return self.server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
-                'method': method, 'params': params})
+                'jsonrpc': '2.0', 'id': 1,
+                'method': method,
+                'params': dict(params or {}, _meta=REQUEST_META)})
 
     def test_capability_advertised(self):
         result = self.call('server/discover', {})['result']
@@ -170,15 +171,17 @@ class ServerPromptsTestCase(unittest.TestCase):
         os.makedirs(empty)
         server = McpServer(prompts=PromptLibrary(empty))
         result = server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
-                'method': 'server/discover', 'params': {}})['result']
+                'jsonrpc': '2.0', 'id': 1,
+                'method': 'server/discover',
+                'params': {'_meta': REQUEST_META}})['result']
         self.assertNotIn('prompts', result['capabilities'])
 
     def test_no_library_no_methods(self):
         server = McpServer()
         response = server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
-                'method': 'prompts/list', 'params': {}})
+                'jsonrpc': '2.0', 'id': 1,
+                'method': 'prompts/list',
+                'params': {'_meta': REQUEST_META}})
         self.assertEqual(response['error']['code'], -32601)
 
     def test_list(self):

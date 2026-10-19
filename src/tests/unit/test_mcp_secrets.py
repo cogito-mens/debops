@@ -80,8 +80,8 @@ class SecretPathsTestCase(unittest.TestCase):
         with mock.patch('debops.mcp.tools.secrets.AnsibleInventory') as inv:
             inv.return_value.unlock.return_value = unlocked
             return self.server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1, 'method': 'tools/call',
-                'params': {'name': 'secret_paths',
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'_meta': REQUEST_META, 'name': 'secret_paths',
                            'arguments': arguments or {}}}), inv
 
     def result_text(self, response):
@@ -150,8 +150,9 @@ class SecretPathsTestCase(unittest.TestCase):
             inv.return_value.unlock.side_effect = ChildProcessError(
                     'git working directory not clean')
             response = self.server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1, 'method': 'tools/call',
-                'params': {'name': 'secret_paths', 'arguments': {}}})
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'_meta': REQUEST_META, 'name': 'secret_paths',
+                           'arguments': {}}})
             self.assertTrue(response['result']['isError'])
             self.assertIn('cannot unlock', self.result_text(response))
 
@@ -201,8 +202,9 @@ class NoSecretsTestCase(unittest.TestCase):
                                playbooks_path=tmpdir,
                                collection_index_provider=lambda: {})
         response = server.handle({
-                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1, 'method': 'tools/call',
-                'params': {'name': 'secret_paths', 'arguments': {}}})
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'_meta': REQUEST_META, 'name': 'secret_paths',
+                           'arguments': {}}})
         self.assertIn('no secrets directory',
                       response['result']['content'][0]['text'])
 

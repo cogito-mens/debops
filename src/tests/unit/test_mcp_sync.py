@@ -81,9 +81,10 @@ class SyncTestCase(unittest.TestCase):
 
     def call_tool(self, name, arguments=None, request_id=1):
         return self.server.handle({
-            'jsonrpc': '2.0', '_meta': REQUEST_META,
+            'jsonrpc': '2.0',
             'id': request_id, 'method': 'tools/call',
-            'params': {'name': name, 'arguments': arguments or {}},
+            'params': {'_meta': REQUEST_META,
+                       'name': name, 'arguments': arguments or {}},
         })
 
     def result_text(self, response):

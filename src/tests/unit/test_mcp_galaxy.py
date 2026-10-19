@@ -276,9 +276,10 @@ class CollectionToolsTestCase(unittest.TestCase):
         with mock.patch.object(galaxy, '_galaxy_install',
                                return_value='installed ok\n'):
             response = server.handle({
-                    'jsonrpc': '2.0', '_meta': meta, 'id': 1,
+                    'jsonrpc': '2.0', 'id': 1,
                     'method': 'tools/call',
-                    'params': {'name': 'collection_sync',
+                    'params': {'_meta': meta,
+                               'name': 'collection_sync',
                                'arguments': {}}})
             result = response['result']
             self.assertEqual(result['resultType'], 'task')
@@ -288,9 +289,10 @@ class CollectionToolsTestCase(unittest.TestCase):
             task = {}
             while time.monotonic() < limit:
                 task = server.handle({
-                        'jsonrpc': '2.0', '_meta': meta, 'id': 2,
+                        'jsonrpc': '2.0', 'id': 2,
                         'method': 'tasks/get',
-                        'params': {'taskId': result['taskId']}})['result']
+                        'params': {'_meta': meta,
+                                   'taskId': result['taskId']}})['result']
                 if task['status'] == 'completed':
                     break
                 time.sleep(0.05)
