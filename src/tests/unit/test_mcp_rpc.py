@@ -53,6 +53,12 @@ class ReadMessageTestCase(unittest.TestCase):
         self.assertEqual(rpc.read_message(stream, max_size=32),
                          b'{"method": "ping"}')
 
+    def test_custom_codes_stay_outside_the_reserved_range(self):
+        # The MCP specification reserves -32768..-32000 (with the
+        # legacy sub-range -32000..-32019 disused); implementation
+        # codes live outside of it
+        self.assertGreater(rpc.REQUEST_TOO_LARGE, -32000)
+
 
 class ParseMessageTestCase(unittest.TestCase):
 

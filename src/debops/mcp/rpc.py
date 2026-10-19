@@ -22,8 +22,10 @@ INTERNAL_ERROR = -32603
 # -32020 to -32099)
 UNSUPPORTED_PROTOCOL_VERSION = -32022
 
-# Implementation-defined error codes (the range -32000 to -32019)
-REQUEST_TOO_LARGE = -32000
+# Implementation-defined error codes: allocated outside the JSON-RPC
+# reserved range (-32768 to -32000) entirely, as the MCP specification
+# directs — the -32000 to -32019 sub-range is legacy
+REQUEST_TOO_LARGE = -31999
 
 # A single message is limited in size to blunt memory-exhaustion attempts;
 # the default is generous enough for large tool outputs
