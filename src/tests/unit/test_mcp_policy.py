@@ -156,6 +156,11 @@ class McpConfigTemplateTestCase(unittest.TestCase):
                          policy.min_free_bytes // (1024 * 1024))
         self.assertEqual(sorted(values['confirm']),
                          sorted(policy.confirm))
+        # The template deliberately narrows the open code default to
+        # the two known key sources
+        self.assertEqual(sorted(values['keyring_sources']),
+                         ['keybase.io', 'keyserver.ubuntu.com'])
+        self.assertEqual(policy.keyring_sources, [])
         self.assertEqual(values['write_allow'], policy.write_allow)
         # The template uses the CLI spelling of the options; the policy
         # canonicalizes them
@@ -177,7 +182,8 @@ class ConfirmationPolicyTestCase(unittest.TestCase):
 
     def test_default_confirmations(self):
         policy = self._policy({})
-        self.assertEqual(policy.confirm, {'run', 'project_push'})
+        self.assertEqual(policy.confirm,
+                         {'run', 'project_push', 'keyring_fetch'})
 
     def test_confirm_list_overrides(self):
         policy = self._policy({'confirm': ['run']})

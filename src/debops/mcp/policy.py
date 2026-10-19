@@ -183,10 +183,19 @@ class McpPolicy(object):
         # an elicitation request. The confirmation is a courtesy for the
         # user, not a security boundary: the client answers it, so the
         # 'execute' gate above remains the authoritative control
-        confirm = mcp_config.get('confirm', ['run', 'project_push'])
+        confirm = mcp_config.get('confirm',
+                                 ['run', 'project_push', 'keyring_fetch'])
         if isinstance(confirm, str):
             confirm = [confirm]
         self.confirm = set(str(name) for name in confirm or [])
+
+        # The hosts the keyring tool may fetch GPG keys from, as fnmatch
+        # globs (matched against the URL or keyserver hostname); empty
+        # means any HTTPS host — the fingerprint pin and the user
+        # confirmation carry the trust
+        self.keyring_sources = [str(entry) for entry in
+                                mcp_config.get('keyring_sources', [])
+                                or []]
 
         # Free disk space the write operations require on the project's
         # filesystem; below this they refuse, because a git operation

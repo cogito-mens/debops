@@ -19,6 +19,7 @@ from .execute import tool_check, tool_run
 from .files import (tool_config_get, tool_inventory_query,
                     tool_inventory_spec, tool_project_files,
                     tool_project_read, tool_view_delete, tool_view_write)
+from .keyring import tool_keyring_fetch
 from .hosts import tool_ansible_facts, tool_ansible_ping
 from .playbooks import (COLLECTION_PLAYBOOKS, tool_playbook_info,
                         tool_playbooks)
@@ -112,6 +113,9 @@ TOOL_ANNOTATIONS = {
     # A specification can remove inventory paths
     'inventory_spec': {'destructiveHint': True, 'idempotentHint': True,
                        'openWorldHint': False},
+    # Fetches over the network and adds a trust anchor
+    'keyring_fetch': {'destructiveHint': True, 'idempotentHint': True,
+                      'openWorldHint': True},
     # A check run changes nothing on the managed hosts, but the local
     # auto-commit may commit the project
     'check': {'destructiveHint': False, 'idempotentHint': True},
@@ -261,6 +265,32 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
           'required': ['spec']},
          lambda arguments: tool_inventory_spec(project, policy,
                                                arguments)),
+        ('keyring_fetch',
+         'Fetch a GPG key into the project keyring (ansible/keyring/), '
+         'for debops.keyring to use with APT repositories and signed '
+         'data. The server fetches and verifies the key itself; the key '
+         'material never enters the conversation. The file is named '
+         '0x<FINGERPRINT>.asc. The change is complete when this call '
+         'returns; a dependent call must wait for it (batched requests '
+         'run concurrently).',
+         {'type': 'object',
+          'properties': {
+              'url': {'type': 'string',
+                      'description': 'HTTPS URL of an ASCII-armored key, '
+                      'e.g. "https://keybase.io/drybjed/key.asc"'},
+              'keyserver': {'type': 'string',
+                            'description': 'HKPS keyserver to fetch from '
+                            '(default: "keyserver.ubuntu.com"); requires '
+                            '"fingerprint"'},
+              'fingerprint': {'type': 'string',
+                              'description': 'The expected full GPG '
+                              'fingerprint of the key (40 hex '
+                              'characters); the fetch is refused when '
+                              'the server-computed fingerprint differs'}},
+          'required': []},
+         lambda arguments, context: tool_keyring_fetch(
+             project, policy, arguments, context),
+         True, True),
         ('config_get',
          'Return the value of a DebOps configuration option, like '
          '"debops config get" does; the key is a dot-separated path in '
@@ -658,6 +688,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
     for entry in tools:
         name, description, schema, handler = entry[:4]
         needs_context = entry[4] if len(entry) > 4 else False
+        self_confirms = entry[5] if len(entry) > 5 else False
         handler = _wrap_resource_errors(handler)
         if name in READ_LOCKED_TOOLS:
             handler = _wrap_shared_lock(project, policy, handler)
@@ -670,4 +701,4 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
             server.register_tool(name, description, schema, handler,
                                  needs_context=needs_context,
                                  annotations=TOOL_ANNOTATIONS.get(name),
-                                 meta=meta)
+                                 meta=meta, self_confirms=self_confirms)

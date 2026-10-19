@@ -114,11 +114,18 @@ class ToolContext(object):
     """
 
     def __init__(self, request_id, cancelled, progress_token=None,
-                 notify=None, peer_pid=None):
+                 notify=None, peer_pid=None, client_capabilities=None,
+                 input_responses=None):
         self.request_id = request_id
         self.cancelled = cancelled
         self.progress_token = progress_token
         self.peer_pid = peer_pid
+        self.client_capabilities = (client_capabilities
+                                    if isinstance(client_capabilities, dict)
+                                    else {})
+        self.input_responses = (input_responses
+                                if isinstance(input_responses, dict)
+                                else None)
         self._notify = notify
 
     def progress(self, message, progress=None, total=None):
@@ -147,7 +154,7 @@ class Tool(object):
 
     def __init__(self, name, description, input_schema, handler,
                  output_schema=None, needs_context=False,
-                 annotations=None, meta=None):
+                 annotations=None, meta=None, self_confirms=False):
         self.name = name
         self.description = description
         self.input_schema = input_schema
@@ -156,6 +163,10 @@ class Tool(object):
         self.needs_context = needs_context
         self.annotations = annotations
         self.meta = meta
+        # A tool which runs its own elicitation mid-call (to show
+        # computed data in the confirmation) is skipped by the generic
+        # confirmation gate
+        self.self_confirms = self_confirms
 
     def describe(self):
         description = {
@@ -213,11 +224,11 @@ class McpServer(object):
 
     def register_tool(self, name, description, input_schema, handler,
                       output_schema=None, needs_context=False,
-                      annotations=None, meta=None):
+                      annotations=None, meta=None, self_confirms=False):
         """Register a tool exposed via tools/list and tools/call."""
         self.tools[name] = Tool(name, description, input_schema, handler,
                                 output_schema, needs_context, annotations,
-                                meta)
+                                meta, self_confirms)
 
     def cancel_all(self):
         """Cancel every in-flight request (transport teardown)."""
@@ -438,7 +449,7 @@ class McpServer(object):
         # Log the argument keys only; values may contain secrets
         logger.debug('Calling tool %s with arguments: %s',
                      name, sorted(arguments))
-        gated = self._confirmation_gate(name, arguments, params, context)
+        gated = self._confirmation_gate(tool, arguments, params, context)
         if gated is not None:
             return gated
         if not tool.needs_context:
@@ -454,14 +465,16 @@ class McpServer(object):
                     request_id, cancel_event,
                     progress_token=context.progress_token,
                     notify=context.notify,
-                    peer_pid=context.peer_pid)
+                    peer_pid=context.peer_pid,
+                    client_capabilities=context.client_capabilities,
+                    input_responses=params.get('inputResponses'))
             return tool.handler(arguments, tool_context)
         finally:
             if request_id is not None:
                 with self._active_lock:
                     self._active_requests.pop(request_id, None)
 
-    def _confirmation_gate(self, name, arguments, params, context):
+    def _confirmation_gate(self, tool, arguments, params, context):
         """Gate a tool on explicit user confirmation, via elicitation.
 
         Returns None when the call may proceed, otherwise the result to
@@ -471,7 +484,9 @@ class McpServer(object):
         boundary — the client answers it; the 'project.mcp.execute'
         policy remains the authoritative control.
         """
-        if self.policy is None or name not in self.policy.confirm:
+        if (self.policy is None
+                or tool.name not in self.policy.confirm
+                or tool.self_confirms):
             return None
 
         # The retry of a confirmed call carries the user's answer
@@ -481,9 +496,9 @@ class McpServer(object):
             content = answer.get('content') or {}
             if (answer.get('action') == 'accept'
                     and content.get('confirmed') is True):
-                logger.notice('Tool %s confirmed by the user', name)
+                logger.notice('Tool %s confirmed by the user', tool.name)
                 return None
-            logger.notice('Tool %s declined by the user', name)
+            logger.notice('Tool %s declined by the user', tool.name)
             return {'resultType': 'complete',
                     'content': [{'type': 'text',
                                  'text': 'The operation was declined '
@@ -494,7 +509,7 @@ class McpServer(object):
             # A client which cannot ask may not block the work; the
             # skip is written to the audit log
             logger.notice('Tool %s runs without user confirmation: '
-                          'the client cannot elicit', name)
+                          'the client cannot elicit', tool.name)
             return None
 
         return {'resultType': 'input_required',
@@ -503,7 +518,7 @@ class McpServer(object):
                         'method': 'elicitation/create',
                         'params': {
                             'mode': 'form',
-                            'message': _confirmation_message(name,
+                            'message': _confirmation_message(tool.name,
                                                              arguments),
                             'requestedSchema': {
                                 'type': 'object',

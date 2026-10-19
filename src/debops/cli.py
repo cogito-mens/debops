@@ -542,13 +542,23 @@ class Interpreter(object):
             schema = params.get('requestedSchema', {})
             content = {}
             for name, prop in schema.get('properties', {}).items():
-                if prop.get('type') != 'boolean':
+                ptype = prop.get('type')
+                title = prop.get('title', name)
+                if ptype == 'boolean':
+                    reply = input('    {} [y/N] '.format(title))
+                    content[name] = reply.strip().lower() in ('y', 'yes')
+                elif ptype == 'string':
+                    default = str(prop.get('default', ''))
+                    if default:
+                        reply = input('    {} [{}] '.format(title,
+                                                            default))
+                        content[name] = reply.strip() or default
+                    else:
+                        content[name] = input('    {}: '.format(title))
+                else:
                     print('Error: unsupported elicitation field: '
                           '{}'.format(name), file=sys.stderr)
                     return None
-                reply = input('    {} [y/N] '.format(
-                        prop.get('title', name)))
-                content[name] = reply.strip().lower() in ('y', 'yes')
             answers[key] = {'action': 'accept', 'content': content}
         return answers
 

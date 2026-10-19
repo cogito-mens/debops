@@ -41,7 +41,14 @@ execute_options = ["limit", "tags", "skip-tags"]
 # Tools which ask the user for confirmation before they run, on clients
 # which support it. The confirmation is a courtesy, not a security
 # boundary; the 'execute' option above is the boundary.
-confirm = ["run", "project_push"]
+confirm = ["run", "project_push", "keyring_fetch"]
+
+# The hosts the keyring tool may fetch GPG keys from (APT repository
+# keys and other trust anchors), as fnmatch globs matched against the
+# hostname. The code default is open; the fingerprint pin and the user
+# confirmation carry the trust. To close the feature entirely, deny the
+# tool above.
+keyring_sources = ["keyserver.ubuntu.com", "keybase.io"]
 
 # The paths the write tools ('view_write', 'view_delete',
 # 'inventory_spec') may touch, as fnmatch globs relative to the view

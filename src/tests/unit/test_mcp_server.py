@@ -430,6 +430,16 @@ class ConfirmationGateTestCase(unittest.TestCase):
                 params={'name': 'run', 'arguments': {}}))
         self.assertFalse(response['result']['isError'])
 
+    def test_self_confirming_tool_skips_the_gate(self):
+        # The tool runs its own elicitation mid-call, so the generic
+        # gate lets it through
+        server = self._server()
+        server.tools['run'].self_confirms = True
+        response = self._call(server,
+                              capabilities={'elicitation': {'form': {}}})
+        self.assertFalse(response['result']['isError'])
+        self.assertEqual(self.ran, [{'playbook': 'site'}])
+
 
 class ClacksOverheadTestCase(unittest.TestCase):
     """Every result carries the tribute in its '_meta' overhead."""
