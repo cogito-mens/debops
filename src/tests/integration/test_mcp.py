@@ -1238,13 +1238,17 @@ def test_project_sync_via_stdio(run_debops, mcp_env, tmp_path):
     assert result.returncode == 0, result.stderr
     responses = {response["id"]: response
                  for response in read_json_lines(result.stdout)}
-    first = responses[1]["result"]
-    assert first["isError"] is False, first
-    assert "Already up to date" in first["content"][0]["text"], first
-    # The second, immediate call is throttled
-    second = responses[2]["result"]
-    assert second["isError"] is True, second
-    assert "retry in" in second["content"][0]["text"], second
+    # Requests on one connection run concurrently: either request may
+    # win the exclusive lock and do the pull, leaving the other one
+    # throttled
+    results = [responses[1]["result"], responses[2]["result"]]
+    pulled = [result for result in results if not result["isError"]]
+    throttled = [result for result in results if result["isError"]]
+    assert len(pulled) == 1, results
+    assert len(throttled) == 1, results
+    assert "Already up to date" in pulled[0]["content"][0]["text"], \
+        results
+    assert "retry in" in throttled[0]["content"][0]["text"], results
 
 
 def test_pull_refreshes_the_project_via_stdio(run_debops, mcp_env,
