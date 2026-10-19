@@ -13,6 +13,7 @@ from debops.mcp.server import McpServer, PROTOCOL_VERSION, RequestCancelled, Too
 from debops.mcp.tools import register_project_tools
 from unittest import mock
 import io
+import json
 import os
 import shutil
 import tempfile
@@ -164,6 +165,22 @@ class HostsTestCase(unittest.TestCase):
         # The host is present with an empty branch, not silently absent
         self.assertIn('web1.example.com', text)
         self.assertIn('{}', text)
+
+    def test_facts_format_json(self):
+        _popen, response = self._run(
+                'ansible_facts',
+                {'hosts': 'web1', 'format': 'json'},
+                module_output=FACTS_OK)
+        document = json.loads(response['result']['content'][0]['text'])
+        self.assertEqual(document,
+                         {'web1.example.com': {
+                                 'ansible_distribution': 'Debian',
+                                 'ansible_distribution_version': '12'}})
+
+    def test_facts_invalid_format_rejected(self):
+        response = self.call_tool('ansible_facts',
+                                  {'hosts': 'web1', 'format': 'yaml'})
+        self.assertTrue(response['result']['isError'])
 
     def test_invalid_host_pattern(self):
         response = self.call_tool('ansible_ping', {'hosts': 'a b'})

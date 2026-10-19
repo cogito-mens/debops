@@ -340,6 +340,14 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
     collection_index_provider = restrict_content(
             collection_index_provider, project, policy)
 
+    # The document tools serve rendered text for humans by default, or
+    # one JSON document for machines ('format: json')
+    format_note = (' Returns text; pass "format": "json" for the '
+                   'parsed document.')
+    format_property = {'type': 'string', 'enum': ['text', 'json'],
+                       'description': 'Render as text (default) or as '
+                                      'one JSON document'}
+
     tools = [
         ('project_status',
          'Report the status of the DebOps project: type, current '
@@ -684,14 +692,15 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
              'over top-level fact names ("ansible_distribution*"); '
              'a dotted path narrows into a branch instead '
              '("ansible_local.postfix*" — the per-role applied state '
-             'lives in the ansible_local dict).',
+             'lives in the ansible_local dict).' + format_note,
              {'type': 'object',
               'properties': dict(exec_properties, **{
                   'filter': {'type': 'string',
                              'description': 'Narrow the gathered facts: '
                              'a glob over top-level fact names, or a '
                              'dotted path into a branch '
-                             '("ansible_local.postfix*")'}}),
+                             '("ansible_local.postfix*")'},
+                  'format': format_property}),
               'required': ['hosts']},
              lambda arguments, context: tool_ansible_facts(
                  project, policy, arguments, context),
@@ -726,7 +735,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
              'bundled DebOps collection, from its vars/ directory — '
              'higher-precedence, internal state, not meant to be '
              'overridden from the inventory. For the overridable '
-             'defaults, use the role_defaults tool.',
+             'defaults, use the role_defaults tool.' + format_note,
              {'type': 'object',
               'properties': {'name': {'type': 'string',
                                       'description': 'Role name, with or '
@@ -742,7 +751,8 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                         'only, "brief" (default) gives a '
                                         'one-line summary and a truncated '
                                         'default per variable, "full" '
-                                        'gives the complete documentation'}},
+                                        'gives the complete documentation'},
+                             'format': format_property},
               'required': ['name']},
              lambda arguments: tool_role_variables(
                                roles_paths, arguments,
@@ -780,7 +790,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
              'inventory. Survey a role with the "brief" or "names" '
              'detail level, then use "filter" with the "full" detail '
              'level to read the complete documentation of specific '
-             'variables.',
+             'variables.' + format_note,
              {'type': 'object',
               'properties': {'name': {'type': 'string',
                                       'description': 'Role name, with or '
@@ -796,7 +806,8 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                         'only, "brief" (default) gives a '
                                         'one-line summary and a truncated '
                                         'default per variable, "full" '
-                                        'gives the complete documentation'}},
+                                        'gives the complete documentation'},
+                             'format': format_property},
               'required': ['name']},
              lambda arguments: tool_role_defaults(
                  roles_paths, arguments,
@@ -806,7 +817,8 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
             ('role_tasks',
              'Inspect the tasks of a role: its task files, and per file '
              'the tasks with their modules, conditions and tags. Use '
-             'this to understand what a role does before applying it.',
+             'this to understand what a role does before applying it.'
+             + format_note,
              {'type': 'object',
               'properties': {'name': {'type': 'string',
                                       'description': 'Role name, with or '
@@ -823,7 +835,8 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                         'enum': ['brief', 'full'],
                                         'description': '"brief" (default) '
                                         'shows name and module, "full" '
-                                        'adds when/tags'}},
+                                        'adds when/tags'},
+                             'format': format_property},
               'required': ['name']},
              lambda arguments: tool_role_tasks(
                  roles_paths, arguments,
@@ -831,7 +844,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
             ('role_handlers',
              'Inspect the handlers of a role: its handler files, and '
              'per file the handlers with their modules, listen topics '
-             'and conditions.',
+             'and conditions.' + format_note,
              {'type': 'object',
               'properties': {'name': {'type': 'string',
                                       'description': 'Role name, with or '
@@ -849,7 +862,8 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                         'description': '"brief" '
                                         '(default) shows name, module '
                                         'and listen topic, "full" adds '
-                                        'when/tags'}},
+                                        'when/tags'},
+                             'format': format_property},
               'required': ['name']},
              lambda arguments: tool_role_handlers(
                  roles_paths, arguments,

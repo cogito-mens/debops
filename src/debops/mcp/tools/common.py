@@ -6,6 +6,7 @@
 
 import contextlib
 import fcntl
+import json
 import logging
 import os
 import re
@@ -158,6 +159,26 @@ class ReadWriteLock(object):
 # The project-wide lock: writers (executions, syncs, secrets) are
 # exclusive; readers share
 PROJECT_LOCK = ReadWriteLock()
+
+
+def json_document(value):
+    """Render a parsed document as one JSON text block, for the 'json'
+    format of the document tools. Keys are sorted so that the output is
+    deterministic; YAML exotica (timestamps) degrade to strings."""
+    return json.dumps(value, indent=2, sort_keys=True, default=str) \
+        + '\n'
+
+
+def parse_output_format(arguments):
+    """The 'format' argument of a document tool: 'text' or 'json'.
+
+    Raises ValueError for anything else.
+    """
+    output_format = str(arguments.get('format') or 'text')
+    if output_format not in ('text', 'json'):
+        raise ValueError('invalid format: {!r} (text or json)'
+                         .format(output_format))
+    return output_format
 
 
 def confirmation_flow(context, message, required=False):

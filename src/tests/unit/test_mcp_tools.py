@@ -13,6 +13,7 @@ from debops.mcp.policy import McpPolicy
 from debops.mcp.server import McpServer, PROTOCOL_VERSION
 from debops.mcp.tools import register_project_tools
 from debops.mcp.tools.playbooks import playbook_summary
+import json
 import os
 import shutil
 import stat
@@ -1416,6 +1417,50 @@ class ToolsTestCase(unittest.TestCase):
                    if line.startswith('- **')]
         self.assertLess(len(line), 140)
         self.assertTrue(line.endswith('…`)'))
+
+    def test_role_defaults_format_json(self):
+        response = self.call_tool('role_defaults',
+                                  {'name': 'testrole', 'format': 'json'})
+        document = json.loads(self.result_text(response))
+        self.assertIs(document['testrole__enabled'], True)
+        self.assertEqual(document['testrole__port'], 8080)
+        self.assertEqual(document['testrole__extra'], 'undocumented')
+        self.assertEqual(len(document['testrole__long_list']), 30)
+
+    def test_role_defaults_format_json_honors_the_filter(self):
+        response = self.call_tool('role_defaults',
+                                  {'name': 'testrole', 'format': 'json',
+                                   'filter': 'port'})
+        document = json.loads(self.result_text(response))
+        self.assertEqual(sorted(document), ['testrole__port'])
+
+    def test_role_defaults_invalid_format(self):
+        response = self.call_tool('role_defaults',
+                                  {'name': 'testrole', 'format': 'yaml'})
+        self.assertTrue(response['result']['isError'])
+
+    def test_role_tasks_format_json(self):
+        response = self.call_tool('role_tasks',
+                                  {'name': 'testrole', 'file': 'main',
+                                   'format': 'json'})
+        document = json.loads(self.result_text(response))
+        self.assertIsInstance(document, list)
+        self.assertEqual(document[0]['name'], 'Install the test packages')
+        self.assertIn('ansible.builtin.apt', document[0])
+
+    def test_role_tasks_overview_format_json(self):
+        response = self.call_tool('role_tasks',
+                                  {'name': 'testrole', 'format': 'json'})
+        document = json.loads(self.result_text(response))
+        self.assertEqual(document, {'extra': 1, 'main': 3})
+
+    def test_role_variables_format_json(self):
+        response = self.call_tool('role_variables',
+                                  {'name': 'testrole', 'format': 'json'})
+        document = json.loads(self.result_text(response))
+        self.assertEqual(document['testrole__state_dir'],
+                         '/run/testrole')
+        self.assertIs(document['testrole__internal'], True)
 
     def test_role_defaults_invalid_detail(self):
         response = self.call_tool('role_defaults',

@@ -19,7 +19,8 @@ import yaml
 
 from ...ansible.inventory import AnsibleInventory
 from ..server import RequestCancelled
-from .common import (error_result, exclusive_project, mcp_environ,
+from .common import (error_result, exclusive_project, json_document,
+                     mcp_environ, parse_output_format,
                      text_result)
 from .execute import resolve_hosts, run_cancellable
 
@@ -143,6 +144,15 @@ def _render_facts(blocks):
     return '\n\n'.join(rendered)
 
 
+def _render_facts_json(blocks):
+    """Render parsed facts blocks as one JSON document for machines."""
+    document = {}
+    for host, value in blocks:
+        if host is not None:
+            document[host] = value
+    return json_document(document)
+
+
 def _exec(project, policy, arguments, context, module, module_filter):
     hosts = str(arguments.get('hosts') or '')
     if not _validate_host_pattern(hosts):
@@ -166,6 +176,11 @@ def _exec(project, policy, arguments, context, module, module_filter):
         ansible_filter = (module_filter.split('.', 1)[0]
                           if '.' in module_filter else module_filter)
         command.extend(['-a', 'filter=' + ansible_filter])
+    if module == 'ansible.builtin.setup':
+        try:
+            output_format = parse_output_format(arguments)
+        except ValueError as errmsg:
+            return error_result(str(errmsg))
 
     with exclusive_project(project, policy,
                            note='{} {}'.format(module, hosts)):
@@ -235,8 +250,12 @@ def _exec(project, policy, arguments, context, module, module_filter):
             blocks = [(host, (_filter_dotted(value, module_filter)
                               if isinstance(value, dict) else value))
                       for host, value in blocks]
-        text = '# facts for {}\n\nHosts: {}\n\n{}'.format(
-                hosts, ', '.join(resolved), _render_facts(blocks))
+        if output_format == 'json':
+            # Pure JSON, parseable as-is: the document is keyed by host
+            text = _render_facts_json(blocks)
+        else:
+            text = '# facts for {}\n\nHosts: {}\n\n{}'.format(
+                    hosts, ', '.join(resolved), _render_facts(blocks))
         structured = None
     # ansible returns non-zero when any host failed
     if returncode != 0:

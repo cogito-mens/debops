@@ -11,7 +11,8 @@ import yaml
 
 from ...constants import DEBOPS_PACKAGE_DATA
 from ..policy import confine_under
-from .common import (FOLD_MARKER, dump_default, error_result, render_task,
+from .common import (FOLD_MARKER, dump_default, error_result,
+                     json_document, parse_output_format, render_task,
                      task_module, text_result)
 
 logger = logging.getLogger(__name__)
@@ -437,6 +438,10 @@ def _tool_role_tasklist(roles_paths, arguments, subdir,
         return error_result('role not found or invalid: {}'
                             .format(arguments.get('name')))
     name, path = resolved
+    try:
+        output_format = parse_output_format(arguments)
+    except ValueError as errmsg:
+        return error_result(str(errmsg))
     tasks_dir = os.path.join(path, subdir)
     if not os.path.isdir(tasks_dir):
         return error_result('role {} has no {} directory'.format(
@@ -454,14 +459,18 @@ def _tool_role_tasklist(roles_paths, arguments, subdir,
     if not task_file:
         # Overview: the task files and their task counts
         lines = ['# debops.{} {} files'.format(name, kind), '']
+        counts = {}
         total = 0
         for entry in entries:
-            tasks = _load_tasks(os.path.join(tasks_dir, entry))
+            count = len(_load_tasks(os.path.join(tasks_dir, entry)))
+            counts[os.path.splitext(entry)[0]] = count
             lines.append('- `{}` — {} {}{}'.format(
-                    os.path.splitext(entry)[0], len(tasks), kind,
-                    '' if len(tasks) == 1 else 's'))
-            total += len(tasks)
+                    os.path.splitext(entry)[0], count, kind,
+                    '' if count == 1 else 's'))
+            total += count
         lines.insert(1, '({} {}s)'.format(total, kind))
+        if output_format == 'json':
+            return text_result(json_document(counts))
         return text_result('\n'.join(lines) + '\n')
 
     if not task_file.endswith(('.yml', '.yaml')):
@@ -477,6 +486,12 @@ def _tool_role_tasklist(roles_paths, arguments, subdir,
     tasks = _load_tasks(target)
 
     name_filter = str(arguments.get('filter') or '').lower()
+    if output_format == 'json':
+        return text_result(json_document(
+                [task for task in tasks
+                 if not name_filter
+                 or name_filter in str(task.get('name', '')).lower()]))
+
     detail = arguments.get('detail', 'brief')
 
     lines = ['# debops.{} {}/{} ({} {}{})'.format(
@@ -699,6 +714,10 @@ def tool_role_variables(roles_paths, arguments, index_provider=None):
         return error_result('role not found or invalid: {}'
                             .format(arguments.get('name')))
     name, path = resolved
+    try:
+        output_format = parse_output_format(arguments)
+    except ValueError as errmsg:
+        return error_result(str(errmsg))
 
     sources = load_role_sources(path, 'vars')
     if not sources:
@@ -723,6 +742,12 @@ def tool_role_variables(roles_paths, arguments, index_provider=None):
     if name_filter:
         entries = [entry for entry in entries
                    if name_filter in entry[0].lower()]
+
+    if output_format == 'json':
+        document = {key: value for key, value in values.items()
+                    if not name_filter or name_filter in key.lower()}
+        return text_result(json_document(document))
+
     if not entries:
         return text_result('no matching variables in debops.{} vars'
                            .format(name))
@@ -777,6 +802,10 @@ def tool_role_defaults(roles_paths, arguments, index_provider=None,
         return error_result('role not found or invalid: {}'
                             .format(arguments.get('name')))
     name, path = resolved
+    try:
+        output_format = parse_output_format(arguments)
+    except ValueError as errmsg:
+        return error_result(str(errmsg))
 
     sources = load_role_sources(path, 'defaults')
     if not sources:
@@ -815,6 +844,11 @@ def tool_role_defaults(roles_paths, arguments, index_provider=None,
     if name_filter:
         entries = [entry for entry in entries
                    if name_filter in entry[0].lower()]
+
+    if output_format == 'json':
+        document = {key: value for key, value in values.items()
+                    if not name_filter or name_filter in key.lower()}
+        return text_result(json_document(document))
 
     if not entries:
         return text_result('no matching variables in debops.{} '
