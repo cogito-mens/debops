@@ -66,6 +66,11 @@ write_allow = ["resources/**", "playbooks/**"]
 # all, so no pattern can open the configuration, the hooks or the
 # environment; 'ansible.cfg' is never writable either.
 
+# The 'overrides_write' tool injects files, templates and tasks into
+# read-only roles (ansible/overrides/), run on the managed hosts at the
+# next playbook execution; it is not registered unless enabled.
+overrides = false
+
 # The minimum interval between git synchronizations with the origin,
 # in seconds.
 sync_interval = 60

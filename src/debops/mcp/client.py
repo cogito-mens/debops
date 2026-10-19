@@ -163,6 +163,8 @@ TOOL_CALL_EXAMPLES = {
                    'content="#!/bin/sh" mode=0755'],
     'view_delete': ['path=playbooks/deploy.yml'],
     'keyring_fetch': ['url=https://keybase.io/drybjed/key.asc'],
+    'overrides_write': ['path=templates/nginx/nginx.conf.j2 '
+                        'content=...'],
     'config_get': ['key=project.default_view'],
     'inventory_query': ['action=graph',
                         'action=host host=web1.example.com'],

@@ -197,6 +197,16 @@ class McpPolicy(object):
                                 mcp_config.get('keyring_sources', [])
                                 or []]
 
+        # The overrides write tool injects content into read-only
+        # roles, run on the managed hosts at the next playbook
+        # execution; it is not registered unless the project enables it
+        overrides = mcp_config.get('overrides', False)
+        if isinstance(overrides, str):
+            overrides = strtobool(overrides)
+        self.overrides = bool(overrides)
+        if self.overrides:
+            logger.notice('The overrides write tool enabled by policy')
+
         # Free disk space the write operations require on the project's
         # filesystem; below this they refuse, because a git operation
         # which dies mid-write can leave a broken repository. An

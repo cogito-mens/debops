@@ -171,6 +171,7 @@ class McpConfigTemplateTestCase(unittest.TestCase):
                          policy.bundled_content)
         self.assertEqual(values['external_content'],
                          policy.external_content)
+        self.assertEqual(values['overrides'], policy.overrides)
 
 
 class ConfirmationPolicyTestCase(unittest.TestCase):

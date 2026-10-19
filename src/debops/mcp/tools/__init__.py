@@ -20,6 +20,7 @@ from .files import (tool_config_get, tool_inventory_query,
                     tool_inventory_spec, tool_project_files,
                     tool_project_read, tool_view_delete, tool_view_write)
 from .keyring import tool_keyring_fetch
+from .overrides import tool_overrides_write
 from .hosts import tool_ansible_facts, tool_ansible_ping
 from .playbooks import (COLLECTION_PLAYBOOKS, tool_playbook_info,
                         tool_playbooks)
@@ -116,6 +117,9 @@ TOOL_ANNOTATIONS = {
     # Fetches over the network and adds a trust anchor
     'keyring_fetch': {'destructiveHint': True, 'idempotentHint': True,
                       'openWorldHint': True},
+    # Injects content into role executions on the managed hosts
+    'overrides_write': {'destructiveHint': True, 'idempotentHint': True,
+                        'openWorldHint': False},
     # A check run changes nothing on the managed hosts, but the local
     # auto-commit may commit the project
     'check': {'destructiveHint': False, 'idempotentHint': True},
@@ -680,6 +684,38 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
           'additionalProperties': False},
          make_sync_tool(project, policy, sync_state, 'push')),
     ])
+
+    # The overrides write tool injects content into read-only roles; it
+    # is not registered unless the project enables it
+    if policy is not None and policy.overrides:
+        tools.append((
+            'overrides_write',
+            'Write a file into the project\'s overrides '
+            '(ansible/overrides/): alternative files, templates and '
+            'additional tasks for read-only roles, run on the managed '
+            'hosts at the next playbook execution. The change is '
+            'committed to git automatically. The change is complete '
+            'when this call returns; a dependent call must wait for it '
+            '(batched requests run concurrently).',
+            {'type': 'object',
+             'properties': {'path': {'type': 'string',
+                                     'description': 'File to write, '
+                                     'relative to the overrides tree: '
+                                     '"files/...", "tasks/..." or '
+                                     '"templates/..."'},
+                            'content': {'type': 'string',
+                                        'description': 'The complete '
+                                        'file content (UTF-8 text)'},
+                            'mode': {'type': 'string',
+                                     'description': 'Octal file mode, '
+                                     'e.g. "0755", for scripts which '
+                                     'need the executable bit; '
+                                     'permission bits only. Omit to '
+                                     'keep the mode of an existing '
+                                     'file, or 0644 for a new one'}},
+             'required': ['path', 'content']},
+            lambda arguments: tool_overrides_write(project, policy,
+                                                   arguments)))
 
     # Tools the policy gates on user confirmation carry the marker and
     # say so in their description; an ungated tool never mentions it

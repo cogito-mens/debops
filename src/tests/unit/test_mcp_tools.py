@@ -625,6 +625,94 @@ class ViewWriteTestCase(unittest.TestCase):
                                   ('updated', 'skill://demo')])
 
 
+class OverridesWriteTestCase(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-overrides-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        subprocess.run(['git', 'init', '-q'], cwd=self.tmpdir,
+                       check=True)
+        self.commits = []
+
+        def _record_commit(instance, message=None):
+            self.commits.append(message)
+
+        self.project = type('Project', (), {
+            'path': self.tmpdir, 'name': 'project',
+            'project_type': 'legacy', 'view': 'system',
+            'auto_commit': _auto_commit_noop,
+            'commit': _record_commit,
+            'config': type('Config', (), {'raw': {}})(),
+        })()
+        self.policy = McpPolicy(self.project)
+        self.target = os.path.join(self.tmpdir, 'ansible', 'overrides')
+
+    def write(self, path, content='x\n', mode=None):
+        from debops.mcp.tools.overrides import tool_overrides_write
+        arguments = {'path': path, 'content': content}
+        if mode is not None:
+            arguments['mode'] = mode
+        return tool_overrides_write(self.project, self.policy, arguments)
+
+    def result_text(self, result):
+        content = result['content']
+        self.assertEqual(len(content), 1)
+        self.assertEqual(content[0]['type'], 'text')
+        return content[0]['text']
+
+    def test_not_registered_by_default(self):
+        server = McpServer(project=self.project, policy=self.policy)
+        register_project_tools(server, roles_path=self.tmpdir)
+        response = server.handle({
+                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
+                'method': 'tools/list', 'params': {}})
+        names = [tool['name'] for tool in response['result']['tools']]
+        self.assertNotIn('overrides_write', names)
+
+    def test_registered_when_enabled(self):
+        self.project.config.raw['project'] = {'mcp': {'overrides': True}}
+        policy = McpPolicy(self.project)
+        server = McpServer(project=self.project, policy=policy)
+        register_project_tools(server, roles_path=self.tmpdir)
+        response = server.handle({
+                'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 1,
+                'method': 'tools/list', 'params': {}})
+        names = [tool['name'] for tool in response['result']['tools']]
+        self.assertIn('overrides_write', names)
+
+    def test_write_lands_and_commits(self):
+        response = self.write('tasks/extra.yml',
+                              content='---\n- name: extra\n')
+        self.assertIn('created: ansible/overrides/tasks/extra.yml',
+                      self.result_text(response))
+        with open(os.path.join(self.target, 'tasks', 'extra.yml')) as fp:
+            self.assertEqual(fp.read(), '---\n- name: extra\n')
+        self.assertEqual(self.commits,
+                         ['DebOps MCP: overrides_write tasks/extra.yml'])
+
+    def test_only_the_known_subdirectories(self):
+        for path in ('other/x', 'files', 'files/', 'files/../out',
+                     'templates/x.j2'):
+            response = self.write(path)
+            if path == 'templates/x.j2':
+                self.assertFalse(response['isError'])
+            else:
+                self.assertTrue(response['isError'], path)
+
+    def test_deny_components_apply(self):
+        response = self.write('files/secret/x')
+        self.assertTrue(response['isError'])
+        self.assertIn('denied by policy',
+                      response['content'][0]['text'])
+
+    def test_non_git_project_is_refused(self):
+        shutil.rmtree(os.path.join(self.tmpdir, '.git'))
+        response = self.write('tasks/extra.yml')
+        self.assertTrue(response['isError'])
+        self.assertIn('not a git repository',
+                      response['content'][0]['text'])
+
+
 class InventorySpecTestCase(unittest.TestCase):
 
     def setUp(self):

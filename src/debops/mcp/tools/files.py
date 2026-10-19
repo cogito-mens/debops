@@ -272,6 +272,18 @@ def _is_git_tracked_project(project):
     return os.path.lexists(os.path.join(project.path, '.git'))
 
 
+def _parse_write_mode(arguments):
+    """The octal 'mode' argument as an int, or None; ValueError if bad."""
+    if arguments.get('mode') is None:
+        return None
+    raw_mode = str(arguments['mode'])
+    if not re.fullmatch(r'0[0-7]{3}', raw_mode):
+        raise ValueError('invalid mode: {!r} (an octal string like '
+                         '"0755", permission bits only)'
+                         .format(raw_mode))
+    return int(raw_mode, 8)
+
+
 def tool_view_write(project, policy, arguments, server=None):
     relative = str(arguments.get('path') or '').strip('/')
     content = arguments.get('content')
@@ -281,14 +293,10 @@ def tool_view_write(project, policy, arguments, server=None):
     if size > WRITE_SIZE_LIMIT:
         return error_result('content is larger than {} bytes: {}'
                             .format(WRITE_SIZE_LIMIT, relative))
-    mode = None
-    if arguments.get('mode') is not None:
-        raw_mode = str(arguments['mode'])
-        if not re.fullmatch(r'0[0-7]{3}', raw_mode):
-            return error_result('invalid mode: {!r} (an octal string '
-                                'like "0755", permission bits only)'
-                                .format(raw_mode))
-        mode = int(raw_mode, 8)
+    try:
+        mode = _parse_write_mode(arguments)
+    except ValueError as errmsg:
+        return error_result(str(errmsg))
 
     # Writes are recoverable and attributable only with git
     if not _is_git_tracked_project(project):
