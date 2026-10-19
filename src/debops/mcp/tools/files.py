@@ -209,6 +209,20 @@ def _authorized_write_path(project, policy, relative):
     for part in canonical_relative.split('/'):
         if part in READ_DENY_COMPONENTS:
             raise ValueError('path is denied by policy: ' + relative)
+    # The project machinery is never writable: under '.debops/' only the
+    # MCP content directories exist for the write tools, so that no
+    # allowlist can open the configuration or the hooks; and no anchor
+    # opens 'ansible.cfg', which decides where Ansible loads code from
+    if canonical_relative.startswith('.debops/'):
+        parts = canonical_relative.split('/')
+        if len(parts) < 4 or parts[1:3] not in (['mcp', 'skills'],
+                                                ['mcp', 'prompts']):
+            raise ValueError('only the MCP content directories '
+                             '(.debops/mcp/skills/, '
+                             '.debops/mcp/prompts/) are writable: '
+                             + relative)
+    if os.path.basename(canonical_relative) == 'ansible.cfg':
+        raise ValueError('path is denied by policy: ' + relative)
     if not any(fnmatch.fnmatch(canonical_relative, pattern)
                for pattern in policy.write_allow):
         raise ValueError('path is not writable by the project policy '

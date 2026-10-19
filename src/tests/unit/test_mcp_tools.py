@@ -583,6 +583,29 @@ class ViewWriteTestCase(unittest.TestCase):
         self.assertIn('denied by policy',
                       response['content'][0]['text'])
 
+    def test_project_machinery_is_never_writable(self):
+        # Even a wildcard allow cannot open the configuration, the
+        # hooks or the environment: only the MCP content directories
+        # exist under '.debops/'
+        for path in ('.debops/conf.d/mcp.toml',
+                     '.debops/hooks/pre-run',
+                     '.debops/environment',
+                     '.debops/mcp/other/x',
+                     '.debops/mcp/skills'):
+            response = self.write_scoped(path, allow=['.debops/**'])
+            self.assertTrue(response['isError'], path)
+            self.assertIn('MCP content directories',
+                          response['content'][0]['text'], path)
+
+    def test_ansible_cfg_is_never_writable(self):
+        for path in ('ansible.cfg',
+                     'ansible/ansible.cfg'):
+            response = self.write_scoped(path,
+                                         allow=['**'])
+            self.assertTrue(response['isError'], path)
+            self.assertIn('denied by policy',
+                          response['content'][0]['text'], path)
+
     def test_write_announces_mcp_content_changes(self):
         events = []
         server = type('Server', (), {
