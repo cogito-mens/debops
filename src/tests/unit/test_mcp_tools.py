@@ -576,6 +576,48 @@ class ViewWriteTestCase(unittest.TestCase):
         self.assertIn('created: ansible/playbooks/deploy.yml',
                       self.result_text(response))
 
+    def test_leading_slash_anchors_at_the_project_root(self):
+        response = self.write_scoped('/playbooks/deploy.yml',
+                                     content='---\n',
+                                     allow=['/playbooks/**'])
+        self.assertIn('created: /playbooks/deploy.yml',
+                      self.result_text(response))
+        # Project-root-anchored, outside the view
+        self.assertTrue(os.path.isfile(os.path.join(
+                self.tmpdir, 'playbooks', 'deploy.yml')))
+
+    def test_anchored_patterns_do_not_cross(self):
+        # A view pattern must not authorize a root path, nor the
+        # reverse
+        response = self.write_scoped('/playbooks/deploy.yml',
+                                     content='---\n',
+                                     allow=['playbooks/**'])
+        self.assertTrue(response['isError'])
+        self.assertIn('not writable', response['content'][0]['text'])
+        response = self.write_scoped('playbooks/deploy.yml',
+                                     content='---\n',
+                                     allow=['/playbooks/**'])
+        self.assertTrue(response['isError'])
+
+    def test_absolute_looking_paths_stay_in_the_project(self):
+        # '/etc/passwd' is project-root-anchored, not filesystem-absolute
+        response = self.write_scoped('/etc/passwd', allow=['/**'])
+        self.assertFalse(response['isError'])
+        self.assertTrue(os.path.isfile(os.path.join(
+                self.tmpdir, 'etc', 'passwd')))
+        # ... and without a matching pattern it is refused
+        response = self.write_scoped('/etc/shadow', allow=[])
+        self.assertTrue(response['isError'])
+        self.assertIn('not writable', response['content'][0]['text'])
+
+    def test_mcp_content_still_scoped_with_the_new_anchor(self):
+        # '.debops/' patterns keep their prefix and their restriction
+        response = self.write_scoped('.debops/conf.d/evil.toml',
+                                     allow=['.debops/**'])
+        self.assertTrue(response['isError'])
+        self.assertIn('MCP content directories',
+                      response['content'][0]['text'])
+
     def test_git_metadata_is_never_writable(self):
         response = self.write_scoped('.git/config',
                                      allow=['.git/**'])

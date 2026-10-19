@@ -157,7 +157,8 @@ class McpPolicy(object):
                                      ['resources/**', 'playbooks/**'])
         if isinstance(write_allow, str):
             write_allow = [write_allow]
-        self.write_allow = [str(entry).strip('/')
+        # A leading slash is the project-root anchor; keep it
+        self.write_allow = [str(entry).rstrip('/')
                             for entry in write_allow or []]
         if not self.write_allow:
             logger.notice('All project writes disabled by policy')

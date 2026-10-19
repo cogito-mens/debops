@@ -182,20 +182,34 @@ def tool_inventory_query(project, arguments):
 def _authorized_write_path(project, policy, relative):
     """Resolve a write path, enforcing the write policy.
 
-    Patterns starting with '.debops/' or 'ansible/' are anchored at the
-    project directory, so they reach the same place in legacy and
-    modern projects ('ansible/keyring/**', '.debops/mcp/...'); anything
-    else is anchored at the view root.
+    Anchors: a leading '/' resolves at the project directory (spelled
+    as 'project_read' shows them); '.debops/' and 'ansible/' paths
+    resolve at the project directory too, so they reach the same place
+    in legacy and modern projects; anything else resolves at the view
+    root. Patterns follow the same anchoring: a pattern only ever
+    applies to paths anchored the same way.
 
-    Returns (absolute path, display-relative path). Raises ValueError
-    with the refusal reason.
+    Returns (absolute path, display path). Raises ValueError with the
+    refusal reason.
     """
     if not relative:
         raise ValueError('the "path" argument is required')
-    if relative.startswith(('.debops/', 'ansible/')):
+    if relative.startswith('/'):
         root = project.path
+        relative = relative.lstrip('/')
+        patterns = [pattern.lstrip('/') for pattern in policy.write_allow
+                    if pattern.startswith('/')]
+        if not relative:
+            raise ValueError('the "path" argument is required')
+    elif relative.startswith(('.debops/', 'ansible/')):
+        root = project.path
+        patterns = [pattern for pattern in policy.write_allow
+                    if pattern.startswith(('.debops/', 'ansible/'))]
     else:
         root = policy.view_root
+        patterns = [pattern for pattern in policy.write_allow
+                    if not pattern.startswith(('/', '.debops/',
+                                               'ansible/'))]
     try:
         path = confine_under(root, relative)
     except ValueError:
@@ -223,9 +237,13 @@ def _authorized_write_path(project, policy, relative):
     if os.path.basename(canonical_relative) == 'ansible.cfg':
         raise ValueError('path is denied by policy: ' + relative)
     if not any(fnmatch.fnmatch(canonical_relative, pattern)
-               for pattern in policy.write_allow):
+               for pattern in patterns):
         raise ValueError('path is not writable by the project policy '
                          '(project.mcp.write_allow): ' + relative)
+    if root == project.path and not relative.startswith(
+            ('.debops/', 'ansible/')):
+        # Display the project-anchored path with its leading slash
+        return path, '/' + canonical_relative
     return path, canonical_relative
 
 
@@ -284,7 +302,8 @@ def _parse_write_mode(arguments):
 
 
 def tool_view_write(project, policy, arguments, server=None):
-    relative = str(arguments.get('path') or '').strip('/')
+    # A leading slash anchors at the project root; keep it
+    relative = str(arguments.get('path') or '').rstrip('/')
     content = arguments.get('content')
     if not isinstance(content, str):
         return error_result('the "content" argument is required')
@@ -428,7 +447,8 @@ def _announce_mcp_content_change(server, view_relative):
 
 
 def tool_view_delete(project, policy, arguments, server=None):
-    relative = str(arguments.get('path') or '').strip('/')
+    # A leading slash anchors at the project root; keep it
+    relative = str(arguments.get('path') or '').rstrip('/')
 
     # Deletions are recoverable and attributable only with git
     if not _is_git_tracked_project(project):
