@@ -27,6 +27,12 @@ the monorepo is immediately visible to every project that uses the package —
 no reinstall, no rebuild. With a normal install you would be editing a
 detached copy.
 
+Two files in the checkout are generated from `git describe` and not tracked:
+`src/debops/__version__.py` and the bundled collection's `galaxy.yml`
+(`ansible/galaxy.yml` links to it). A build or install stamps them; after
+`git pull`, refresh them with `make dev-version` so the versions you see
+(`debops --version`, `ansible-galaxy collection list`) stay honest.
+
 Verify the install picks up the checkout, and note that a *project* may still
 shadow it with its own collections — the `debops-cli` skill has the full
 preflight (LIVE / NOT LIVE check).
