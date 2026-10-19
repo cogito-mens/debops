@@ -1019,6 +1019,7 @@ class ToolsTestCase(unittest.TestCase):
                          ['ansible_facts', 'ansible_ping', 'check',
                           'collection_playbooks', 'collection_roles',
                           'config_get', 'environment_list',
+                          'environment_set', 'environment_unset',
                           'inventory_query',
                           'inventory_spec', 'keyring_fetch',
                           'playbook_info',
@@ -1070,6 +1071,10 @@ class ToolsTestCase(unittest.TestCase):
         self.assertEqual(tools['run']['_meta'],
                          {'org.debops/confirm': True})
         self.assertEqual(tools['project_push']['_meta'],
+                         {'org.debops/confirm': True})
+        self.assertEqual(tools['environment_set']['_meta'],
+                         {'org.debops/confirm': True})
+        self.assertEqual(tools['environment_unset']['_meta'],
                          {'org.debops/confirm': True})
         self.assertIn('asks the user to confirm',
                       tools['run']['description'])

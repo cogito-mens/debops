@@ -15,7 +15,8 @@ from .collections import (COLLECTION_INDEX_TTL, galaxy_collection_list,
                           index_from_galaxy, restrict_content,
                           tool_collection_playbooks,
                           tool_collection_roles)
-from .environment import tool_environment_list
+from .environment import (tool_environment_list, tool_environment_set,
+                          tool_environment_unset)
 from .execute import tool_check, tool_run
 from .files import (tool_config_get, tool_inventory_query,
                     tool_inventory_spec, tool_project_files,
@@ -123,6 +124,11 @@ TOOL_ANNOTATIONS = {
     # Injects content into role executions on the managed hosts
     'overrides_write': {'destructiveHint': True, 'idempotentHint': True,
                         'openWorldHint': False},
+    # Environment writes land in files
+    'environment_set': {'destructiveHint': True, 'idempotentHint': True,
+                        'openWorldHint': False},
+    'environment_unset': {'destructiveHint': True, 'idempotentHint': True,
+                          'openWorldHint': False},
     # A check run changes nothing on the managed hosts, but the local
     # auto-commit may commit the project
     'check': {'destructiveHint': False, 'idempotentHint': True},
@@ -320,6 +326,43 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                     'this string'}}},
          lambda arguments: tool_environment_list(project, policy,
                                                  arguments)),
+        ('environment_set',
+         'Set an environment variable for the runs of this server, in '
+         'the tracked environment file (.debops/mcp/environment, '
+         'committed) or, with "secret": true, in the untracked tokens '
+         'file (.debops/mcp/.env, never committed) — for tokens and '
+         'API keys. The change is complete when this call returns; a '
+         'dependent call must wait for it (batched requests run '
+         'concurrently).',
+         {'type': 'object',
+          'properties': {'name': {'type': 'string',
+                                  'description': 'The variable name, '
+                                  'e.g. "REGION"'},
+                         'value': {'type': 'string',
+                                   'description': 'The value (never '
+                                   'shown again for secrets)'},
+                         'secret': {'type': 'boolean',
+                                    'description': 'Store in the '
+                                    'untracked tokens file '
+                                    '(default: false)'}},
+          'required': ['name', 'value']},
+         lambda arguments: tool_environment_set(project, policy,
+                                                arguments)),
+        ('environment_unset',
+         'Remove an environment variable from the MCP environment '
+         'files. The change is complete when this call returns; a '
+         'dependent call must wait for it (batched requests run '
+         'concurrently).',
+         {'type': 'object',
+          'properties': {'name': {'type': 'string',
+                                  'description': 'The variable name'},
+                         'secret': {'type': 'boolean',
+                                    'description': 'Remove from the '
+                                    'untracked tokens file '
+                                    '(default: false)'}},
+          'required': ['name']},
+         lambda arguments: tool_environment_unset(project, policy,
+                                                  arguments)),
         ('inventory_query',
          'Inspect the computed Ansible inventory with '
          '"ansible-inventory": "graph" shows the group tree, "list" '

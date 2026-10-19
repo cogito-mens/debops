@@ -190,7 +190,8 @@ class McpPolicy(object):
         # user, not a security boundary: the client answers it, so the
         # 'execute' gate above remains the authoritative control
         confirm = mcp_config.get('confirm',
-                                 ['run', 'project_push', 'keyring_fetch'])
+                                 ['run', 'project_push', 'keyring_fetch',
+                                  'environment_set', 'environment_unset'])
         if isinstance(confirm, str):
             confirm = [confirm]
         self.confirm = set(str(name) for name in confirm or [])

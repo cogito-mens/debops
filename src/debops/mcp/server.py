@@ -66,6 +66,17 @@ def _confirmation_message(tool_name, arguments):
         return message
     if tool_name == 'project_push':
         return ("Push the project's committed history to its git origin?")
+    if tool_name in ('environment_set', 'environment_unset'):
+        verb = 'Set' if tool_name == 'environment_set' else 'Unset'
+        message = '{} the environment variable "{}"'.format(
+                verb, arguments.get('name', '?'))
+        if arguments.get('secret'):
+            return message + (' in the untracked tokens file (never '
+                              'committed to git)?')
+        if tool_name == 'environment_set' and arguments.get('value'):
+            return message + ' to "{}" in the tracked environment ' \
+                'file?'.format(arguments['value'])
+        return message + ' in the tracked environment file?'
     return 'Run the "{}" operation?'.format(tool_name)
 
 

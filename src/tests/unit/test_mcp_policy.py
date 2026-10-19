@@ -198,7 +198,8 @@ class ConfirmationPolicyTestCase(unittest.TestCase):
     def test_default_confirmations(self):
         policy = self._policy({})
         self.assertEqual(policy.confirm,
-                         {'run', 'project_push', 'keyring_fetch'})
+                         {'run', 'project_push', 'keyring_fetch',
+                          'environment_set', 'environment_unset'})
 
     def test_confirm_list_overrides(self):
         policy = self._policy({'confirm': ['run']})

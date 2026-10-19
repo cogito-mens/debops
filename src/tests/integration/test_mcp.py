@@ -174,6 +174,7 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
     assert sorted(names) == ["ansible_facts", "ansible_ping", "check",
                              "collection_playbooks", "collection_roles",
                              "config_get", "environment_list",
+                             "environment_set", "environment_unset",
                              "inventory_query",
                              "inventory_spec", "keyring_fetch",
                              "playbook_info",

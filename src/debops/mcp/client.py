@@ -167,6 +167,8 @@ TOOL_CALL_EXAMPLES = {
                         'content=...'],
     'config_get': ['key=project.default_view'],
     'environment_list': [''],
+    'environment_set': ['name=REGION value=eu-central-1'],
+    'environment_unset': ['name=REGION'],
     'inventory_query': ['action=graph',
                         'action=host host=web1.example.com'],
     'inventory_spec': ['spec="version: 0\\nfiles:\\n  hosts.yml: ..." '

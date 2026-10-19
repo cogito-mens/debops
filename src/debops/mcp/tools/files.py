@@ -326,6 +326,36 @@ def tool_view_write(project, policy, arguments, server=None):
                             after=announce)
 
 
+def _atomic_write(path, content, mode, old_mode):
+    """Write content to path atomically (a temporary file, renamed).
+
+    The mode is applied when given; an existing file keeps its mode; a
+    new file gets 0644. OSError propagates to the caller.
+    """
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix='.mcp-write-')
+    done = False
+    try:
+        with os.fdopen(fd, 'w') as fp:
+            fp.write(content)
+        if mode is not None:
+            os.chmod(tmp, mode)
+        elif old_mode is not None:
+            # The rename would otherwise reset the permissions
+            os.chmod(tmp, old_mode)
+        else:
+            os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+        done = True
+    finally:
+        if not done:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
 def _write_committed(project, policy, path, display, content, mode,
                      note, after=None):
     """Write content to an authorized path atomically and commit it.
@@ -358,33 +388,8 @@ def _write_committed(project, policy, path, display, content, mode,
             os.chmod(path, mode)
             outcome = 'mode changed'
         else:
-            # Atomic write: a temporary file in the same directory,
-            # renamed
-            directory = os.path.dirname(path)
             try:
-                os.makedirs(directory, exist_ok=True)
-                fd, tmp = tempfile.mkstemp(dir=directory,
-                                           prefix='.view-write-')
-                done = False
-                try:
-                    with os.fdopen(fd, 'w') as fp:
-                        fp.write(content)
-                    if mode is not None:
-                        os.chmod(tmp, mode)
-                    elif old_mode is not None:
-                        # The rename would otherwise reset the
-                        # permissions
-                        os.chmod(tmp, old_mode)
-                    else:
-                        os.chmod(tmp, 0o644)
-                    os.replace(tmp, path)
-                    done = True
-                finally:
-                    if not done:
-                        try:
-                            os.unlink(tmp)
-                        except OSError:
-                            pass
+                _atomic_write(path, content, mode, old_mode)
             except OSError as errmsg:
                 return error_result('cannot write {}: {}'.format(
                         display, errmsg))

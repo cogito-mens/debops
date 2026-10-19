@@ -41,7 +41,14 @@ execute_options = ["limit", "tags", "skip-tags"]
 # Tools which ask the user for confirmation before they run, on clients
 # which support it. The confirmation is a courtesy, not a security
 # boundary; the 'execute' option above is the boundary.
-confirm = ["run", "project_push", "keyring_fetch"]
+confirm = ["run", "project_push", "keyring_fetch",
+           "environment_set", "environment_unset"]
+
+# The server's environment for tool runs comes from
+# '.debops/mcp/environment' (plain variables, tracked) and
+# '.debops/mcp/.env' (tokens, never committed; 0600). The agent sets
+# them with the 'environment_set'/'environment_unset' tools, with
+# confirmation per entry (see the 'confirm' option above).
 
 # The hosts the keyring tool may fetch GPG keys from (APT repository
 # keys and other trust anchors), as fnmatch globs matched against the
