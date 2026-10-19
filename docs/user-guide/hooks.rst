@@ -63,9 +63,9 @@ that runs before the operation, and a ``post-`` variant that runs after.
      - :command:`debops project lock`
    * - ``pre-unlock`` / ``post-unlock``
      - :command:`debops project unlock`
-   * - ``pre-start`` / ``post-start``
+   * - ``mcp-pre-start`` / ``mcp-post-start``
      - :command:`debops mcp serve` starting up and ready
-   * - ``pre-stop`` / ``post-stop``
+   * - ``mcp-pre-stop`` / ``mcp-post-stop``
      - :command:`debops mcp serve` shutting down and stopped
 
 The ``run`` and ``check`` hook points are distinguished by the actual execution
@@ -74,9 +74,9 @@ in the ansible arguments, or if the ``read_only_friday`` project option is
 enabled, the ``pre-check``/``post-check`` hooks will fire instead of
 ``pre-run``/``post-run``.
 
-The ``mcp serve`` hooks mark the lifecycle of the MCP server: ``pre-start``
+The ``mcp serve`` hooks mark the lifecycle of the MCP server: ``mcp-pre-start``
 runs after the project and its policy are loaded and may abort the startup,
-``post-start`` runs once the transport is serving, and the stop hooks run on
+``mcp-post-start`` runs once the transport is serving, and the stop hooks run on
 the teardown path with a short timeout, so a hung hook cannot stall the
 shutdown. Their environment carries ``DEBOPS_MCP_TRANSPORT`` (``stdio`` or
 ``unix``) and, for a socket server, ``DEBOPS_MCP_SOCKET``.
