@@ -24,6 +24,20 @@ def tool_project_status(project, policy, arguments):
     else:
         encryption = 'none'
 
+    view_root_present = os.path.isdir(policy.view_root)
+    structured = {
+        'name': project.name,
+        'path': project.path,
+        'type': project.project_type,
+        'view': project.view,
+        'views': views,
+        'viewRoot': policy.view_root,
+        'viewRootPresent': view_root_present,
+        'inventory': ('present' if os.path.isdir(inventory_path)
+                      else 'absent'),
+        'secrets': 'present' if os.path.exists(secret_path) else 'absent',
+        'encryption': encryption,
+    }
     lines = [
             'Project: {}'.format(project.name),
             'Path: {}'.format(project.path),
@@ -32,11 +46,11 @@ def tool_project_status(project, policy, arguments):
             'Views available: {}'.format(', '.join(views)),
             'View root: {}{}'.format(
                 policy.view_root,
-                '' if os.path.isdir(policy.view_root) else ' (missing)'),
+                '' if view_root_present else ' (missing)'),
             'Inventory: {}'.format(
                 'present' if os.path.isdir(inventory_path) else 'absent'),
             'Secrets: {}'.format(
                 'present' if os.path.exists(secret_path) else 'absent'),
             'Encryption: {}'.format(encryption),
     ]
-    return text_result('\n'.join(lines))
+    return text_result('\n'.join(lines), structured=structured)

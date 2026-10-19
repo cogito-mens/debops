@@ -103,6 +103,17 @@ class HostsTestCase(unittest.TestCase):
         self.assertIn('pong', text)
         self.assertIn('Hosts: web1', text)
 
+    def test_ping_structured(self):
+        from tests.unit._helpers import check_schema
+        from debops.mcp.tools import TOOL_OUTPUT_SCHEMAS
+        _popen, response = self._run('ansible_ping',
+                                     {'hosts': 'web1'})
+        structured = response['result']['structuredContent']
+        self.assertEqual(structured, {'web1.example.com': 'pong'})
+        self.assertEqual(check_schema(structured,
+                                      TOOL_OUTPUT_SCHEMAS
+                                      ['ansible_ping']), [])
+
     def test_become_flag(self):
         popen, _response = self._run('ansible_ping',
                                      {'hosts': 'web1', 'become': True})

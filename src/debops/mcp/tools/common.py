@@ -29,8 +29,12 @@ def text_result(text, structured=None):
     return result
 
 
-def error_result(message):
-    return {'content': [{'type': 'text', 'text': message}], 'isError': True}
+def error_result(message, structured=None):
+    result = {'content': [{'type': 'text', 'text': message}],
+              'isError': True}
+    if structured is not None:
+        result['structuredContent'] = structured
+    return result
 
 
 def dump_default(value, flow=None):

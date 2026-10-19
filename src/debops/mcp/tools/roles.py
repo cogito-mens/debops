@@ -389,7 +389,30 @@ def tool_role_info(roles_paths, arguments, index_provider=None,
         lines.append('- dependencies: {}'.format(', '.join(
                 dep if isinstance(dep, str) else dep.get('role', '?')
                 for dep in dependencies)))
-    return text_result('\n'.join(lines))
+    structured = {
+        'name': name,
+        'path': path,
+        'description': description,
+        'author': author,
+        'license': license_name,
+        'minAnsible': min_ansible,
+        'platforms': platforms,
+        'tags': tags,
+        'dependencies': [dep if isinstance(dep, str)
+                         else dep.get('role', '?')
+                         for dep in dependencies],
+        'counts': {'defaults': len(defaults),
+                   'variables': len(variables),
+                   'tasks': task_count,
+                   'handlers': handler_count,
+                   'templates': templates,
+                   'files': files},
+        'readme': os.path.isfile(os.path.join(path, 'README.md')),
+        'copyright': os.path.isfile(os.path.join(path, 'COPYRIGHT')),
+    }
+    if _is_bundled_role(path, bundled_path) and docs_version:
+        structured['docsUrl'] = role_docs_url(name, docs_version)
+    return text_result('\n'.join(lines), structured=structured)
 
 
 def _load_tasks(tasks_file):

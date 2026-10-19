@@ -265,7 +265,12 @@ def tool_keyring_fetch(project, policy, arguments, context):
     if user_ids:
         lines.extend(['', 'user IDs:'])
         lines.extend('- {}'.format(uid) for uid in user_ids)
-    return text_result('\n'.join(lines))
+    return text_result('\n'.join(lines), structured={
+            'fingerprint': fingerprint,
+            'fingerprintDisplay': format_fingerprint(fingerprint),
+            'userIds': user_ids,
+            'file': 'ansible/keyring/{}'.format(filename),
+            'source': url or 'hkps://' + keyserver})
 
 
 def _confirm_message(url, keyserver, fingerprint, user_ids):

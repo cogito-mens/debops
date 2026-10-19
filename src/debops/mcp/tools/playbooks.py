@@ -382,5 +382,17 @@ def tool_playbook_info(project, policy, playbooks_path, arguments,
             plays, roles, imports, groups = parse_playbook(fp.read())
     except (OSError, ValueError) as errmsg:
         return error_result(str(errmsg))
+    structured = {
+        'playbook': target,
+        'plays': [dict({'name': play['name'], 'hosts': play['hosts'],
+                        'become': play['become']},
+                       **({'vars': play['vars']} if detail == 'full'
+                          else {}))
+                  for play in plays],
+        'roles': roles,
+        'imports': imports,
+        'groups': groups,
+    }
     return text_result(render_playbook_info(target, target, plays, roles,
-                                            imports, groups, detail))
+                                            imports, groups, detail),
+                       structured=structured)

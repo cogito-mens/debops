@@ -160,6 +160,18 @@ class ExecuteTestCase(unittest.TestCase):
         text = result['content'][0]['text']
         self.assertIn('exit code: 0', text)
         self.assertIn('play recap', text)
+        # The machine-readable summary rides alongside the text
+        structured = result['structuredContent']
+        self.assertEqual(structured['mode'], 'check')
+        self.assertEqual(structured['playbooks'], ['site'])
+        self.assertEqual(structured['hosts'], ['web1'])
+        self.assertEqual(structured['exitCode'], 0)
+        self.assertEqual(structured['status'], 'done')
+        from tests.unit._helpers import check_schema
+        from debops.mcp.tools import TOOL_OUTPUT_SCHEMAS
+        self.assertEqual(check_schema(structured,
+                                      TOOL_OUTPUT_SCHEMAS['check']),
+                         [])
         # The command is spawned without a shell, as a plain argv list
         popen.assert_called_once()
         command = popen.call_args[0][0]

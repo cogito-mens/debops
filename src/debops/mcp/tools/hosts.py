@@ -174,13 +174,23 @@ def _exec(project, policy, arguments, context, module, module_filter):
     if module == 'ansible.builtin.ping':
         text = '# ping {}\n\nHosts: {}\n\n{}'.format(
                 hosts, ', '.join(resolved), output)
+        # The machine form: the per-host outcome lines of the ad-hoc
+        # output ('host | SUCCESS => ...', 'host | FAILED! => ...')
+        structured = {}
+        for line in output.splitlines():
+            match = re.match(r'^(\S+) \| (\w+)', line)
+            if match:
+                host, outcome = match.groups()
+                structured[host] = ('pong' if outcome == 'SUCCESS'
+                                    else 'failed')
     else:
         text = '# facts for {}\n\nHosts: {}\n\n{}'.format(
                 hosts, ', '.join(resolved), _render_facts(output))
+        structured = None
     # ansible returns non-zero when any host failed
     if returncode != 0:
         return error_result(text)
-    return text_result(text)
+    return text_result(text, structured=structured)
 
 
 def tool_ansible_ping(project, policy, arguments, context):

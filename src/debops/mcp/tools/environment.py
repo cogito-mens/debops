@@ -40,39 +40,43 @@ def _read_tracked(project):
 
 def tool_environment_list(project, policy, arguments):
     name_filter = str(arguments.get('filter') or '').lower()
-    lines = ['# Environment of the MCP server']
-    shown = 0
 
-    tracked = _read_tracked(project)
-    section = [entry for entry in tracked
-               if not name_filter or name_filter in entry[0].lower()]
-    lines.extend(['', '## Project MCP environment '
-                  '(.debops/mcp/environment, tracked)'])
-    if section:
-        lines.extend('- {} = {}'.format(name, value)
-                     for name, value in section)
-        shown += len(section)
-    else:
-        lines.append('(none)')
+    def keep(name):
+        return not name_filter or name_filter in name.lower()
 
-    for title, names in (
-            ('Project MCP tokens (.debops/mcp/.env, untracked, '
-             'names only)',
-             sorted(_token_names(project))),
-            ('Project environment (.env, .debops/environment)',
-             sorted(project.config._env_vars)),
-            ('Process environment', sorted(os.environ))):
-        filtered = [name for name in names
-                    if not name_filter or name_filter in name.lower()]
+    tracked = {name: value
+               for name, value in _read_tracked(project) if keep(name)}
+    tokens = [name for name in sorted(_token_names(project))
+              if keep(name)]
+    project_names = [name for name in sorted(project.config._env_vars)
+                     if keep(name)]
+    process_names = [name for name in sorted(os.environ) if keep(name)]
+
+    structured = {'tracked': tracked, 'tokens': tokens,
+                  'project': project_names, 'process': process_names}
+
+    shown = len(tracked) + len(tokens) + len(project_names) \
+        + len(process_names)
+    lines = ['# Environment of the MCP server',
+             '{} variable(s)'.format(shown)]
+    sections = [
+        ('Project MCP environment (.debops/mcp/environment, tracked)',
+         ['- {} = {}'.format(name, value)
+          for name, value in tracked.items()]),
+        ('Project MCP tokens (.debops/mcp/.env, untracked, names only)',
+         ['- {}'.format(name) for name in tokens]),
+        ('Project environment (.env, .debops/environment)',
+         ['- {}'.format(name) for name in project_names]),
+        ('Process environment',
+         ['- {}'.format(name) for name in process_names]),
+    ]
+    for title, entries in sections:
         lines.extend(['', '## ' + title])
-        if filtered:
-            lines.extend('- {}'.format(name) for name in filtered)
-            shown += len(filtered)
+        if entries:
+            lines.extend(entries)
         else:
             lines.append('(none)')
-
-    lines.insert(1, '{} variable(s)'.format(shown))
-    return text_result('\n'.join(lines))
+    return text_result('\n'.join(lines), structured=structured)
 
 
 def _token_names(project):

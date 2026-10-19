@@ -877,6 +877,19 @@ class InventorySpecTestCase(unittest.TestCase):
         result = self.call_spec('version: 0\nbogus: true\n')
         self.assertTrue(result['isError'])
 
+    def test_structured_content_conforms(self):
+        from tests.unit._helpers import check_schema
+        from debops.mcp.tools import TOOL_OUTPUT_SCHEMAS
+        result = self.call_spec('version: 0\n'
+                                'files:\n'
+                                '  hosts: "[web]\\nweb1\\n"\n')
+        self.assertFalse(result['isError'])
+        self.assertEqual(check_schema(result['structuredContent'],
+                                      TOOL_OUTPUT_SCHEMAS
+                                      ['inventory_spec']), [])
+        self.assertEqual(result['structuredContent']['written'],
+                         ['hosts'])
+
     def test_disabled_by_the_project(self):
         self.spec_policy['enabled'] = False
         result = self.call_spec('version: 0\nfiles: {}\n')
@@ -919,7 +932,8 @@ class ToolsTestCase(unittest.TestCase):
             'project_type': 'legacy',
             'view': 'system',
             'auto_commit': _auto_commit_noop,
-            'config': type('Config', (), {'raw': {}})(),
+            'config': type('Config', (), {'raw': {},
+                                          '_env_vars': {}})(),
         })()
 
         self.roles_path = os.path.join(self.tmpdir, 'roles')
@@ -1106,6 +1120,42 @@ class ToolsTestCase(unittest.TestCase):
                                           'testns.testcoll'})
         self.assertEqual([entry['target'] for entry in entries],
                          ['testns.testcoll/install'])
+
+    def test_structured_project_status(self):
+        data = self._check_structured('project_status')
+        self.assertEqual(data['name'], 'project')
+        self.assertEqual(data['view'], 'system')
+        self.assertIn(data['inventory'], ('present', 'absent'))
+
+    def test_structured_project_files(self):
+        self._check_structured('project_files')
+
+    def test_structured_config_get(self):
+        self.project.config.raw['project'] = {'mcp': {'execute':
+                                                      'check'}}
+        data = self._check_structured('config_get',
+                                      {'key': 'project.mcp.execute'})
+        self.assertEqual(data['key'], 'project.mcp.execute')
+        self.assertEqual(data['value'], 'check')
+
+    def test_structured_environment_list(self):
+        data = self._check_structured('environment_list')
+        self.assertIn('tracked', data)
+        self.assertIn('process', data)
+
+    def test_structured_playbook_info(self):
+        data = self._check_structured('playbook_info',
+                                      {'playbook': 'custom'})
+        self.assertEqual(data['playbook'], 'custom')
+        self.assertEqual(data['plays'][0]['name'],
+                         'Custom project playbook')
+        self.assertEqual(data['groups'], ['custom_group'])
+
+    def test_structured_role_info(self):
+        data = self._check_structured('role_info', {'name': 'testrole'})
+        self.assertEqual(data['name'], 'testrole')
+        self.assertEqual(data['description'], 'A test role')
+        self.assertGreaterEqual(data['counts']['tasks'], 1)
 
     # -- registration --------------------------------------------------
 

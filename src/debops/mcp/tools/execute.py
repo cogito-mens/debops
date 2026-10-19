@@ -466,18 +466,23 @@ def _execute_playbook(project, policy, arguments, context, check,
     header = '# debops {} {}\n\nexit code: {}\nhosts: {}\n\n'.format(
             mode, ' '.join(targets), returncode,
             ', '.join(resolved_hosts) if resolved_hosts else '(none)')
+    # The machine-readable summary; the full output stays in the text
+    summary = {'mode': mode, 'playbooks': targets,
+               'hosts': resolved_hosts, 'exitCode': returncode,
+               'status': status}
     if status == 'disabled':
         return error_result(header + 'terminated: the MCP functionality '
                             'was disabled mid-run (the kill switch)\n\n'
-                            + output)
+                            + output, structured=summary)
     if status == 'cancelled':
         raise RequestCancelled()
     if status == 'timeout':
         return error_result(header + 'timed out after {} seconds\n\n{}'
-                            .format(policy.execute_timeout, output))
+                            .format(policy.execute_timeout, output),
+                            structured=summary)
     if returncode != 0:
-        return error_result(header + output)
-    return text_result(header + output)
+        return error_result(header + output, structured=summary)
+    return text_result(header + output, structured=summary)
 
 
 def tool_check(project, policy, arguments, context, enabled_check=None,

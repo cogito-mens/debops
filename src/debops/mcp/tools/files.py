@@ -91,9 +91,10 @@ def tool_project_files(project, policy, arguments):
             ', truncated at {} entries'.format(LIST_ENTRY_LIMIT)
             if truncated else '')
     if not lines:
-        return text_result(header + ' — none found')
+        return text_result(header + ' — none found', structured=[])
     return text_result('\n'.join([header, ''] +
-                                 ['- {}'.format(line) for line in lines]))
+                                 ['- {}'.format(line) for line in lines]),
+                       structured=lines)
 
 
 def tool_project_read(project, policy, arguments):
@@ -140,7 +141,8 @@ def tool_config_get(project, arguments):
             return error_result('configuration key not found: ' + key)
         node = node[part]
     return text_result('{}:\n\n```yaml\n{}\n```'.format(
-            key, dump_default(node)))
+            key, dump_default(node)),
+            structured={'key': key, 'value': node})
 
 
 def tool_inventory_query(project, arguments):
@@ -492,10 +494,15 @@ def tool_view_delete(project, policy, arguments, server=None):
 
 
 def _inventory_spec_report(result, inventory_path, dry_run):
-    """Render the result of an inventory spec application as text."""
+    """Render the result of an inventory spec application as text,
+    plus its machine-readable form."""
     def rel(paths):
         return [os.path.relpath(path, inventory_path)
                 for path in paths]
+
+    structured = {key: rel(result[key])
+                  for key in ('written', 'removed', 'skipped', 'kept',
+                              'planned', 'planned_removed')}
 
     lines = []
     if dry_run:
@@ -527,7 +534,7 @@ def _inventory_spec_report(result, inventory_path, dry_run):
     if len(lines) == 1:
         lines.append('')
         lines.append('No changes.')
-    return '\n'.join(lines)
+    return '\n'.join(lines), structured
 
 
 def tool_inventory_spec(project, policy, arguments):
@@ -597,8 +604,9 @@ def tool_inventory_spec(project, policy, arguments):
             result = inventory.apply_spec(
                     files, pre_existing=inventory.existing_paths(),
                     overwrite=overwrite, dry_run=True, keep=keep)
-        return text_result(_inventory_spec_report(
-                result, inventory.path, dry_run=True))
+        report_text, structured = _inventory_spec_report(
+                result, inventory.path, dry_run=True)
+        return text_result(report_text, structured=structured)
 
     # Writes are recoverable and attributable only with git
     if not _is_git_tracked_project(project):
@@ -618,10 +626,12 @@ def tool_inventory_spec(project, policy, arguments):
             try:
                 project.commit(message='DebOps MCP: inventory_spec')
             except Exception as errmsg:
+                report_text, _structured = _inventory_spec_report(
+                        result, inventory.path, dry_run=False)
                 return error_result(
-                        _inventory_spec_report(result, inventory.path,
-                                               dry_run=False)
+                        report_text
                         + '\nThe commit failed: {} (the changes are not '
                         'recorded in git)\n'.format(errmsg))
-        return text_result(_inventory_spec_report(
-                result, inventory.path, dry_run=False))
+        report_text, structured = _inventory_spec_report(
+                result, inventory.path, dry_run=False)
+        return text_result(report_text, structured=structured)

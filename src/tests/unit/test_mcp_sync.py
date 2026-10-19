@@ -96,6 +96,15 @@ class SyncTestCase(unittest.TestCase):
         self.assertIn('files changed: 3', text)
         self.assertIn('Add a thing', text)
         self.assertIn('Fix another thing', text)
+        # The structured form is the report itself
+        structured = response['result']['structuredContent']
+        self.assertEqual(structured['action'], 'pull')
+        self.assertTrue(structured['changed'])
+        from tests.unit._helpers import check_schema
+        from debops.mcp.tools import TOOL_OUTPUT_SCHEMAS
+        self.assertEqual(check_schema(structured,
+                                      TOOL_OUTPUT_SCHEMAS
+                                      ['project_pull']), [])
 
     def test_changed_pull_refreshes_the_project(self):
         # The refresh runs on a fresh ProjectDir which reads the

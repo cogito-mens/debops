@@ -102,5 +102,6 @@ def make_sync_tool(project, policy, sync_state, direction, server=None):
                     report['refresh_error'] = str(errmsg)
                 if before is not None:
                     server.announce_content_changes(before)
-        return text_result(render_sync_report(report))
+        return text_result(render_sync_report(report),
+                           structured=report)
     return tool
