@@ -149,12 +149,17 @@ class McpPolicy(object):
         for entry in self.read_deny:
             logger.notice('Path denied to read tools by policy: %s', entry)
 
-        # Paths the write tools may touch, as fnmatch globs relative to
-        # the view root. The default covers the debops.resources drop-in
-        # directory and the local playbook tree (including its roles).
-        # The built-in deny list (secrets, key material, ...) always wins
-        write_allow = mcp_config.get('write_allow',
-                                     ['resources/**', 'playbooks/**'])
+        # Paths the write tools may touch, as fnmatch globs. The default
+        # covers the debops.resources drop-in directory and every
+        # location the playbook runner resolves: the view's playbooks,
+        # the shared 'ansible/playbooks' (including the loose roles in
+        # its 'roles/'), and the project-root 'playbooks' of established
+        # projects. The built-in deny list (secrets, key material, ...)
+        # always wins
+        write_allow = mcp_config.get(
+                'write_allow',
+                ['resources/**', 'playbooks/**', 'ansible/playbooks/**',
+                 '/playbooks/**'])
         if isinstance(write_allow, str):
             write_allow = [write_allow]
         # A leading slash is the project-root anchor; keep it

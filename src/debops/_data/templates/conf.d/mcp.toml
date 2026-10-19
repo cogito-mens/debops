@@ -58,14 +58,18 @@ confirm = ["run", "project_push", "keyring_fetch",
 keyring_sources = ["keyserver.ubuntu.com", "keybase.io"]
 
 # The paths the write tools ('view_write', 'view_delete',
-# 'inventory_spec') may touch, as fnmatch globs relative to the view
-# root; 'playbooks/**' includes the local roles in 'playbooks/roles/'.
-write_allow = ["resources/**", "playbooks/**"]
+# 'inventory_spec') may touch, as fnmatch globs. The default covers
+# every location the playbook runner resolves: the view's playbooks
+# and resources, the shared 'ansible/playbooks/' (including the loose
+# roles in its 'roles/'), and the project-root 'playbooks/' of
+# established projects.
+write_allow = ["resources/**", "playbooks/**", "ansible/playbooks/**",
+               "/playbooks/**"]
 
-# Patterns prefixed with '.debops/' or 'ansible/' are anchored at the
-# project directory instead of the view root. To let agents author
-# project skills and prompts (served from '.debops/mcp/'), allow them
-# explicitly:
+# Patterns with a leading slash, or prefixed with '.debops/' or
+# 'ansible/', are anchored at the project directory instead of the view
+# root. To let agents author project skills and prompts (served from
+# '.debops/mcp/'), allow them explicitly:
 #write_allow = ["resources/**", "playbooks/**",
 #               ".debops/mcp/skills/**", ".debops/mcp/prompts/**"]
 

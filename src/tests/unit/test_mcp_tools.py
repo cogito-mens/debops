@@ -618,6 +618,20 @@ class ViewWriteTestCase(unittest.TestCase):
         self.assertIn('MCP content directories',
                       response['content'][0]['text'])
 
+    def test_default_covers_the_full_resolution_surface(self):
+        # The default write_allow reaches every directory the playbook
+        # runner resolves playbooks from (legacy view == ansible/ here)
+        for path in ('playbooks/in-view.yml', 'ansible/playbooks/shared.yml',
+                     '/playbooks/at-root.yml'):
+            response = self.write(path)
+            self.assertFalse(response['isError'],
+                             '{}: {}'.format(
+                                 path, response['content'][0]['text']))
+        self.assertTrue(os.path.isfile(os.path.join(
+                self.view_root, 'playbooks', 'in-view.yml')))
+        self.assertTrue(os.path.isfile(os.path.join(
+                self.tmpdir, 'playbooks', 'at-root.yml')))
+
     def test_git_metadata_is_never_writable(self):
         response = self.write_scoped('.git/config',
                                      allow=['.git/**'])
