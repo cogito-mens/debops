@@ -133,7 +133,7 @@ class ExecuteTestCase(unittest.TestCase):
         self.context = ToolContext(1, threading.Event())
 
     def call_execute(self, check=True, resolved=('web1',),
-                     playbook='site'):
+                     playbook='site', output='play recap\n'):
         from debops.mcp.tools.execute import _execute_playbook
         with mock.patch(
                 'debops.mcp.tools.execute.AnsiblePlaybookRunner') as runner, \
@@ -148,7 +148,7 @@ class ExecuteTestCase(unittest.TestCase):
                     'ansible-playbook', 'site.yml']
             inventory.return_value.unlock.return_value = True
             hooks.return_value = True
-            popen.return_value = make_process()
+            popen.return_value = make_process(output=output)
             result = _execute_playbook(self.project, self.policy,
                                        {'playbook': playbook},
                                        self.context, check=check)
@@ -183,6 +183,43 @@ class ExecuteTestCase(unittest.TestCase):
         # Hooks run with the mode-specific names
         hook_names = [call[0][1] for call in hooks.call_args_list]
         self.assertEqual(hook_names, ['pre-check', 'post-check'])
+
+    def test_recap_in_the_summary(self):
+        # Two plays, one host each contributing counters: the recap
+        # aggregates per host, and it is the recap — not the exit code
+        # — which answers whether anything changed
+        output = (
+                'PLAY [all] '
+                '********************************************************\n'
+                'TASK [Gather] '
+                '****************************************************\n'
+                'ok: [web1]\n'
+                'PLAY RECAP '
+                '********************************************************\n'
+                'web1 : ok=12 changed=3 unreachable=0 failed=0 '
+                'skipped=1 rescued=0 ignored=0\n'
+                '\n'
+                'PLAY RECAP '
+                '********************************************************\n'
+                'web1 : ok=2 changed=1 unreachable=0 failed=0 '
+                'skipped=0 rescued=0 ignored=0\n')
+        result, _r, _i, _h, _p = self.call_execute(output=output)
+        self.assertFalse(result['isError'])
+        recap = result['structuredContent']['recap']
+        self.assertEqual(recap['web1']['ok'], 14)
+        self.assertEqual(recap['web1']['changed'], 4)
+        self.assertEqual(recap['web1']['skipped'], 1)
+        self.assertEqual(recap['web1']['failed'], 0)
+        from tests.unit._helpers import check_schema
+        from debops.mcp.tools import TOOL_OUTPUT_SCHEMAS
+        self.assertEqual(check_schema(result['structuredContent'],
+                                      TOOL_OUTPUT_SCHEMAS['check']),
+                         [])
+
+    def test_no_recap_no_key(self):
+        # A run which never reached a recap keeps the small summary
+        result, _r, _i, _h, _p = self.call_execute()
+        self.assertNotIn('recap', result['structuredContent'])
 
     def test_completion_is_logged(self):
         with self.assertLogs('debops.mcp.tools.execute',

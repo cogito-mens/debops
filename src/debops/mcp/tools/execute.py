@@ -108,6 +108,30 @@ def _check_local_confirmation(local, context, policy):
 _PLAY_HEADER = re.compile(r'^PLAY \[.*\]')
 _TASK_HEADER = re.compile(r'^TASK \[.*\]')
 
+# The recap line of a play: 'host : ok=12 changed=0 unreachable=0 ...'.
+# One recap section prints per play; the counters aggregate per host
+_RECAP_FIELDS = ('ok', 'changed', 'unreachable', 'failed', 'skipped',
+                 'rescued', 'ignored')
+_RECAP_LINE = re.compile(
+        r'^(\S+)\s+: '
+        + r'\s+'.join(r'{}=(\d+)'.format(field) for field in _RECAP_FIELDS)
+        + r'\s*$')
+
+
+def _parse_recap(output):
+    """The per-host counters of the play recap(s), summed per host."""
+    recap = {}
+    for line in output.splitlines():
+        match = _RECAP_LINE.match(line.strip())
+        if match is None:
+            continue
+        counters = recap.setdefault(
+                match.group(1), dict.fromkeys(_RECAP_FIELDS, 0))
+        for field, value in zip(_RECAP_FIELDS, match.groups()[1:]):
+            counters[field] += int(value)
+    return {host: recap[host] for host in sorted(recap)}
+
+
 # Minimum interval between progress notifications
 PROGRESS_INTERVAL = 0.5  # seconds
 
@@ -425,10 +449,15 @@ def _execute_playbook(project, policy, arguments, context, check,
     header = '# debops {} {}\n\nexit code: {}\nhosts: {}\n\n'.format(
             mode, ' '.join(targets), returncode,
             ', '.join(resolved_hosts) if resolved_hosts else '(none)')
-    # The machine-readable summary; the full output stays in the text
+    # The machine-readable summary; the full output stays in the text.
+    # The recap answers the maintainer's question — 'exit code 0' means
+    # no failures, only the recap says whether anything changed
     summary = {'mode': mode, 'playbooks': targets,
                'hosts': resolved_hosts, 'exitCode': returncode,
                'status': status}
+    recap = _parse_recap(output)
+    if recap:
+        summary['recap'] = recap
     if status == 'disabled':
         return error_result(header + 'terminated: the MCP functionality '
                             'was disabled mid-run (the kill switch)\n\n'

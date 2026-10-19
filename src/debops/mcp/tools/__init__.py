@@ -83,6 +83,12 @@ READ_LOCKED_TOOLS = frozenset((
 
 # The output schemas of the tools which return structuredContent;
 # keyed by name, like the annotations
+# The per-host play recap counters of a check/run, mapped by host name
+_RECAP_SCHEMA = {'type': 'object',
+                 'additionalProperties': {
+                     'type': 'object',
+                     'additionalProperties': {'type': 'integer'}}}
+
 TOOL_OUTPUT_SCHEMAS = {
     'playbooks': {'type': 'array', 'items': {
         'type': 'object',
@@ -194,14 +200,16 @@ TOOL_OUTPUT_SCHEMAS = {
         'mode': {'type': 'string'},
         'playbooks': {'type': 'array', 'items': {'type': 'string'}},
         'hosts': {'type': 'array', 'items': {'type': 'string'}},
-        'exitCode': {'type': 'integer'}, 'status': {'type': 'string'}},
+        'exitCode': {'type': 'integer'}, 'status': {'type': 'string'},
+        'recap': _RECAP_SCHEMA},
         'required': ['mode', 'playbooks', 'hosts', 'exitCode',
                      'status']},
     'run': {'type': 'object', 'properties': {
         'mode': {'type': 'string'},
         'playbooks': {'type': 'array', 'items': {'type': 'string'}},
         'hosts': {'type': 'array', 'items': {'type': 'string'}},
-        'exitCode': {'type': 'integer'}, 'status': {'type': 'string'}},
+        'exitCode': {'type': 'integer'}, 'status': {'type': 'string'},
+        'recap': _RECAP_SCHEMA},
         'required': ['mode', 'playbooks', 'hosts', 'exitCode',
                      'status']},
 }
