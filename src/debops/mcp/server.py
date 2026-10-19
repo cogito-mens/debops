@@ -16,6 +16,7 @@ import threading
 
 from . import rpc
 from .skills import SKILL_URI_PREFIX
+from .tasks import TaskRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,9 @@ PROTOCOL_VERSION_KEY = 'io.modelcontextprotocol/protocolVersion'
 CLIENT_CAPABILITIES_KEY = 'io.modelcontextprotocol/clientCapabilities'
 CLIENT_INFO_KEY = 'io.modelcontextprotocol/clientInfo'
 SERVER_INFO_KEY = 'io.modelcontextprotocol/serverInfo'
+
+# The Tasks extension identifier
+TASKS_EXTENSION = 'io.modelcontextprotocol/tasks'
 
 # A tribute carried in the overhead of every result; '_meta' is
 # protocol metadata consumed by clients and never shown to the model,
@@ -137,7 +141,7 @@ class ToolContext(object):
 
     def __init__(self, request_id, cancelled, progress_token=None,
                  notify=None, peer_pid=None, client_capabilities=None,
-                 input_responses=None):
+                 input_responses=None, task=None):
         self.request_id = request_id
         self.cancelled = cancelled
         self.progress_token = progress_token
@@ -148,10 +152,15 @@ class ToolContext(object):
         self.input_responses = (input_responses
                                 if isinstance(input_responses, dict)
                                 else None)
+        self.task = task
         self._notify = notify
 
     def progress(self, message, progress=None, total=None):
-        """Send a progress notification, if the client asked for them."""
+        """Report progress: the task status message, or the
+        notification when the client asked with a progress token."""
+        if self.task is not None:
+            self.task.set_status_message(message)
+            return
         if self.progress_token is None or self._notify is None:
             return
         params = {'progressToken': self.progress_token,
@@ -176,7 +185,8 @@ class Tool(object):
 
     def __init__(self, name, description, input_schema, handler,
                  output_schema=None, needs_context=False,
-                 annotations=None, meta=None, self_confirms=False):
+                 annotations=None, meta=None, self_confirms=False,
+                 task_eligible=False):
         self.name = name
         self.description = description
         self.input_schema = input_schema
@@ -189,6 +199,9 @@ class Tool(object):
         # computed data in the confirmation) is skipped by the generic
         # confirmation gate
         self.self_confirms = self_confirms
+        # A long-running tool may return a task handle instead of
+        # blocking, when the client declared the tasks extension
+        self.task_eligible = task_eligible
 
     def describe(self):
         description = {
@@ -233,10 +246,15 @@ class McpServer(object):
             'tools/call': self._tools_call,
             'notifications/cancelled': self._cancelled,
             'subscriptions/listen': self._subscriptions_listen,
+            'tasks/get': self._tasks_get,
+            'tasks/update': self._tasks_update,
+            'tasks/cancel': self._tasks_cancel,
         }
         # Open subscription streams: request id → filter and event queue
         self._subscriptions = {}
         self._subscriptions_lock = threading.Lock()
+        # The task registry: long-running work the client polls for
+        self._tasks = TaskRegistry()
         if self.skills is not None:
             self._methods['resources/list'] = self._resources_list
             self._methods['resources/read'] = self._resources_read
@@ -246,11 +264,12 @@ class McpServer(object):
 
     def register_tool(self, name, description, input_schema, handler,
                       output_schema=None, needs_context=False,
-                      annotations=None, meta=None, self_confirms=False):
+                      annotations=None, meta=None, self_confirms=False,
+                      task_eligible=False):
         """Register a tool exposed via tools/list and tools/call."""
         self.tools[name] = Tool(name, description, input_schema, handler,
                                 output_schema, needs_context, annotations,
-                                meta, self_confirms)
+                                meta, self_confirms, task_eligible)
 
     def cancel_all(self):
         """Cancel every in-flight request (transport teardown)."""
@@ -432,7 +451,8 @@ class McpServer(object):
             capabilities['prompts'] = {'listChanged': True}
         return {
             'supportedVersions': [PROTOCOL_VERSION],
-            'capabilities': capabilities,
+            'capabilities': dict(capabilities,
+                                 extensions={TASKS_EXTENSION: {}}),
             'instructions':
                 'This server exposes one DebOps project directory: '
                 'inspect its inventory, roles, playbooks and '
@@ -474,6 +494,9 @@ class McpServer(object):
         gated = self._confirmation_gate(tool, arguments, params, context)
         if gated is not None:
             return gated
+        if (tool.task_eligible
+                and self._client_supports(context, TASKS_EXTENSION)):
+            return self._start_task(tool, arguments, params, context)
         if not tool.needs_context:
             return tool.handler(arguments)
 
@@ -610,6 +633,107 @@ class McpServer(object):
         return {'contents': [{'uri': uri, 'mimeType': 'text/markdown',
                               'text': content}],
                 'ttlMs': 3600000, 'cacheScope': 'public'}
+
+    # -- tasks (the io.modelcontextprotocol/tasks extension) ----------------
+
+    def _client_supports(self, context, extension):
+        """Whether the client declared an extension on this request."""
+        capabilities = context.client_capabilities
+        return extension in (capabilities.get('extensions') or {})
+
+    def _require_tasks_capability(self, context):
+        if not self._client_supports(context, TASKS_EXTENSION):
+            raise rpc.JsonRpcError(
+                    -32021, 'Missing required client capability',
+                    data={'requiredCapabilities':
+                          {'extensions': {TASKS_EXTENSION: {}}}},
+                    request_id=context.request_id)
+
+    def _start_task(self, tool, arguments, params, context):
+        """Run a task-eligible tool in the background; return the handle."""
+        timeout = (self.policy.execute_timeout
+                   if self.policy is not None else 3600)
+        task = self._tasks.create(ttl_ms=max(3600000, timeout * 2000))
+        thread = threading.Thread(
+                target=self._run_task,
+                args=(task, tool, arguments, params, context),
+                daemon=True)
+        thread.start()
+        logger.notice('Task %s started: %s', task.task_id, tool.name)
+        return task.creation_result()
+
+    def _run_task(self, task, tool, arguments, params, context):
+        """Drive one task to its terminal state."""
+        # The task is cancelled by tasks/cancel via its event, and by
+        # the server-wide cancel (the kill switch, a transport shutdown)
+        with self._active_lock:
+            self._active_requests['task:' + task.task_id] = \
+                task.cancel_event
+        try:
+            tool_context = ToolContext(
+                    task.task_id, task.cancel_event,
+                    progress_token=None, notify=context.notify,
+                    peer_pid=context.peer_pid,
+                    client_capabilities=context.client_capabilities,
+                    input_responses=params.get('inputResponses'),
+                    task=task)
+            result = tool.handler(arguments, tool_context)
+            task.complete(result)
+            logger.notice('Task %s completed: %s', task.task_id,
+                          tool.name)
+        except RequestCancelled:
+            task.mark_cancelled()
+            logger.notice('Task %s cancelled: %s', task.task_id,
+                          tool.name)
+        except Exception:
+            logger.exception('Task %s failed: %s', task.task_id,
+                             tool.name)
+            task.fail({'code': rpc.INTERNAL_ERROR,
+                       'message': 'Internal error'})
+        finally:
+            with self._active_lock:
+                self._active_requests.pop('task:' + task.task_id, None)
+
+    def _tasks_get(self, params, context):
+        self._require_tasks_capability(context)
+        task = self._tasks.get(params.get('taskId'))
+        if task is None:
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_PARAMS, 'Invalid params',
+                    data={'details': 'unknown or expired task: {}'
+                          .format(params.get('taskId'))},
+                    request_id=context.request_id)
+        return task.describe()
+
+    def _tasks_update(self, params, context):
+        self._require_tasks_capability(context)
+        task = self._tasks.get(params.get('taskId'))
+        if task is None:
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_PARAMS, 'Invalid params',
+                    data={'details': 'unknown or expired task: {}'
+                          .format(params.get('taskId'))},
+                    request_id=context.request_id)
+        responses = params.get('inputResponses', {})
+        if not isinstance(responses, dict):
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_PARAMS, 'Invalid params',
+                    data={'details': "'inputResponses' must be an "
+                          'object'},
+                    request_id=context.request_id)
+        for key, response in responses.items():
+            task.answer(key, response)
+        return {}
+
+    def _tasks_cancel(self, params, context):
+        self._require_tasks_capability(context)
+        if not self._tasks.cancel(params.get('taskId')):
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_PARAMS, 'Invalid params',
+                    data={'details': 'unknown or expired task: {}'
+                          .format(params.get('taskId'))},
+                    request_id=context.request_id)
+        return {}
 
     # -- subscriptions -----------------------------------------------------
 

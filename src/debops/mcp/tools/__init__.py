@@ -486,7 +486,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                 project, policy, arguments, context,
                 enabled_check=enabled_check,
                 on_disabled=server.cancel_all),
-            True, True))
+            True, True, True))
     if execute_mode == 'all':
         tools.append((
             'run',
@@ -501,7 +501,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                 project, policy, arguments, context,
                 enabled_check=enabled_check,
                 on_disabled=server.cancel_all),
-            True))
+            True, False, True))
 
     # Host queries change nothing, so they are registered wherever
     # execution is allowed at all
@@ -848,6 +848,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
         name, description, schema, handler = entry[:4]
         needs_context = entry[4] if len(entry) > 4 else False
         self_confirms = entry[5] if len(entry) > 5 else False
+        task_eligible = entry[6] if len(entry) > 6 else False
         handler = _wrap_resource_errors(handler)
         if name in READ_LOCKED_TOOLS:
             handler = _wrap_shared_lock(project, policy, handler)
@@ -860,4 +861,5 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
             server.register_tool(name, description, schema, handler,
                                  needs_context=needs_context,
                                  annotations=TOOL_ANNOTATIONS.get(name),
-                                 meta=meta, self_confirms=self_confirms)
+                                 meta=meta, self_confirms=self_confirms,
+                                 task_eligible=task_eligible)

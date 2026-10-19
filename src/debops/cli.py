@@ -431,7 +431,8 @@ class Interpreter(object):
         result = response.get('result', {})
         meta = result.get('_meta', {})
         server_info = meta.get('io.modelcontextprotocol/serverInfo', {})
-        capabilities = ', '.join(sorted(result.get('capabilities', {})))
+        capabilities = dict(result.get('capabilities', {}))
+        extensions = sorted(capabilities.pop('extensions', {}))
         versions = result.get('supportedVersions', [])
         print('debops mcp server at {}:'.format(args.socket))
         print('    name: {}'.format(server_info.get('name', '?')))
@@ -441,7 +442,10 @@ class Interpreter(object):
             print('    view: {}'.format(meta['org.debops/view']))
         print('    version: {}'.format(server_info.get('version', '?')))
         print('    protocol: {}'.format(', '.join(versions) or '?'))
-        print('    capabilities: {}'.format(capabilities or '(none)'))
+        print('    capabilities: {}'.format(
+                ', '.join(sorted(capabilities)) or '(none)'))
+        if extensions:
+            print('    extensions: {}'.format(', '.join(extensions)))
         print('    round-trip: {:.0f} ms'.format(rtt * 1000))
 
     def _mcp_call(self, socket_path, tool_name, pairs, raw,

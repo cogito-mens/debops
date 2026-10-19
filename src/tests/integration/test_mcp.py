@@ -607,6 +607,110 @@ def test_check_of_a_local_playbook_asks_via_stdio(run_debops, mcp_env,
     assert "hello from mcp" in second["content"][0]["text"]
 
 
+def test_check_via_tasks_extension(run_debops, mcp_env, project_dir,
+                                   tmp_path, debops_source_dir):
+    """A task-ified check of a project-local playbook: handle, the
+    mid-task confirmation via tasks/update, then the result."""
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+    playbooks = project_dir / "ansible" / "playbooks"
+    playbooks.mkdir(parents=True)
+    (playbooks / "custom.yml").write_text("""---
+- name: Local playbook
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Say hello
+      ansible.builtin.debug:
+        msg: hello from a task
+""")
+
+    tasks_meta = dict(REQUEST_META, **{
+            "io.modelcontextprotocol/clientCapabilities":
+            {"extensions":
+             {"io.modelcontextprotocol/tasks": {}}}})
+
+    # The task registry lives in one process: the test drives a daemon
+    # over a socket, not one-shot stdio invocations
+    socket_path = str(tmp_path / "tasks.sock")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+            [debops_source_dir,
+             env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    env.update(mcp_env)
+    server = subprocess.Popen(
+            [sys.executable, "-m", "debops", "mcp", "serve",
+             "--socket", socket_path],
+            cwd=str(project_dir), env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def call(method, params, request_id):
+        import socket as socket_module
+        connection = socket_module.socket(socket_module.AF_UNIX,
+                                          socket_module.SOCK_STREAM)
+        connection.connect(socket_path)
+        connection.sendall((json.dumps({
+                "jsonrpc": "2.0", "_meta": tasks_meta, "id": request_id,
+                "method": method, "params": params}) + "\n").encode())
+        reader = connection.makefile("rb")
+        response = json.loads(reader.readline())
+        connection.close()
+        return response
+
+    try:
+        for _ in range(500):
+            if os.path.exists(socket_path):
+                break
+            time.sleep(0.01)
+
+        response = call("tools/call",
+                        {"name": "check",
+                         "arguments": {"playbook": "custom"}}, 1)
+        result = response["result"]
+        assert result["resultType"] == "task"
+        assert result["status"] == "working"
+        task_id = result["taskId"]
+
+        # Poll until the confirmation request is outstanding
+        deadline = time.monotonic() + 30
+        task = {}
+        while time.monotonic() < deadline:
+            task = call("tasks/get", {"taskId": task_id}, 2)["result"]
+            if task["status"] == "input_required":
+                break
+            time.sleep(0.2)
+        assert task["status"] == "input_required"
+        assert "confirmation" in task["inputRequests"]
+
+        # Answer, then collect the result
+        ack = call("tasks/update", {
+                "taskId": task_id,
+                "inputResponses": {"confirmation": {
+                    "action": "accept",
+                    "content": {"confirmed": True}}}}, 3)
+        assert ack["result"]["resultType"] == "complete"
+
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            task = call("tasks/get", {"taskId": task_id}, 4)["result"]
+            if task["status"] == "completed":
+                break
+            time.sleep(0.2)
+        assert task["status"] == "completed"
+        assert "hello from a task" in \
+            task["result"]["content"][0]["text"]
+    finally:
+        server.terminate()
+        server.wait(timeout=10)
+
+
 def test_run_asks_for_confirmation_via_stdio(run_debops, mcp_env,
                                              project_dir):
     if shutil.which("ansible-playbook") is None:
@@ -768,6 +872,8 @@ def test_connect_ping(run_debops, mcp_env, tmp_path):
         assert "name: debops" in result.stdout
         assert "protocol: 2026-07-28" in result.stdout
         assert "capabilities: tools" in result.stdout
+        assert "extensions: io.modelcontextprotocol/tasks" in \
+            result.stdout
         # The test server is not confined to a project
         assert "project:" not in result.stdout
 

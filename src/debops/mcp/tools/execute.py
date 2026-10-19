@@ -86,8 +86,36 @@ def _check_local_confirmation(local, context):
     """Ask the user before a check run of a project-local playbook.
 
     Returns None to proceed, or the result to send back (the
-    elicitation request, or the refusal).
+    elicitation request, or the refusal). In a task, the question is
+    the task's outstanding input request, answered via 'tasks/update'.
     """
+    message = ('Run the project playbook {} in check mode? Its tasks '
+               'can execute commands on the managed hosts even in '
+               'check mode (check_mode).'.format(
+                   ', '.join('"{}"'.format(target) for target in local)))
+    if context.task is not None:
+        answer = context.task.ask('confirmation', {
+                'method': 'elicitation/create',
+                'params': {
+                    'mode': 'form',
+                    'message': message,
+                    'requestedSchema': {
+                        'type': 'object',
+                        'properties': {
+                            'confirmed': {
+                                'type': 'boolean',
+                                'title': 'Confirm',
+                                'description': 'I understand and want '
+                                'to proceed',
+                                'default': False}},
+                        'required': ['confirmed']}}})
+        content = answer.get('content') or {}
+        if (answer.get('action') == 'accept'
+                and content.get('confirmed') is True):
+            return None
+        logger.notice('The check of a project playbook was declined')
+        return error_result('the run was declined by the user')
+
     answers = context.input_responses or {}
     if 'confirmation' in answers:
         answer = answers.get('confirmation') or {}
@@ -109,13 +137,7 @@ def _check_local_confirmation(local, context):
                     'method': 'elicitation/create',
                     'params': {
                         'mode': 'form',
-                        'message': (
-                            'Run the project playbook {} in check '
-                            'mode? Its tasks can execute commands on '
-                            'the managed hosts even in check mode '
-                            '(check_mode).'.format(
-                                ', '.join('"{}"'.format(target)
-                                          for target in local))),
+                        'message': message,
                         'requestedSchema': {
                             'type': 'object',
                             'properties': {

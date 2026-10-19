@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 
 
@@ -319,6 +320,33 @@ class ExecuteTestCase(unittest.TestCase):
                     self.project, policy or self.policy,
                     {'playbook': 'probe'}, self.context, check=True)
         return result, runner, inventory, hooks, popen
+
+    def test_check_local_confirmation_via_a_task(self):
+        # In a task the question is the task's outstanding input
+        # request, answered with tasks/update
+        from debops.mcp.tasks import Task
+        from debops.mcp.tools.execute import _check_local_confirmation
+        task = Task(ttl_ms=60000)
+        context = ToolContext(1, threading.Event(), task=task)
+
+        outcome = []
+
+        def ask():
+            outcome.append(_check_local_confirmation(
+                    ['probe.yml'], context))
+
+        thread = threading.Thread(target=ask)
+        thread.start()
+        deadline = time.monotonic() + 5
+        while task.status != 'input_required':
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.02)
+        self.assertIn('confirmation', task.describe()['inputRequests'])
+        task.answer('confirmation', {'action': 'accept',
+                                     'content': {'confirmed': True}})
+        thread.join(timeout=5)
+        self.assertEqual(outcome, [None])
+        self.assertEqual(task.status, 'working')
 
     def test_log_lines_identify_the_client(self):
         self.context = ToolContext(9, threading.Event(), peer_pid=4321)
