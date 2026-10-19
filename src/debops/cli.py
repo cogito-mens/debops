@@ -690,11 +690,8 @@ class Interpreter(object):
                 sys.exit(1)
             print('\n'.join(mcp_client.format_tool(tools[args.tool])))
         elif step == 'prompts':
-            prompts = result.get('prompts', [])
-            print('prompts ({}):'.format(len(prompts)))
-            for prompt in prompts:
-                print('    {}  {}'.format(
-                        prompt['name'], prompt.get('description', '')))
+            print('\n'.join(mcp_client.format_prompts(
+                    result.get('prompts', []))))
         elif step == 'resources':
             print('\n'.join(mcp_client.format_resources(
                     result.get('resources', []))))

@@ -375,3 +375,12 @@ def format_resources(resources):
                 resource['name'].ljust(width),
                 _shorten(resource.get('description', ''))))
     return lines
+
+
+def format_prompts(prompts):
+    """Render a prompts/list result as lines for humans."""
+    lines = ['prompts ({}):'.format(len(prompts))]
+    for prompt in prompts:
+        lines.append('    {}  {}'.format(
+                prompt['name'], prompt.get('description', '')))
+    return lines

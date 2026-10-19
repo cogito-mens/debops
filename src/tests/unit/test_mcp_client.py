@@ -134,6 +134,18 @@ class FormatterTestCase(unittest.TestCase):
         self.assertIn('Show the status.', lines[2])
         self.assertIn('[read-only]', lines[2])
 
+    def test_format_prompts(self):
+        lines = client.format_prompts([
+            {'name': 'review-a-role',
+             'description': 'Review a role against the conventions.'},
+            {'name': 'bootstrap', 'description': 'Bootstrap a host.'},
+        ])
+        self.assertEqual(lines[0], 'prompts (2):')
+        self.assertEqual(lines[1],
+                         '    review-a-role  Review a role against '
+                         'the conventions.')
+        self.assertEqual(lines[2], '    bootstrap  Bootstrap a host.')
+
     def test_format_tool(self):
         lines = client.format_tool({
             'name': 'run',
