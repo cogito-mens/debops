@@ -137,6 +137,15 @@ class ProjectDir(object):
         self.config.merge_env(os.path.join(self.path,
                                            '.debops', 'environment'))
         self.config.merge_env(self.path)
+
+        # The MCP server environment files are part of the project's
+        # environment as well, so that a debugging session on the
+        # command line runs with the same environment as the MCP
+        # server
+        self.config.merge_env(os.path.join(self.path, '.debops', 'mcp',
+                                           'environment'))
+        self.config.merge_env(os.path.join(self.path, '.debops', 'mcp',
+                                           '.env'))
         self.config.merge(project_data)
 
         self.config.merge(os.path.join(self.path, '.debops', 'conf.d'))

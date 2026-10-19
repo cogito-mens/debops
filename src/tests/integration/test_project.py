@@ -242,6 +242,28 @@ def test_refresh_config_template(run_debops, tmp_path, debops_env):
     assert result.returncode == 0
 
 
+def test_mcp_environment_files_load_in_the_cli(run_debops, tmp_path,
+                                               debops_env):
+    """The MCP environment files are part of the CLI environment, so a
+    debugging session matches what the MCP server runs with."""
+    project_dir = tmp_path / "example-mcp-env"
+    run_debops("project", "init", "--no-requirements", str(project_dir),
+               env=debops_env, check=True)
+    mcp_dir = project_dir / ".debops" / "mcp"
+    mcp_dir.mkdir(parents=True)
+    (mcp_dir / "environment").write_text("MCP_COHESION=from-mcp-file\n")
+    (mcp_dir / ".env").write_text("MCP_TOKEN=sekrit\n")
+
+    result = run_debops("env", "printenv", "MCP_COHESION",
+                        cwd=str(project_dir), env=debops_env)
+    assert result.returncode == 0
+    assert "from-mcp-file" in result.stdout
+    result = run_debops("env", "printenv", "MCP_TOKEN",
+                        cwd=str(project_dir), env=debops_env)
+    assert result.returncode == 0
+    assert "sekrit" in result.stdout
+
+
 def test_mkview_creates_an_additional_view(run_debops, tmp_path, debops_env):
     project_dir = tmp_path / "example-modern"
     run_debops("project", "init", "-t", "modern", "--no-requirements",
