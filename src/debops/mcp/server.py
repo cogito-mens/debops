@@ -11,6 +11,7 @@ can hand any message to handle_bytes() independently of any other.
 """
 
 import logging
+import os
 import queue
 import threading
 
@@ -126,6 +127,38 @@ class RequestContext(object):
     def is_dead(self):
         """Whether the transport channel is gone (EOF, teardown)."""
         return self._dead is not None and self._dead.is_set()
+
+
+# How often the project configuration files are checked for changes
+CONFIG_WATCH_INTERVAL = 10.0  # seconds
+
+
+def _config_signature(project):
+    """A fingerprint of the project's configuration files.
+
+    The 'conf.d' directory is fingerprinted as a listing, so that
+    added, renamed and deleted files are noticed as well as edits;
+    the format does not matter (the loader accepts TOML, YAML and
+    JSON). The legacy '.debops.cfg' is a single file. The ambient
+    configuration is left out on purpose: administrator-level changes
+    come with a daemon restart, and the kill switch re-reads its own
+    files already.
+    """
+    config_dir = os.path.join(project.path, '.debops', 'conf.d')
+    try:
+        entries = tuple(
+                (name, os.stat(os.path.join(config_dir, name))
+                 .st_mtime_ns)
+                for name in sorted(os.listdir(config_dir))
+                if os.path.isfile(os.path.join(config_dir, name)))
+    except OSError:
+        entries = None
+    try:
+        legacy = os.stat(os.path.join(project.path, '.debops.cfg')) \
+            .st_mtime_ns
+    except OSError:
+        legacy = None
+    return (entries, legacy)
 
 
 class ToolContext(object):
@@ -259,6 +292,10 @@ class McpServer(object):
         # The reload recipe, provided by the caller which knows how the
         # server was assembled ('debops mcp serve' sets it)
         self._rebuild = None
+        # The configuration watcher's stop event and thread, while it
+        # runs
+        self._config_watch = None
+        self._config_watch_thread = None
         if self.skills is not None:
             self._methods['resources/list'] = self._resources_list
             self._methods['resources/read'] = self._resources_read
@@ -286,8 +323,9 @@ class McpServer(object):
         """Re-read the project configuration and rebuild the policy and
         the tool surface; announce a change to the subscribers.
 
-        Called with the exclusive project lock held (the caller is
-        inside one, e.g. a pull). In-flight requests keep the tool
+        Called with a project lock held (the caller is inside one:
+        a pull holds the exclusive lock, the configuration watcher
+        holds the shared one). In-flight requests keep the tool
         objects they started with; the registry and the sync throttle
         survive. A rebuild failure (a broken configuration file) is
         logged and the current policy stays in effect. Returns whether
@@ -310,6 +348,54 @@ class McpServer(object):
             logger.debug('Reloaded the policy; the tool surface is '
                          'unchanged')
         return True
+
+    def watch_config(self, interval=CONFIG_WATCH_INTERVAL):
+        """Start watching the project configuration for changes.
+
+        A changed configuration reloads the policy and the tool
+        surface in place, announced to the subscribers when the
+        surface changed. Does nothing when the server has no reload
+        recipe or is watched already.
+        """
+        if self._rebuild is None or self._config_watch is not None:
+            return
+        stop = threading.Event()
+
+        def watch():
+            signature = _config_signature(self.project)
+            while not stop.wait(interval):
+                current = _config_signature(self.project)
+                if current == signature:
+                    continue
+                # The signature advances even when the reload fails
+                # (a file being edited can be invalid for a while);
+                # the next change is another chance
+                signature = current
+                # Imported here: the tools package imports this module
+                from .tools.common import shared_project
+                try:
+                    with shared_project(self.project, self.policy):
+                        self.reload()
+                except Exception:
+                    logger.warning('The configuration reload failed',
+                                   exc_info=True)
+
+        thread = threading.Thread(
+                target=watch, name='debops-mcp-config-watch',
+                daemon=True)
+        self._config_watch = stop
+        self._config_watch_thread = thread
+        thread.start()
+
+    def stop_config_watch(self):
+        """Stop the configuration watcher."""
+        if self._config_watch is not None:
+            self._config_watch.set()
+            self._config_watch = None
+            # Do not stall a shutdown on a watcher which is blocked on
+            # the project lock
+            self._config_watch_thread.join(timeout=5.0)
+            self._config_watch_thread = None
 
     def accepting(self):
         """Whether the server currently accepts work (kill switch)."""

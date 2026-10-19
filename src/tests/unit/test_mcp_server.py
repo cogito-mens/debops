@@ -9,9 +9,15 @@ dependencies.
 """
 
 from debops.mcp import rpc
+from debops.mcp.policy import McpPolicy
 from debops.mcp.server import McpServer, PROTOCOL_VERSION, RequestCancelled
+from debops.mcp.server import _config_signature
 import json
+import os
+import shutil
+import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -503,6 +509,136 @@ class ReloadTestCase(unittest.TestCase):
         server._rebuild = good_rebuild
         self.assertTrue(server.reload())
         self.assertEqual(sorted(server.tools), ['alpha'])
+
+
+class ConfigWatchTestCase(unittest.TestCase):
+    """The configuration watcher reloads the policy on changed files."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-watch-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        self.conf_d = os.path.join(self.tmpdir, '.debops', 'conf.d')
+        os.makedirs(self.conf_d)
+        self.project = type('Project', (), {
+            'path': self.tmpdir,
+            'name': 'project',
+            'project_type': 'legacy',
+            'view': 'system',
+            'auto_commit': lambda self, message=None: None,
+            'config': type('Config', (), {'raw': {},
+                                          '_env_vars': {}})(),
+        })()
+        self.reloads = []
+        self.server = McpServer(project=self.project,
+                                policy=McpPolicy(self.project))
+        self.server._rebuild = lambda: self.reloads.append(
+                time.monotonic())
+        self.addCleanup(self.server.stop_config_watch)
+
+    def _write_config(self, name='mcp.toml', text=''):
+        with open(os.path.join(self.conf_d, name), 'w') as fp:
+            fp.write(text)
+
+    def wait_for(self, predicate, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def test_signature_tracks_the_config_files(self):
+        # No files yet: the directory listing is empty, no legacy file
+        signature = _config_signature(self.project)
+        self.assertEqual(signature, ((), None))
+
+        self._write_config(text='[project.mcp]\n')
+        changed = _config_signature(self.project)
+        self.assertNotEqual(changed, signature)
+        signature = changed
+
+        # An edit with an explicit new mtime changes the fingerprint
+        path = os.path.join(self.conf_d, 'mcp.toml')
+        os.utime(path, ns=(1 << 40, 1 << 40))
+        changed = _config_signature(self.project)
+        self.assertNotEqual(changed, signature)
+        signature = changed
+
+        # An added file, a removed file and a legacy file all change
+        # the fingerprint, whatever the format
+        self._write_config(name='extra.yml', text='--- {}\n')
+        self.assertNotEqual(_config_signature(self.project), signature)
+        os.unlink(os.path.join(self.conf_d, 'extra.yml'))
+        self.assertEqual(_config_signature(self.project), signature)
+        with open(os.path.join(self.tmpdir, '.debops.cfg'), 'w') as fp:
+            fp.write('[debops]\n')
+        self.assertNotEqual(_config_signature(self.project), signature)
+
+    def watch_with_observed_baseline(self, interval=0.05):
+        """Start the watcher; return once it took its baseline, so a
+        later change is guaranteed to be noticed."""
+        baseline_taken = threading.Event()
+        real_signature = _config_signature
+
+        def recording_signature(project):
+            # Set the event only once the baseline is computed: setting
+            # it on entry would let a change race the read itself
+            signature = real_signature(project)
+            baseline_taken.set()
+            return signature
+
+        with mock.patch('debops.mcp.server._config_signature',
+                        recording_signature):
+            self.server.watch_config(interval=interval)
+            self.assertTrue(baseline_taken.wait(5.0))
+
+    def test_watcher_reloads_on_a_change(self):
+        self.watch_with_observed_baseline()
+        self._write_config(text='[project.mcp]\n')
+        self.assertTrue(self.wait_for(lambda: len(self.reloads) >= 1))
+
+    def test_watcher_ignores_unrelated_files(self):
+        self.watch_with_observed_baseline()
+        with open(os.path.join(self.tmpdir, 'notes.txt'), 'w') as fp:
+            fp.write('not a configuration file\n')
+        self.assertFalse(self.wait_for(lambda: self.reloads,
+                                       timeout=0.3))
+
+    def test_watcher_survives_a_failing_reload(self):
+        attempts = []
+
+        def rebuild():
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise ValueError('broken TOML')
+
+        self.server._rebuild = rebuild
+        self.watch_with_observed_baseline()
+        self._write_config(text='broken = [')
+        self.assertTrue(self.wait_for(lambda: len(attempts) >= 1))
+        # The signature advanced past the broken state; the next change
+        # is another chance
+        self._write_config(text='[project.mcp]\n')
+        self.assertTrue(self.wait_for(lambda: len(attempts) >= 2))
+
+    def test_watch_requires_a_reload_recipe(self):
+        server = McpServer(project=self.project,
+                           policy=McpPolicy(self.project))
+        server.watch_config(interval=0.05)
+        self.assertIsNone(server._config_watch)
+
+    def test_watch_is_idempotent_and_stops(self):
+        self.server.watch_config(interval=0.05)
+        first = self.server._config_watch
+        self.server.watch_config(interval=0.05)
+        self.assertIs(self.server._config_watch, first)
+        self.server.stop_config_watch()
+        self.assertIsNone(self.server._config_watch)
+        self.assertTrue(first.is_set())
+        count = len(self.reloads)
+        self._write_config(text='[project.mcp]\n')
+        time.sleep(0.2)
+        self.assertEqual(len(self.reloads), count)
 
 
 class ClacksOverheadTestCase(unittest.TestCase):

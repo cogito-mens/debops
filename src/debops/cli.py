@@ -405,11 +405,14 @@ class Interpreter(object):
         def _on_ready():
             nonlocal started
             started = True
+            # Reload the policy when the project configuration changes
+            server.watch_config()
             if not run_hooks(project.path, 'mcp-post-start',
                              extra_env=hook_env):
                 logger.warning('The mcp-post-start hook failed')
 
         def _on_stop():
+            server.stop_config_watch()
             # A hung hook must not stall the shutdown
             if not run_hooks(project.path, 'mcp-pre-stop', timeout=30,
                              extra_env=hook_env):
