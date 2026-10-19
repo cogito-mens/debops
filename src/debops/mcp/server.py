@@ -289,12 +289,19 @@ class McpServer(object):
         Called with the exclusive project lock held (the caller is
         inside one, e.g. a pull). In-flight requests keep the tool
         objects they started with; the registry and the sync throttle
-        survive.
+        survive. A rebuild failure (a broken configuration file) is
+        logged and the current policy stays in effect. Returns whether
+        the reload happened.
         """
         if self._rebuild is None:
-            return
+            return False
         before = [tool.describe() for tool in self.tools.values()]
-        self._rebuild()
+        try:
+            self._rebuild()
+        except Exception:
+            logger.warning('The policy reload failed; keeping the '
+                           'current configuration', exc_info=True)
+            return False
         after = [tool.describe() for tool in self.tools.values()]
         if before != after:
             logger.notice('The tool surface changed on reload')
@@ -302,6 +309,7 @@ class McpServer(object):
         else:
             logger.debug('Reloaded the policy; the tool surface is '
                          'unchanged')
+        return True
 
     def accepting(self):
         """Whether the server currently accepts work (kill switch)."""

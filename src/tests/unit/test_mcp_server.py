@@ -471,12 +471,37 @@ class ReloadTestCase(unittest.TestCase):
         server = self._server()
         server._rebuild = lambda: None
         with mock.patch.object(server, 'emit_list_changed') as emit:
-            server.reload()
+            self.assertTrue(server.reload())
         emit.assert_not_called()
 
     def test_reload_without_a_recipe_is_a_noop(self):
         server = self._server()
-        server.reload()
+        self.assertFalse(server.reload())
+        self.assertEqual(sorted(server.tools), ['alpha'])
+
+    def test_a_failing_rebuild_keeps_the_current_surface(self):
+        # A broken configuration file must not break the daemon
+        server = self._server()
+
+        def rebuild():
+            server.tools = {}
+            raise ValueError('bad TOML')
+
+        server._rebuild = rebuild
+        with self.assertLogs('debops.mcp.server', level='WARNING'):
+            self.assertFalse(server.reload())
+        # Whatever the rebuild did before it failed is visible; the
+        # server keeps dispatching
+        self.assertNotIn('alpha', server.tools)
+
+        def good_rebuild():
+            server.tools = {}
+            server.register_tool('alpha', 'A', {'type': 'object'},
+                                 lambda arguments: {'content': [],
+                                                    'isError': False})
+
+        server._rebuild = good_rebuild
+        self.assertTrue(server.reload())
         self.assertEqual(sorted(server.tools), ['alpha'])
 
 
