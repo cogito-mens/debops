@@ -445,7 +445,8 @@ Commands:
         parser.add_argument('--socket', type=str, metavar='PATH',
                             help='listen on a UNIX socket at PATH instead '
                                  'of serving on stdio')
-        parser.add_argument('--mode', type=lambda value: int(value, 8),
+        parser.add_argument('--socket-mode',
+                            type=lambda value: int(value, 8),
                             default=0o660, metavar='MODE',
                             help='file mode of the UNIX socket, in octal '
                                  '(default: %(default)04o)')

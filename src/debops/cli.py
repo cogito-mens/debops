@@ -421,7 +421,7 @@ class Interpreter(object):
         try:
             if args.socket:
                 transport = UnixSocketTransport(
-                        args.socket, mode=args.mode,
+                        args.socket, mode=args.socket_mode,
                         max_connections=args.max_connections)
             else:
                 transport = StdioTransport()
