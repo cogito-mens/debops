@@ -41,9 +41,17 @@ execute_options = ["limit", "tags", "skip-tags"]
 # Tools which ask the user for confirmation before they run, on clients
 # which support it. The confirmation is a courtesy, not a security
 # boundary; the 'execute' option above is the boundary.
-confirm = ["run", "project_push", "keyring_fetch",
+confirm = ["run", "check", "project_push", "keyring_fetch",
            "environment_set", "environment_unset",
            "collection_require", "collection_remove"]
+
+# Whether playbooks living in the project itself may run with the
+# 'check' and 'run' tools. They are agent-writable content: a playbook
+# can execute commands on the managed hosts even in check mode
+# ('check_mode: no' on a task), so untrusted environments should run
+# only the collection content. A check run of a project-local playbook
+# asks for confirmation when 'check' is in the 'confirm' list above.
+local_playbooks = true
 
 # The server's environment for tool runs comes from
 # '.debops/mcp/environment' (plain variables, tracked) and

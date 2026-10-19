@@ -1136,9 +1136,13 @@ class ToolsTestCase(unittest.TestCase):
                          {'org.debops/confirm': True})
         self.assertIn('asks the user to confirm',
                       tools['run']['description'])
+        # 'check' is gated now (project-local playbooks ask first)
+        self.assertEqual(tools['check']['_meta'],
+                         {'org.debops/confirm': True})
         # Ungated tools say nothing about confirmation
-        self.assertNotIn('_meta', tools['check'])
-        self.assertNotIn('confirm', tools['check']['description'])
+        self.assertNotIn('_meta', tools['project_status'])
+        self.assertNotIn('confirm',
+                         tools['project_status']['description'])
         self.assertNotIn('_meta', tools['view_write'])
 
     def test_confirm_disabled_marks_nothing(self):

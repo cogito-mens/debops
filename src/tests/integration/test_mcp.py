@@ -547,6 +547,66 @@ def test_inventory_spec_via_stdio(run_debops, mcp_env, project_dir):
     assert "DebOps MCP: inventory_spec" in log.stdout
 
 
+def test_check_of_a_local_playbook_asks_via_stdio(run_debops, mcp_env,
+                                                  project_dir):
+    """A check run of a project-local playbook elicits confirmation;
+    a check of a collection playbook does not."""
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+    playbooks = project_dir / "ansible" / "playbooks"
+    playbooks.mkdir(parents=True)
+    (playbooks / "custom.yml").write_text("""---
+- name: Local playbook
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Say hello
+      ansible.builtin.debug:
+        msg: hello from mcp
+""")
+
+    elicit_meta = dict(REQUEST_META, **{
+            "io.modelcontextprotocol/clientCapabilities":
+            {"elicitation": {"form": {}}}})
+    requests = (
+        json.dumps({"jsonrpc": "2.0", "_meta": elicit_meta, "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "check",
+                               "arguments": {"playbook": "custom"}}}) + "\n"
+        + json.dumps({"jsonrpc": "2.0", "_meta": elicit_meta, "id": 2,
+                      "method": "tools/call",
+                      "params": {
+                          "name": "check",
+                          "arguments": {"playbook": "custom"},
+                          "inputResponses": {
+                              "confirmation": {
+                                  "action": "accept",
+                                  "content": {"confirmed": True}}}}})
+        + "\n"
+    )
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=requests)
+
+    assert result.returncode == 0
+    responses = {response["id"]: response
+                 for response in read_json_lines(result.stdout)}
+    first = responses[1]["result"]
+    assert first["resultType"] == "input_required"
+    confirmation = first["inputRequests"]["confirmation"]
+    assert "even in check mode" in confirmation["params"]["message"]
+    assert "custom" in confirmation["params"]["message"]
+    second = responses[2]["result"]
+    assert second["isError"] is False
+    assert "hello from mcp" in second["content"][0]["text"]
+
+
 def test_run_asks_for_confirmation_via_stdio(run_debops, mcp_env,
                                              project_dir):
     if shutil.which("ansible-playbook") is None:

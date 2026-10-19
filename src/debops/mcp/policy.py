@@ -196,8 +196,9 @@ class McpPolicy(object):
         # user, not a security boundary: the client answers it, so the
         # 'execute' gate above remains the authoritative control
         confirm = mcp_config.get('confirm',
-                                 ['run', 'project_push', 'keyring_fetch',
-                                  'environment_set', 'environment_unset',
+                                 ['run', 'check', 'project_push',
+                                  'keyring_fetch', 'environment_set',
+                                  'environment_unset',
                                   'collection_require',
                                   'collection_remove'])
         if isinstance(confirm, str):
@@ -257,6 +258,18 @@ class McpPolicy(object):
         self.project_content = bool(content)
         if not self.project_content:
             logger.notice('Project MCP content disabled by policy')
+
+        # Whether playbooks living in the project itself may run. They
+        # are agent-writable content: a playbook can execute commands on
+        # the managed hosts even in check mode ('check_mode: no' on a
+        # task), so untrusted environments should run only the
+        # collection content
+        local = mcp_config.get('local_playbooks', True)
+        if isinstance(local, str):
+            local = strtobool(local)
+        self.local_playbooks = bool(local)
+        if not self.local_playbooks:
+            logger.notice('Project-local playbooks cannot run by policy')
 
         # A glob allowlist of hosts the exec tools may contact; empty
         # means every host in the inventory is allowed

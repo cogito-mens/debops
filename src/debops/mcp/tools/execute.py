@@ -30,7 +30,8 @@ from ...ansible.inventory import AnsibleInventory
 from ...ansibleplaybookrunner import AnsiblePlaybookRunner
 from ...hooks import run_hooks
 from ..policy import EXECUTE_OPTIONS
-from ..server import RequestCancelled
+from ..server import RequestCancelled, _supports_form_elicitation
+from .playbooks import project_playbook_dirs
 from .common import (error_result, exclusive_project, mcp_environ,
                      text_result)
 
@@ -56,6 +57,79 @@ def _execution_label(execution_id, context):
     if context.peer_pid is not None:
         parts.append('client pid {}'.format(context.peer_pid))
     return ', '.join(parts)
+
+
+def _local_playbooks(runner, project, policy):
+    """Which of the runner's playbooks live in the project's playbook
+    directories (not in a collection).
+
+    A playbook from the project is agent-writable content: its tasks
+    can execute commands on the managed hosts even in check mode
+    ('check_mode: no' on a task), so the execution tools treat it
+    separately.
+    """
+    local_dirs = [os.path.realpath(directory)
+                  for _label, directory
+                  in project_playbook_dirs(project, policy)]
+    local = []
+    for playbook in runner._found_playbooks:
+        if playbook.startswith('"') and playbook.endswith('"'):
+            playbook = playbook[1:-1]
+        path = os.path.realpath(os.path.join(project.path, playbook))
+        if any(os.path.commonpath((directory, path)) == directory
+               for directory in local_dirs):
+            local.append(playbook)
+    return local
+
+
+def _check_local_confirmation(local, context):
+    """Ask the user before a check run of a project-local playbook.
+
+    Returns None to proceed, or the result to send back (the
+    elicitation request, or the refusal).
+    """
+    answers = context.input_responses or {}
+    if 'confirmation' in answers:
+        answer = answers.get('confirmation') or {}
+        content = answer.get('content') or {}
+        if (answer.get('action') == 'accept'
+                and content.get('confirmed') is True):
+            return None
+        logger.notice('The check of a project playbook was declined')
+        return error_result('the run was declined by the user')
+    if not _supports_form_elicitation(context.client_capabilities):
+        # A client which cannot ask may not block the work; the skip
+        # is written to the audit log
+        logger.notice('Check of a project playbook runs without user '
+                      'confirmation: the client cannot elicit')
+        return None
+    return {'resultType': 'input_required',
+            'inputRequests': {
+                'confirmation': {
+                    'method': 'elicitation/create',
+                    'params': {
+                        'mode': 'form',
+                        'message': (
+                            'Run the project playbook {} in check '
+                            'mode? Its tasks can execute commands on '
+                            'the managed hosts even in check mode '
+                            '(check_mode).'.format(
+                                ', '.join('"{}"'.format(target)
+                                          for target in local))),
+                        'requestedSchema': {
+                            'type': 'object',
+                            'properties': {
+                                'confirmed': {
+                                    'type': 'boolean',
+                                    'title': 'Confirm',
+                                    'description': 'I understand and '
+                                    'want to proceed',
+                                    'default': False}},
+                            'required': ['confirmed'],
+                        },
+                    },
+                },
+            }}
 
 
 # Play and task headers in ansible-playbook output drive progress
@@ -263,6 +337,21 @@ def _execute_playbook(project, policy, arguments, context, check,
             return error_result('the playbook runner aborted (code {}): {}'
                                 .format(errmsg.code, details))
         command = runner.command()
+
+        # A playbook from the project is agent-writable content: its
+        # tasks can execute commands on the managed hosts even in
+        # check mode. The policy may forbid local playbooks outright,
+        # and a check run of one asks the user first
+        local = _local_playbooks(runner, project, policy)
+        if local and not policy.local_playbooks:
+            return error_result(
+                    'project-local playbooks cannot run in this '
+                    'project (project.mcp.local_playbooks): '
+                    + ', '.join(local))
+        if local and check and 'check' in policy.confirm:
+            gated = _check_local_confirmation(local, context)
+            if gated is not None:
+                return gated
 
         execution_id = next(_EXECUTION_IDS)
         logger.notice('Executing a playbook in %s mode: %s [%s]',

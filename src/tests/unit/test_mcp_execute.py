@@ -237,6 +237,89 @@ class ExecuteTestCase(unittest.TestCase):
                             for line in recorded.output),
                         recorded.output)
 
+    def test_local_playbook_classification(self):
+        from debops.mcp.tools.execute import _local_playbooks
+        os.makedirs(os.path.join(self.tmpdir, 'ansible', 'playbooks'))
+        runner = type('Runner', (), {
+            '_found_playbooks': ['ansible/playbooks/local.yml',
+                                 'collections/debops/debops/playbooks/'
+                                 'site.yml'],
+        })()
+        local = _local_playbooks(runner, self.project, self.policy)
+        self.assertEqual(local, ['ansible/playbooks/local.yml'])
+
+    def test_check_of_a_local_playbook_asks_first(self):
+        # A project playbook can execute commands even in check mode
+        os.makedirs(os.path.join(self.tmpdir, 'ansible', 'playbooks'))
+        self.context.client_capabilities = {'elicitation': {'form': {}}}
+        result, runner, _i, _h, _p = self._call_with_local_playbook()
+        self.assertEqual(result['resultType'], 'input_required')
+        request = result['inputRequests']['confirmation']
+        self.assertIn('even in check mode',
+                      request['params']['message'])
+        _p.assert_not_called()
+
+    def test_check_of_a_local_playbook_confirmed(self):
+        os.makedirs(os.path.join(self.tmpdir, 'ansible', 'playbooks'))
+        self.context.input_responses = {
+                'confirmation': {'action': 'accept',
+                                 'content': {'confirmed': True}}}
+        result, _r, _i, _h, popen = self._call_with_local_playbook()
+        self.assertFalse(result['isError'])
+        popen.assert_called_once()
+
+    def test_check_of_a_local_playbook_declined(self):
+        os.makedirs(os.path.join(self.tmpdir, 'ansible', 'playbooks'))
+        self.context.input_responses = {
+                'confirmation': {'action': 'decline', 'content': {}}}
+        result, _r, _i, _h, popen = self._call_with_local_playbook()
+        self.assertTrue(result['isError'])
+        self.assertIn('declined', result['content'][0]['text'])
+        popen.assert_not_called()
+
+    def test_check_of_a_collection_playbook_does_not_ask(self):
+        # The runner resolves only a collection playbook
+        os.makedirs(os.path.join(self.tmpdir, 'ansible', 'playbooks'))
+        self.context.client_capabilities = {'elicitation': {'form': {}}}
+        result, _r, _i, _h, popen = self.call_execute()
+        self.assertFalse(result['isError'])
+        popen.assert_called_once()
+
+    def test_local_playbooks_disabled_by_policy(self):
+        os.makedirs(os.path.join(self.tmpdir, 'ansible', 'playbooks'))
+        self.project.config.raw['project'] = {
+                'mcp': {'local_playbooks': False}}
+        policy = McpPolicy(self.project)
+        result, _r, _i, _h, popen = self._call_with_local_playbook(
+                policy=policy)
+        self.assertTrue(result['isError'])
+        self.assertIn('local_playbooks', result['content'][0]['text'])
+        popen.assert_not_called()
+
+    def _call_with_local_playbook(self, policy=None):
+        from debops.mcp.tools.execute import _execute_playbook
+        with mock.patch(
+                'debops.mcp.tools.execute.AnsiblePlaybookRunner') as runner, \
+                mock.patch(
+                'debops.mcp.tools.execute.AnsibleInventory') as inventory, \
+                mock.patch(
+                'debops.mcp.tools.execute.run_hooks') as hooks, \
+                mock.patch('debops.mcp.tools.execute.subprocess.run',
+                           return_value=make_resolve_result(('web1',))), \
+                mock.patch(
+                'debops.mcp.tools.execute.subprocess.Popen') as popen:
+            runner.return_value.command.return_value = [
+                    'ansible-playbook', 'ansible/playbooks/probe.yml']
+            runner.return_value._found_playbooks = [
+                    'ansible/playbooks/probe.yml']
+            inventory.return_value.unlock.return_value = True
+            hooks.return_value = True
+            popen.return_value = make_process()
+            result = _execute_playbook(
+                    self.project, policy or self.policy,
+                    {'playbook': 'probe'}, self.context, check=True)
+        return result, runner, inventory, hooks, popen
+
     def test_log_lines_identify_the_client(self):
         self.context = ToolContext(9, threading.Event(), peer_pid=4321)
         with self.assertLogs('debops.mcp.tools.execute',

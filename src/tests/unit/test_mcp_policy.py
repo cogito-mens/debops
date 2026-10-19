@@ -172,6 +172,8 @@ class McpConfigTemplateTestCase(unittest.TestCase):
         self.assertEqual(values['external_content'],
                          policy.external_content)
         self.assertEqual(values['overrides'], policy.overrides)
+        self.assertEqual(values['local_playbooks'],
+                         policy.local_playbooks)
 
 
 class EnvFileDenyTestCase(unittest.TestCase):
@@ -198,9 +200,10 @@ class ConfirmationPolicyTestCase(unittest.TestCase):
     def test_default_confirmations(self):
         policy = self._policy({})
         self.assertEqual(policy.confirm,
-                         {'run', 'project_push', 'keyring_fetch',
-                          'environment_set', 'environment_unset',
-                          'collection_require', 'collection_remove'})
+                         {'run', 'check', 'project_push',
+                          'keyring_fetch', 'environment_set',
+                          'environment_unset', 'collection_require',
+                          'collection_remove'})
 
     def test_confirm_list_overrides(self):
         policy = self._policy({'confirm': ['run']})
