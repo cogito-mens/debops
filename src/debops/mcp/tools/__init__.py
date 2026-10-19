@@ -680,13 +680,18 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
             ('ansible_facts',
              'Gather Ansible facts from hosts (ansible -m setup), '
              'for debugging and environment knowledge. The output is '
-             'large; use "filter" to narrow it (e.g. '
-             '"ansible_distribution*", "ansible_default_ipv4*").',
+             'large; use "filter" to narrow it. The filter is a glob '
+             'over top-level fact names ("ansible_distribution*"); '
+             'a dotted path narrows into a branch instead '
+             '("ansible_local.postfix*" — the per-role applied state '
+             'lives in the ansible_local dict).',
              {'type': 'object',
               'properties': dict(exec_properties, **{
                   'filter': {'type': 'string',
-                             'description': 'Narrow the gathered facts '
-                             'with a glob, e.g. "ansible_default_ipv4*"'}}),
+                             'description': 'Narrow the gathered facts: '
+                             'a glob over top-level fact names, or a '
+                             'dotted path into a branch '
+                             '("ansible_local.postfix*")'}}),
               'required': ['hosts']},
              lambda arguments, context: tool_ansible_facts(
                  project, policy, arguments, context),

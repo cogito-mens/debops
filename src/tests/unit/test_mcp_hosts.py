@@ -134,6 +134,37 @@ class HostsTestCase(unittest.TestCase):
         self.assertEqual(popen.call_args[0][0][-2:],
                          ['-a', 'filter=ansible_local*'])
 
+    def test_facts_dotted_filter_narrows_into_the_branch(self):
+        # Ansible's own filter stops at the top level; the dotted path
+        # is walked server-side
+        local_facts = ('web1.example.com | SUCCESS => {"ansible_local": '
+                       '{"postfix": {"installed": true}, '
+                       '"telegraf": {"installed": false}, '
+                       '"nginx": {"installed": true}}}\n')
+        popen, response = self._run(
+                'ansible_facts',
+                {'hosts': 'web1', 'filter': 'ansible_local.post*'},
+                module_output=local_facts)
+        # Ansible gets the top-level prefix; the branch narrows after
+        self.assertEqual(popen.call_args[0][0][-2:],
+                         ['-a', 'filter=ansible_local'])
+        text = response['result']['content'][0]['text']
+        self.assertIn('postfix', text)
+        self.assertNotIn('telegraf', text)
+        self.assertNotIn('nginx', text)
+
+    def test_facts_dotted_filter_without_a_match_is_an_empty_branch(
+            self):
+        _popen, response = self._run(
+                'ansible_facts',
+                {'hosts': 'web1', 'filter': 'ansible_local.nosuch*'},
+                module_output=FACTS_OK)
+        text = response['result']['content'][0]['text']
+        self.assertFalse(response['result']['isError'])
+        # The host is present with an empty branch, not silently absent
+        self.assertIn('web1.example.com', text)
+        self.assertIn('{}', text)
+
     def test_invalid_host_pattern(self):
         response = self.call_tool('ansible_ping', {'hosts': 'a b'})
         self.assertTrue(response['result']['isError'])

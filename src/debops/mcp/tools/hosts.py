@@ -47,14 +47,15 @@ def _validate_fact_filter(fact_filter):
     return bool(_FACT_FILTER.match(fact_filter))
 
 
-def _render_facts(output):
-    """Render 'ansible -m setup' output as per-host YAML.
+def _parse_facts(output):
+    """Parse 'ansible -m setup' output into (host, facts) pairs.
 
     Ansible pretty-prints the facts JSON over multiple lines, so the
     payload of a '<host> | SUCCESS =>' line is accumulated until it
-    parses as complete JSON. Unparseable blocks pass through unchanged.
+    parses as complete JSON. An unparseable block comes through as the
+    raw payload text.
     """
-    rendered = []
+    blocks = []
     pending_host = None
     pending_lines = []
 
@@ -66,14 +67,9 @@ def _render_facts(output):
         try:
             facts = json.loads(payload)
         except ValueError:
-            rendered.append('{} => {}'.format(pending_host, payload))
+            blocks.append((pending_host, payload))
         else:
-            text = yaml.safe_dump(facts, default_flow_style=False,
-                                  width=1000)
-            if len(text) > FACTS_HOST_LIMIT:
-                text = (text[:FACTS_HOST_LIMIT]
-                        + '\n… (facts for this host truncated)\n')
-            rendered.append('## {}\n\n{}'.format(pending_host, text))
+            blocks.append((pending_host, facts))
         pending_host = None
         pending_lines = []
 
@@ -98,8 +94,52 @@ def _render_facts(output):
                 continue
             flush()
             continue
-        rendered.append(line)
+        blocks.append((None, line))
     flush()
+    return blocks
+
+
+def _filter_dotted(facts, dotted):
+    """Narrow a facts dict by a dotted glob path ('ansible_local.sshd*').
+
+    Each segment is a glob matched against the keys at that level; the
+    result keeps the full path shape for provenance. A host without a
+    match gets an empty branch.
+    """
+    segments = dotted.split('.')
+
+    def walk(node, depth):
+        if depth == len(segments):
+            return node
+        if not isinstance(node, dict):
+            return None
+        matched = {}
+        for key, value in node.items():
+            if fnmatch.fnmatch(key, segments[depth]):
+                found = walk(value, depth + 1)
+                if found is not None:
+                    matched[key] = found
+        return matched or None
+
+    result = walk(facts, 0)
+    return {} if result is None else result
+
+
+def _render_facts(blocks):
+    """Render parsed facts blocks as per-host YAML for humans."""
+    rendered = []
+    for host, value in blocks:
+        if host is None:
+            rendered.append(value)
+        elif isinstance(value, dict):
+            text = yaml.safe_dump(value, default_flow_style=False,
+                                  width=1000)
+            if len(text) > FACTS_HOST_LIMIT:
+                text = (text[:FACTS_HOST_LIMIT]
+                        + '\n… (facts for this host truncated)\n')
+            rendered.append('## {}\n\n{}'.format(host, text))
+        else:
+            rendered.append('{} => {}'.format(host, value))
     return '\n\n'.join(rendered)
 
 
@@ -121,7 +161,11 @@ def _exec(project, policy, arguments, context, module, module_filter):
         if not _validate_fact_filter(module_filter):
             return error_result('invalid facts filter (glob characters '
                                 'only): {!r}'.format(module_filter))
-        command.extend(['-a', 'filter=' + module_filter])
+        # Ansible's own filter matches top-level fact names only; a
+        # dotted path narrows a branch after the fact, server-side
+        ansible_filter = (module_filter.split('.', 1)[0]
+                          if '.' in module_filter else module_filter)
+        command.extend(['-a', 'filter=' + ansible_filter])
 
     with exclusive_project(project, policy,
                            note='{} {}'.format(module, hosts)):
@@ -184,8 +228,15 @@ def _exec(project, policy, arguments, context, module, module_filter):
                 structured[host] = ('pong' if outcome == 'SUCCESS'
                                     else 'failed')
     else:
+        blocks = _parse_facts(output)
+        # A dotted filter narrows into a branch (Ansible's own filter
+        # stops at the top level)
+        if module_filter is not None and '.' in module_filter:
+            blocks = [(host, (_filter_dotted(value, module_filter)
+                              if isinstance(value, dict) else value))
+                      for host, value in blocks]
         text = '# facts for {}\n\nHosts: {}\n\n{}'.format(
-                hosts, ', '.join(resolved), _render_facts(output))
+                hosts, ', '.join(resolved), _render_facts(blocks))
         structured = None
     # ansible returns non-zero when any host failed
     if returncode != 0:
