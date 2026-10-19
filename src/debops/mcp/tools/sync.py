@@ -102,6 +102,11 @@ def make_sync_tool(project, policy, sync_state, direction, server=None):
                     report['refresh_error'] = str(errmsg)
                 if before is not None:
                     server.announce_content_changes(before)
+                # The pulled configuration may change the policy and
+                # the tool surface; reload in place, because a restart
+                # would kill the in-flight tasks
+                if server is not None:
+                    server.reload()
         return text_result(render_sync_report(report),
                            structured=report)
     return tool

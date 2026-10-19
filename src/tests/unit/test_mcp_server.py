@@ -13,6 +13,7 @@ from debops.mcp.server import McpServer, PROTOCOL_VERSION, RequestCancelled
 import json
 import threading
 import unittest
+from unittest import mock
 
 
 def make_request(method, params=None, request_id=1, meta='default'):
@@ -439,6 +440,44 @@ class ConfirmationGateTestCase(unittest.TestCase):
                               capabilities={'elicitation': {'form': {}}})
         self.assertFalse(response['result']['isError'])
         self.assertEqual(self.ran, [{'playbook': 'site'}])
+
+
+class ReloadTestCase(unittest.TestCase):
+    """The in-daemon policy reload after a pull."""
+
+    def _server(self):
+        server = McpServer()
+        server.register_tool('alpha', 'A', {'type': 'object'},
+                             lambda arguments: {'content': [],
+                                                'isError': False})
+        return server
+
+    def test_reload_rebuilds_and_announces(self):
+        server = self._server()
+
+        def rebuild():
+            server.tools = {}
+            server.register_tool('beta', 'B', {'type': 'object'},
+                                 lambda arguments: {'content': [],
+                                                    'isError': False})
+
+        server._rebuild = rebuild
+        with mock.patch.object(server, 'emit_list_changed') as emit:
+            server.reload()
+        self.assertEqual(sorted(server.tools), ['beta'])
+        emit.assert_called_once_with('tools')
+
+    def test_reload_unchanged_announces_nothing(self):
+        server = self._server()
+        server._rebuild = lambda: None
+        with mock.patch.object(server, 'emit_list_changed') as emit:
+            server.reload()
+        emit.assert_not_called()
+
+    def test_reload_without_a_recipe_is_a_noop(self):
+        server = self._server()
+        server.reload()
+        self.assertEqual(sorted(server.tools), ['alpha'])
 
 
 class ClacksOverheadTestCase(unittest.TestCase):

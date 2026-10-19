@@ -83,7 +83,8 @@ class SubscriptionStreamTestCase(unittest.TestCase):
         self.assertEqual(ack['params']['_meta'][SUBSCRIPTION_ID_KEY], 1)
         self.assertEqual(ack['params']['notifications'],
                          {'resourcesListChanged': True,
-                          'promptsListChanged': True})
+                          'promptsListChanged': True,
+                          'toolsListChanged': True})
 
         self.server.emit_list_changed('prompts')
         notification = json.loads(rpc.read_message(reader))

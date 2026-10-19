@@ -153,6 +153,17 @@ class SyncTestCase(unittest.TestCase):
             self.call_tool('project_pull')
         announce.assert_not_called()
 
+    def test_changed_pull_reloads_the_policy(self):
+        with mock.patch.object(self.server, 'reload') as reload_:
+            self.call_tool('project_pull')
+        reload_.assert_called_once()
+
+    def test_unchanged_pull_does_not_reload(self):
+        self.reports['pull'] = PULL_CLEAN
+        with mock.patch.object(self.server, 'reload') as reload_:
+            self.call_tool('project_pull')
+        reload_.assert_not_called()
+
     def test_pull_up_to_date(self):
         self.reports['pull'] = PULL_CLEAN
         text = self.result_text(self.call_tool('project_pull'))

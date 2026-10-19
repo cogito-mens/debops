@@ -256,6 +256,9 @@ class McpServer(object):
         # The task registry: long-running work the client polls for
         self._tasks = TaskRegistry()
         self._tasks.on_task_change = self._emit_task_change
+        # The reload recipe, provided by the caller which knows how the
+        # server was assembled ('debops mcp serve' sets it)
+        self._rebuild = None
         if self.skills is not None:
             self._methods['resources/list'] = self._resources_list
             self._methods['resources/read'] = self._resources_read
@@ -278,6 +281,27 @@ class McpServer(object):
             events = list(self._active_requests.values())
         for event in events:
             event.set()
+
+    def reload(self):
+        """Re-read the project configuration and rebuild the policy and
+        the tool surface; announce a change to the subscribers.
+
+        Called with the exclusive project lock held (the caller is
+        inside one, e.g. a pull). In-flight requests keep the tool
+        objects they started with; the registry and the sync throttle
+        survive.
+        """
+        if self._rebuild is None:
+            return
+        before = [tool.describe() for tool in self.tools.values()]
+        self._rebuild()
+        after = [tool.describe() for tool in self.tools.values()]
+        if before != after:
+            logger.notice('The tool surface changed on reload')
+            self.emit_list_changed('tools')
+        else:
+            logger.debug('Reloaded the policy; the tool surface is '
+                         'unchanged')
 
     def accepting(self):
         """Whether the server currently accepts work (kill switch)."""
@@ -831,7 +855,8 @@ class McpServer(object):
         # The honored subset: unsupported types are omitted from the
         # acknowledgment, per the specification
         honored = {}
-        for key in ('resourcesListChanged', 'promptsListChanged'):
+        for key in ('resourcesListChanged', 'promptsListChanged',
+                    'toolsListChanged'):
             if requested.get(key):
                 honored[key] = True
         uris = [str(uri) for uri in

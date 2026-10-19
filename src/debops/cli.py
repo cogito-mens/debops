@@ -366,6 +366,20 @@ class Interpreter(object):
         register_project_tools(server,
                                enabled_check=killswitch.is_enabled)
 
+        def _rebuild():
+            """Re-read the project configuration and rebuild the policy
+            and the tool surface (a pull may have changed them)."""
+            fresh = ProjectDir(path=project.path,
+                               config=Configuration(),
+                               view=project.view)
+            server.project = fresh
+            server.policy = McpPolicy(fresh)
+            server.tools = {}
+            register_project_tools(
+                    server, enabled_check=killswitch.is_enabled)
+
+        server._rebuild = _rebuild
+
         # The lifecycle hooks: mcp-pre-start may abort the startup; the
         # others only ever log a failure, so a hook cannot stall a
         # running server or its shutdown

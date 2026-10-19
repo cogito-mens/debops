@@ -857,8 +857,11 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
         ])
 
     # Git synchronization with the project origin; throttled per
-    # direction by 'project.mcp.sync_interval'
-    sync_state = {'pull': 0.0, 'push': 0.0}
+    # direction by 'project.mcp.sync_interval'. The state lives on the
+    # server so a policy reload does not reset the throttle
+    sync_state = getattr(server, 'sync_state', None)
+    if sync_state is None:
+        sync_state = server.sync_state = {'pull': 0.0, 'push': 0.0}
     tools.extend([
         ('project_pull',
          'Pull the latest project state from its git origin '
