@@ -678,7 +678,10 @@ class McpServer(object):
                     client_capabilities=context.client_capabilities,
                     input_responses=params.get('inputResponses'),
                     task=task)
-            result = tool.handler(arguments, tool_context)
+            if tool.needs_context:
+                result = tool.handler(arguments, tool_context)
+            else:
+                result = tool.handler(arguments)
             task.complete(result)
             logger.notice('Task %s completed: %s', task.task_id,
                           tool.name)

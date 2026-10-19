@@ -165,6 +165,21 @@ class TaskTestCase(unittest.TestCase):
         response = self.task_call('tasks/cancel', {'taskId': 'nosuch'})
         self.assertEqual(response['error']['code'], -32602)
 
+    def test_task_for_a_tool_without_context(self):
+        # A task-eligible tool which takes no context must still run
+        self.server.register_tool('plain', 'A plain tool',
+                                  {'type': 'object'},
+                                  lambda arguments: {
+                                      'content': [{'type': 'text',
+                                                   'text': 'plain'}],
+                                      'isError': False},
+                                  task_eligible=True)
+        result = self.call('plain')['result']
+        self.assertEqual(result['resultType'], 'task')
+        done = self.wait_done(result['taskId'])
+        self.assertEqual(done['status'], 'completed')
+        self.assertEqual(done['result']['content'][0]['text'], 'plain')
+
     def test_input_required_and_update(self):
         result = self.call('asking')['result']
         task_id = result['taskId']

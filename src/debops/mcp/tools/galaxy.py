@@ -134,7 +134,7 @@ def _remove_requirement(text, name):
     return '\n'.join(out) + '\n', True
 
 
-def _galaxy_install(project):
+def _galaxy_install(project, context=None):
     """Install the project collections; returns the captured output.
 
     ansible-galaxy installs into the first writable directory of the
@@ -142,8 +142,10 @@ def _galaxy_install(project):
     ('~/.ansible/collections', ...); the target is forced into the
     project with '-p'. The lock file is installed first when present,
     then the requirements file, mirroring the project virtual
-    environment flow.
+    environment flow. The run goes through the shared cancellable
+    subprocess machinery, so a task cancellation terminates it.
     """
+    from .execute import run_cancellable
     galaxy = os.path.expanduser(
             project.config.raw.get('binaries', {})
             .get('ansible-galaxy', 'ansible-galaxy'))
@@ -153,26 +155,24 @@ def _galaxy_install(project):
     target = os.path.join(project.path, 'ansible', 'collections')
     os.makedirs(target, exist_ok=True)
     env = mcp_environ(project)
-    output = io.StringIO()
     files = []
     lock = _lock_path(project)
     if os.path.isfile(lock):
         files.append(lock)
     files.append(_requirements_path(project))
+    output = io.StringIO()
     for requirements in files:
-        try:
-            process = subprocess.Popen(
-                    [galaxy, 'collection', 'install', '-r', requirements,
-                     '-p', target],
-                    env=env, cwd=project.path, stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT)
-            out, _ = process.communicate(timeout=300)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
+        out, returncode, status = run_cancellable(
+                [galaxy, 'collection', 'install', '-r', requirements,
+                 '-p', target],
+                env=env, cwd=project.path, context=context, timeout=300)
+        print(out, file=output, end='')
+        if status == 'cancelled':
+            from ..server import RequestCancelled
+            raise RequestCancelled()
+        if status == 'timeout':
             raise ChildProcessError('ansible-galaxy timed out')
-        print(out.decode(errors='replace'), file=output, end='')
-        if process.returncode != 0:
+        if returncode != 0:
             raise ChildProcessError(
                     'cannot install the Ansible Collections from '
                     + os.path.basename(requirements))
@@ -192,7 +192,7 @@ def _read_text(path):
         return fp.read()
 
 
-def tool_collection_require(project, policy, arguments):
+def tool_collection_require(project, policy, arguments, context):
     try:
         name = _validate_name(arguments)
     except ValueError as errmsg:
@@ -228,7 +228,7 @@ def tool_collection_require(project, policy, arguments):
 
         install_error = None
         try:
-            output = _galaxy_install(project)
+            output = _galaxy_install(project, context)
         except (FileNotFoundError, ChildProcessError) as errmsg:
             output = ''
             install_error = str(errmsg)
@@ -312,11 +312,11 @@ def tool_collection_remove(project, policy, arguments):
                                                for entry in removed)))
 
 
-def tool_collection_sync(project, policy, arguments):
+def tool_collection_sync(project, policy, arguments, context):
     """Install the committed collection requirements."""
     with exclusive_project(project, policy, note='collection_sync'):
         try:
-            output = _galaxy_install(project)
+            output = _galaxy_install(project, context)
         except (FileNotFoundError, ChildProcessError) as errmsg:
             return error_result(str(errmsg))
     tail = output.strip()[-_OUTPUT_TAIL:]

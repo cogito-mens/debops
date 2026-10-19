@@ -9,6 +9,7 @@ dependencies. The installation is mocked; the YAML surgery runs for real.
 """
 
 from debops.mcp.policy import McpPolicy
+from debops.mcp.server import ToolContext
 from debops.mcp.tools import galaxy
 from debops.mcp.tools.galaxy import (_entry_blocks, _remove_requirement,
                                      _upsert_requirement,
@@ -19,6 +20,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -123,6 +125,7 @@ class CollectionToolsTestCase(unittest.TestCase):
             'config': type('Config', (), {'raw': {}})(),
         })()
         self.policy = McpPolicy(self.project)
+        self.context = ToolContext(1, threading.Event())
         self.requirements = os.path.join(
                 self.tmpdir, 'ansible', 'collections',
                 'requirements.yml')
@@ -135,7 +138,7 @@ class CollectionToolsTestCase(unittest.TestCase):
                                return_value='installed ok\n') as install:
             result = tool_collection_require(
                     self.project, self.policy,
-                    {'name': 'community.crypto'})
+                    {'name': 'community.crypto'}, self.context)
         self.assertFalse(result['isError'], result)
         install.assert_called_once()
         with open(self.requirements) as fp:
@@ -153,7 +156,7 @@ class CollectionToolsTestCase(unittest.TestCase):
                     self.project, self.policy,
                     {'name': 'myns.mycoll',
                      'source': 'https://git.example.org/myns/mycoll.git',
-                     'type': 'git', 'version': 'main'})
+                     'type': 'git', 'version': 'main'}, self.context)
         self.assertFalse(result['isError'], result)
         with open(self.requirements) as fp:
             text = fp.read()
@@ -165,7 +168,8 @@ class CollectionToolsTestCase(unittest.TestCase):
         with mock.patch.object(galaxy, '_galaxy_install') as install:
             result = tool_collection_require(
                     self.project, self.policy,
-                    {'name': 'ansible.posix', 'version': '*'})
+                    {'name': 'ansible.posix', 'version': '*'},
+                    self.context)
         self.assertIn('unchanged', result['content'][0]['text'])
         install.assert_not_called()
 
@@ -174,7 +178,7 @@ class CollectionToolsTestCase(unittest.TestCase):
                                side_effect=ChildProcessError('boom')):
             result = tool_collection_require(
                     self.project, self.policy,
-                    {'name': 'community.crypto'})
+                    {'name': 'community.crypto'}, self.context)
         self.assertTrue(result['isError'])
         self.assertIn('installation failed',
                       result['content'][0]['text'])
@@ -185,13 +189,15 @@ class CollectionToolsTestCase(unittest.TestCase):
 
     def test_require_validates_the_name(self):
         result = tool_collection_require(self.project, self.policy,
-                                         {'name': 'NoDots'})
+                                         {'name': 'NoDots'},
+                                         self.context)
         self.assertTrue(result['isError'])
 
     def test_require_non_git_refused(self):
         shutil.rmtree(os.path.join(self.tmpdir, '.git'))
         result = tool_collection_require(self.project, self.policy,
-                                         {'name': 'ansible.posix'})
+                                         {'name': 'ansible.posix'},
+                                         self.context)
         self.assertTrue(result['isError'])
         self.assertIn('not a git repository',
                       result['content'][0]['text'])
@@ -237,7 +243,8 @@ class CollectionToolsTestCase(unittest.TestCase):
     def test_sync_installs(self):
         with mock.patch.object(galaxy, '_galaxy_install',
                                return_value='installed\n') as install:
-            result = tool_collection_sync(self.project, self.policy, {})
+            result = tool_collection_sync(self.project, self.policy,
+                                          {}, self.context)
         self.assertFalse(result['isError'], result)
         self.assertIn('installed', result['content'][0]['text'])
         install.assert_called_once()
@@ -246,9 +253,50 @@ class CollectionToolsTestCase(unittest.TestCase):
     def test_sync_reports_the_failure(self):
         with mock.patch.object(galaxy, '_galaxy_install',
                                side_effect=FileNotFoundError('no galaxy')):
-            result = tool_collection_sync(self.project, self.policy, {})
+            result = tool_collection_sync(self.project, self.policy,
+                                          {}, self.context)
         self.assertTrue(result['isError'])
         self.assertIn('no galaxy', result['content'][0]['text'])
+
+    def test_sync_via_a_task(self):
+        # The install is task-eligible: the client gets the handle and
+        # polls for the outcome
+        from debops.mcp.server import McpServer, PROTOCOL_VERSION, \
+            TASKS_EXTENSION
+        server = McpServer()
+        server.register_tool(
+                'collection_sync', 'Sync', {'type': 'object'},
+                lambda arguments, context: tool_collection_sync(
+                        self.project, self.policy, arguments, context),
+                needs_context=True, task_eligible=True)
+        meta = {'io.modelcontextprotocol/protocolVersion':
+                PROTOCOL_VERSION,
+                'io.modelcontextprotocol/clientCapabilities':
+                {'extensions': {TASKS_EXTENSION: {}}}}
+        with mock.patch.object(galaxy, '_galaxy_install',
+                               return_value='installed ok\n'):
+            response = server.handle({
+                    'jsonrpc': '2.0', '_meta': meta, 'id': 1,
+                    'method': 'tools/call',
+                    'params': {'name': 'collection_sync',
+                               'arguments': {}}})
+            result = response['result']
+            self.assertEqual(result['resultType'], 'task')
+            # The task runs in its own thread; the mock must cover it
+            import time
+            limit = time.monotonic() + 10
+            task = {}
+            while time.monotonic() < limit:
+                task = server.handle({
+                        'jsonrpc': '2.0', '_meta': meta, 'id': 2,
+                        'method': 'tasks/get',
+                        'params': {'taskId': result['taskId']}})['result']
+                if task['status'] == 'completed':
+                    break
+                time.sleep(0.05)
+        self.assertEqual(task['status'], 'completed')
+        self.assertIn('installed ok',
+                      task['result']['content'][0]['text'])
 
 
 if __name__ == '__main__':

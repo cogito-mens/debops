@@ -780,8 +780,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                   'description': 'The source type, e.g. '
                                   '"git"'}},
           'required': ['name']},
-         lambda arguments: tool_collection_require(project, policy,
-                                                   arguments)),
+         lambda arguments, context: tool_collection_require(
+             project, policy, arguments, context),
+         True, False, True),
         ('collection_remove',
          'Remove an Ansible Collection from the project: drop its entry '
          'from the requirements and lock files, and delete its '
@@ -804,8 +805,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
          'must wait for it (batched requests run concurrently).',
          {'type': 'object', 'properties': {},
           'additionalProperties': False},
-         lambda arguments: tool_collection_sync(project, policy,
-                                                arguments)),
+         lambda arguments, context: tool_collection_sync(
+             project, policy, arguments, context),
+         True, False, True),
     ])
 
     # The overrides write tool injects content into read-only roles; it
