@@ -372,11 +372,18 @@ class Interpreter(object):
             fresh = ProjectDir(path=project.path,
                                config=Configuration(),
                                view=project.view)
+            fresh_policy = McpPolicy(fresh)
+            # Registration reads the project and the policy from the
+            # server; the registry is built aside and swapped in
+            # whole, so that a concurrent tools/list never sees a
+            # partial table
             server.project = fresh
-            server.policy = McpPolicy(fresh)
-            server.tools = {}
+            server.policy = fresh_policy
+            registry = {}
             register_project_tools(
-                    server, enabled_check=killswitch.is_enabled)
+                    server, enabled_check=killswitch.is_enabled,
+                    registry=registry)
+            server.tools = registry
 
         server._rebuild = _rebuild
 

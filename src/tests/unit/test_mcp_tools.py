@@ -1181,6 +1181,22 @@ class ToolsTestCase(unittest.TestCase):
                           'role_templates', 'role_variables',
                           'secret_paths', 'view_delete', 'view_write'])
 
+    def test_registration_into_a_staging_registry(self):
+        # A reload builds the new surface aside and swaps it in whole;
+        # the live registry is not touched in the meantime
+        server = McpServer(project=self.project,
+                           policy=McpPolicy(self.project))
+        register_project_tools(server, roles_path=self.roles_path)
+        live = dict(server.tools)
+        staging = {}
+        register_project_tools(server, roles_path=self.roles_path,
+                               registry=staging)
+        self.assertEqual(sorted(staging), sorted(live))
+        self.assertEqual(set(server.tools), set(live))
+        for name, tool in staging.items():
+            self.assertIsNot(tool, live[name])
+            self.assertEqual(tool.describe(), live[name].describe())
+
     def test_tool_annotations(self):
         # 'run' is only registered when the policy allows changes
         self.project.config.raw['project'] = {'mcp': {'execute': 'all'}}

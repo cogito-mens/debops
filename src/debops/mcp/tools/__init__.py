@@ -39,6 +39,7 @@ from .roles import (COLLECTION_ROLES, project_role_paths, tool_role_argspec,
 from .secrets import tool_secret_paths
 from .sync import make_sync_tool
 from ..policy import EXECUTE_OPTIONS
+from ..server import Tool
 
 # The schema shared by the execution tools, with options the project
 # policy disabled filtered out, so agents never see what they cannot use
@@ -295,10 +296,24 @@ def _wrap_resource_errors(handler):
 def register_project_tools(server, roles_path=COLLECTION_ROLES,
                            playbooks_path=COLLECTION_PLAYBOOKS,
                            collection_index_provider=None,
-                           enabled_check=None):
-    """Register the built-in tools, honoring the server policy."""
+                           enabled_check=None, registry=None):
+    """Register the built-in tools, honoring the server policy.
+
+    With 'registry', the tools are collected in that dictionary instead
+    of the server's live registry, so that a reload can build the new
+    surface before swapping it in whole.
+    """
     project = server.project
     policy = server.policy
+    target = registry if registry is not None else server.tools
+
+    def _register(name, description, schema, handler,
+                  output_schema=None, needs_context=False,
+                  annotations=None, meta=None, self_confirms=False,
+                  task_eligible=False):
+        target[name] = Tool(name, description, schema, handler,
+                            output_schema, needs_context, annotations,
+                            meta, self_confirms, task_eligible)
 
     if collection_index_provider is None:
         cache = {'timestamp': 0.0, 'index': None}
@@ -1013,10 +1028,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                 description += (' The server asks the user to confirm '
                                 'before this runs.')
                 meta = {'org.debops/confirm': True}
-            server.register_tool(name, description, schema, handler,
-                                 output_schema=TOOL_OUTPUT_SCHEMAS.get(
-                                     name),
-                                 needs_context=needs_context,
-                                 annotations=annotations,
-                                 meta=meta, self_confirms=self_confirms,
-                                 task_eligible=task_eligible)
+            _register(name, description, schema, handler,
+                      output_schema=TOOL_OUTPUT_SCHEMAS.get(name),
+                      needs_context=needs_context,
+                      annotations=annotations,
+                      meta=meta, self_confirms=self_confirms,
+                      task_eligible=task_eligible)
