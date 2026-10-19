@@ -80,7 +80,8 @@ def tool_secret_paths(project, policy, arguments):
     if truncated:
         matches = matches[:SECRET_LIST_LIMIT]
     if not matches:
-        return text_result('no secrets match the pattern: ' + pattern)
+        return text_result('no secrets match the pattern: ' + pattern,
+                           structured=[])
 
     lines = ['# Secrets matching \'{}\' ({}{})'.format(
             pattern, len(matches),
@@ -90,4 +91,4 @@ def tool_secret_paths(project, policy, arguments):
     lines.append('')
     lines.append('Reference them from the inventory with: '
                  '{{ lookup("password", secret + "/<path>") }}')
-    return text_result('\n'.join(lines))
+    return text_result('\n'.join(lines), structured=matches)

@@ -79,6 +79,32 @@ READ_LOCKED_TOOLS = frozenset((
     'collection_playbooks',
 ))
 
+# The output schemas of the tools which return structuredContent;
+# keyed by name, like the annotations
+TOOL_OUTPUT_SCHEMAS = {
+    'playbooks': {'type': 'array', 'items': {
+        'type': 'object',
+        'properties': {'target': {'type': 'string'},
+                       'section': {'type': 'string'},
+                       'summary': {'type': 'string'}},
+        'required': ['target', 'section', 'summary']}},
+    'collection_roles': {'type': 'array', 'items': {
+        'type': 'object',
+        'properties': {'collection': {'type': 'string'},
+                       'version': {'type': 'string'},
+                       'roles': {'type': 'array',
+                                 'items': {'type': 'string'}}},
+        'required': ['collection', 'version', 'roles']}},
+    'collection_playbooks': {'type': 'array', 'items': {
+        'type': 'object',
+        'properties': {'collection': {'type': 'string'},
+                       'target': {'type': 'string'},
+                       'summary': {'type': 'string'}},
+        'required': ['collection', 'target', 'summary']}},
+    'secret_paths': {'type': 'array', 'items': {'type': 'string'}},
+}
+
+
 # Behavior hints for client UIs and auto-approval policies (the
 # ToolAnnotations schema); only values which differ from the defaults
 # are listed. The defaults are: readOnlyHint false, destructiveHint
@@ -861,6 +887,8 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                 'before this runs.')
                 meta = {'org.debops/confirm': True}
             server.register_tool(name, description, schema, handler,
+                                 output_schema=TOOL_OUTPUT_SCHEMAS.get(
+                                     name),
                                  needs_context=needs_context,
                                  annotations=TOOL_ANNOTATIONS.get(name),
                                  meta=meta, self_confirms=self_confirms,

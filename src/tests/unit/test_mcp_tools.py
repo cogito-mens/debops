@@ -1064,6 +1064,49 @@ class ToolsTestCase(unittest.TestCase):
         self.assertEqual(content[0]['type'], 'text')
         return content[0]['text']
 
+    # -- structuredContent ----------------------------------------------
+
+    def _check_structured(self, name, arguments=None):
+        """Call a tool and validate its structuredContent against the
+        declared output schema."""
+        from tests.unit._helpers import check_schema
+        from debops.mcp.tools import TOOL_OUTPUT_SCHEMAS
+        response = self.call_tool(name, arguments)
+        result = response['result']
+        self.assertFalse(result['isError'])
+        self.assertIn('structuredContent', result)
+        errors = check_schema(result['structuredContent'],
+                              TOOL_OUTPUT_SCHEMAS[name])
+        self.assertEqual(errors, [])
+        return result['structuredContent']
+
+    def test_structured_playbooks(self):
+        entries = self._check_structured('playbooks')
+        targets = [entry['target'] for entry in entries]
+        self.assertIn('custom', targets)
+        self.assertIn('service/testrole', targets)
+        # The entries carry their section
+        custom = [entry for entry in entries
+                  if entry['target'] == 'custom'][0]
+        self.assertIn('Project playbooks', custom['section'])
+
+    def test_structured_collection_roles(self):
+        entries = self._check_structured('collection_roles')
+        collections = {entry['collection']: entry for entry in entries}
+        self.assertIn('testns.testcoll', collections)
+        self.assertIn('plainrole',
+                      collections['testns.testcoll']['roles'])
+
+    def test_structured_collection_playbooks(self):
+        entries = self._check_structured('collection_playbooks')
+        targets = [entry['target'] for entry in entries]
+        self.assertIn('testns.testcoll/install', targets)
+        entries = self._check_structured('collection_playbooks',
+                                         {'collection':
+                                          'testns.testcoll'})
+        self.assertEqual([entry['target'] for entry in entries],
+                         ['testns.testcoll/install'])
+
     # -- registration --------------------------------------------------
 
     def test_tools_are_listed(self):

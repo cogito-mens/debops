@@ -298,19 +298,18 @@ def render_playbook_info(title, target, plays, roles, imports, groups,
 
 def tool_playbooks(project, policy, playbooks_path, arguments):
     name_filter = str(arguments.get('filter') or '').lower()
-    sections = []
+    # The entries, flattened: each is (target, section, summary)
+    entries = []
 
     # Project playbooks resolve first, mirroring the playbook runner
     for label, directory in project_playbook_dirs(project, policy):
-        entries = []
+        section = 'Project playbooks ({})'.format(label)
         for relpath in list_playbooks(directory):
             if name_filter and name_filter not in relpath.lower():
                 continue
-            entries.append((relpath, playbook_summary(
-                    os.path.join(directory, relpath))))
-        if entries:
-            sections.append(('Project playbooks ({})'.format(label),
-                             entries))
+            entries.append((target_form(relpath), section,
+                            playbook_summary(
+                                os.path.join(directory, relpath))))
 
     # The bundled DebOps collection, grouped by subdirectory; absent
     # when the policy disables bundled content
@@ -320,42 +319,51 @@ def tool_playbooks(project, policy, playbooks_path, arguments):
             if name_filter and name_filter not in relpath.lower():
                 continue
             group = os.path.dirname(relpath)
-            grouped.setdefault(group, []).append(
-                    (relpath,
-                     playbook_summary(
-                         os.path.join(playbooks_path, relpath))))
+            grouped.setdefault(group, []).append(relpath)
         for group in sorted(grouped):
-            title = 'DebOps collection' if not group \
+            section = 'DebOps collection' if not group \
                 else 'DebOps collection: {}/'.format(group)
-            sections.append((title, grouped[group]))
-
-    lines = []
-    total = 0
-    for title, entries in sections:
-        lines.append('## {}'.format(title))
-        for relpath, summary in entries:
-            line = '- `{}`'.format(target_form(relpath))
-            if summary:
-                line += ' — {}'.format(summary)
-            lines.append(line)
-            total += 1
-        lines.append('')
+            for relpath in grouped[group]:
+                entries.append((target_form(relpath), section,
+                                playbook_summary(
+                                    os.path.join(playbooks_path,
+                                                 relpath))))
 
     # Playbook sets from the view configuration are also valid targets
     playbook_sets = (project.config.raw.get('views', {})
                      .get(project.view, {}).get('playbook_sets', {}))
-    if playbook_sets:
-        lines.append('## Playbook sets (view configuration)')
-        for name in sorted(playbook_sets):
-            members = playbook_sets[name]
-            lines.append('- `{}` → {}'.format(
-                    name, ', '.join(str(member) for member in members)))
-        lines.append('')
+    for name in sorted(playbook_sets):
+        members = playbook_sets[name]
+        entries.append((name, 'Playbook sets (view configuration)',
+                        'expands to: {}'.format(', '.join(
+                            str(member) for member in members))))
 
-    if not lines:
-        return text_result('no playbooks found')
-    header = '# Playbook targets ({})'.format(total)
-    return text_result('\n'.join([header, ''] + lines))
+    if not entries:
+        return text_result('no playbooks found', structured=[])
+
+    structured = [{'target': target, 'section': section,
+                   'summary': summary}
+                  for target, section, summary in entries]
+
+    lines = []
+    section = None
+    for target, section_title, summary in entries:
+        if section_title != section:
+            if section is not None:
+                lines.append('')
+            lines.append('## {}'.format(section_title))
+            section = section_title
+        line = '- `{}`'.format(target)
+        if summary.startswith('expands to: '):
+            line = '- `{}` → {}'.format(target,
+                                        summary[len('expands to: '):])
+        elif summary:
+            line += ' — {}'.format(summary)
+        lines.append(line)
+
+    header = '# Playbook targets ({})'.format(len(entries))
+    return text_result('\n'.join([header, ''] + lines),
+                       structured=structured)
 
 
 def tool_playbook_info(project, policy, playbooks_path, arguments,

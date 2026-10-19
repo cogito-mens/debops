@@ -100,6 +100,19 @@ class SecretPathsTestCase(unittest.TestCase):
         # The lookup hint is included
         self.assertIn('lookup("password", secret + "/<path>")', text)
 
+    def test_structured_content_conforms(self):
+        from tests.unit._helpers import check_schema
+        from debops.mcp.tools import TOOL_OUTPUT_SCHEMAS
+        response, _inv = self.call_tool()
+        result = response['result']
+        self.assertFalse(result['isError'])
+        structured = result['structuredContent']
+        self.assertEqual(check_schema(structured,
+                                      TOOL_OUTPUT_SCHEMAS
+                                      ['secret_paths']), [])
+        self.assertIn('credentials/hostname/root_account/password',
+                      structured)
+
     def test_glob_narrows(self):
         response, _inventory = self.call_tool({'pattern': 'pki/**'})
         text = self.result_text(response)

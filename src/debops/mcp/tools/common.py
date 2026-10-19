@@ -19,8 +19,14 @@ logger = logging.getLogger(__name__)
 FOLD_MARKER = re.compile(r'^\s*#\s*(\[{3}|\]{3})\d?\s*$')
 
 
-def text_result(text):
-    return {'content': [{'type': 'text', 'text': text}], 'isError': False}
+def text_result(text, structured=None):
+    """A tool result with the text content; 'structured' adds the
+    machine-readable form of it ('structuredContent')."""
+    result = {'content': [{'type': 'text', 'text': text}],
+              'isError': False}
+    if structured is not None:
+        result['structuredContent'] = structured
+    return result
 
 
 def error_result(message):

@@ -142,6 +142,7 @@ def tool_collection_roles(index_provider, arguments):
     name_filter = str(arguments.get('filter') or '').lower()
     lines = []
     total = 0
+    structured = []
     for fqcn in sorted(index):
         if name_filter and name_filter not in fqcn.lower():
             continue
@@ -149,36 +150,49 @@ def tool_collection_roles(index_provider, arguments):
         if not roles:
             continue
         total += len(roles)
-        version = index[fqcn]['version']
+        version = index[fqcn]['version'] or ''
+        structured.append({'collection': fqcn, 'version': version,
+                           'roles': roles})
         lines.append('## {}{}'.format(
                 fqcn, ' ({})'.format(version) if version else ''))
         lines.extend('- {}'.format(role) for role in roles)
         lines.append('')
     if not lines:
-        return text_result('no collections with roles found')
+        return text_result('no collections with roles found',
+                           structured=[])
     header = '# Collections with roles visible to Ansible ({})'.format(
             total)
-    return text_result('\n'.join([header, ''] + lines))
+    return text_result('\n'.join([header, ''] + lines),
+                       structured=structured)
 
 
-def _playbook_lines(fqcn, entry, name_filter, match_qualified):
-    """The playbook listing lines of one collection.
+def _playbook_entries(fqcn, entry, name_filter, match_qualified):
+    """The playbook entries of one collection, as (target, summary).
 
     With 'match_qualified' (the all-collections listing) the filter
     matches the full 'namespace.collection/path' target form; in the
     single-collection listing it matches the path alone.
     """
     playbooks_dir = os.path.join(entry['path'], 'playbooks')
-    lines = []
+    entries = []
     if not os.path.isdir(playbooks_dir):
-        return lines
+        return entries
     for relpath in list_playbooks(playbooks_dir):
         target = '{}/{}'.format(fqcn, target_form(relpath))
         matched = target if match_qualified else relpath
         if name_filter and name_filter not in matched.lower():
             continue
+        entries.append((target, playbook_summary(
+                os.path.join(playbooks_dir, relpath))))
+    return entries
+
+
+def _playbook_lines(fqcn, entry, name_filter, match_qualified):
+    """The playbook listing lines of one collection."""
+    lines = []
+    for target, summary in _playbook_entries(fqcn, entry, name_filter,
+                                             match_qualified):
         line = '- `{}`'.format(target)
-        summary = playbook_summary(os.path.join(playbooks_dir, relpath))
         if summary:
             line += ' — {}'.format(summary)
         lines.append(line)
@@ -198,30 +212,49 @@ def tool_collection_playbooks(index_provider, arguments):
         if entry is None:
             return error_result('collection not found or invalid: {}'
                                 .format(collection))
-        lines = _playbook_lines(collection, entry, name_filter,
-                                match_qualified=False)
-        if not lines:
+        entries = _playbook_entries(collection, entry, name_filter,
+                                    match_qualified=False)
+        if not entries:
             return text_result('collection {} provides no playbooks'
-                               .format(collection))
+                               .format(collection), structured=[])
+        structured = [{'collection': collection, 'target': target,
+                       'summary': summary}
+                      for target, summary in entries]
         header = '# Playbooks in {} ({})'.format(
                 collection, entry['version'] or 'unknown version')
-        return text_result('\n'.join([header, ''] + lines))
+        lines = []
+        for target, summary in entries:
+            line = '- `{}`'.format(target)
+            if summary:
+                line += ' — {}'.format(summary)
+            lines.append(line)
+        return text_result('\n'.join([header, ''] + lines),
+                           structured=structured)
 
     lines = []
     total = 0
+    structured = []
     for fqcn in sorted(index):
-        entries = _playbook_lines(fqcn, index[fqcn], name_filter,
-                                  match_qualified=True)
+        entries = _playbook_entries(fqcn, index[fqcn], name_filter,
+                                    match_qualified=True)
         if not entries:
             continue
         version = index[fqcn]['version']
         lines.append('## {}{}'.format(
                 fqcn, ' ({})'.format(version) if version else ''))
-        lines.extend(entries)
+        for target, summary in entries:
+            line = '- `{}`'.format(target)
+            if summary:
+                line += ' — {}'.format(summary)
+            lines.append(line)
+            structured.append({'collection': fqcn, 'target': target,
+                               'summary': summary})
         lines.append('')
         total += len(entries)
     if not lines:
-        return text_result('no collections with playbooks found')
+        return text_result('no collections with playbooks found',
+                           structured=[])
     header = '# Collections with playbooks visible to Ansible ' \
         '({})'.format(total)
-    return text_result('\n'.join([header, ''] + lines))
+    return text_result('\n'.join([header, ''] + lines),
+                       structured=structured)
