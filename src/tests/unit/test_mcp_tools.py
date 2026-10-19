@@ -1749,6 +1749,21 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('- `extra` — 1 task', text)
         self.assertIn('(4 tasks)', text)
 
+    def test_role_tasks_single_file_answers_with_the_listing(self):
+        # The overview costs a second call for the common case of a
+        # role with only main.yml; answer with its brief listing
+        solo = os.path.join(self.roles_path, 'solorole')
+        os.makedirs(os.path.join(solo, 'tasks'))
+        with open(os.path.join(solo, 'tasks', 'main.yml'), 'w') as fp:
+            fp.write('- name: Only task\n'
+                     '  ansible.builtin.debug:\n'
+                     '    msg: the one thing\n')
+        response = self.call_tool('role_tasks', {'name': 'solorole'})
+        text = self.result_text(response)
+        self.assertIn('- Only task — ansible.builtin.debug', text)
+        self.assertIn('(1 task)', text)
+        self.assertNotIn('tasks files', text)
+
     def test_role_tasks_file_brief(self):
         response = self.call_tool('role_tasks',
                                   {'name': 'testrole', 'file': 'main'})

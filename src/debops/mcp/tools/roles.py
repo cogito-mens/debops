@@ -444,13 +444,18 @@ def _tool_role_tasklist(roles_paths, arguments, subdir,
 
     task_file = str(arguments.get('file') or '')
     if not task_file:
+        entries = [entry for entry in sorted(os.listdir(tasks_dir))
+                   if entry.endswith(('.yml', '.yaml'))
+                   and not entry.startswith('.')]
+        # The overview earns its keep with several task files; a role
+        # with exactly one answers with its brief listing directly
+        if len(entries) == 1:
+            task_file = entries[0]
+    if not task_file:
         # Overview: the task files and their task counts
         lines = ['# debops.{} {} files'.format(name, kind), '']
         total = 0
-        for entry in sorted(os.listdir(tasks_dir)):
-            if (not entry.endswith(('.yml', '.yaml'))
-                    or entry.startswith('.')):
-                continue
+        for entry in entries:
             tasks = _load_tasks(os.path.join(tasks_dir, entry))
             lines.append('- `{}` — {} {}{}'.format(
                     os.path.splitext(entry)[0], len(tasks), kind,
@@ -474,8 +479,9 @@ def _tool_role_tasklist(roles_paths, arguments, subdir,
     name_filter = str(arguments.get('filter') or '').lower()
     detail = arguments.get('detail', 'brief')
 
-    lines = ['# debops.{} {}/{} ({} {}s)'.format(
-            name, subdir, task_file, len(tasks), kind), '']
+    lines = ['# debops.{} {}/{} ({} {}{})'.format(
+            name, subdir, task_file, len(tasks), kind,
+            '' if len(tasks) == 1 else 's'), '']
     shown = 0
     for task in tasks:
         task_name = str(task.get('name', '(unnamed)'))
