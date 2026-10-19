@@ -197,7 +197,9 @@ class McpPolicy(object):
         # 'execute' gate above remains the authoritative control
         confirm = mcp_config.get('confirm',
                                  ['run', 'project_push', 'keyring_fetch',
-                                  'environment_set', 'environment_unset'])
+                                  'environment_set', 'environment_unset',
+                                  'collection_require',
+                                  'collection_remove'])
         if isinstance(confirm, str):
             confirm = [confirm]
         self.confirm = set(str(name) for name in confirm or [])

@@ -172,8 +172,10 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
     (response,) = read_json_lines(result.stdout)
     names = [tool["name"] for tool in response["result"]["tools"]]
     assert sorted(names) == ["ansible_facts", "ansible_ping", "check",
-                             "collection_playbooks", "collection_roles",
-                             "config_get", "environment_list",
+                             "collection_playbooks", "collection_remove",
+                             "collection_require", "collection_roles",
+                             "collection_sync", "config_get",
+                             "environment_list",
                              "environment_set", "environment_unset",
                              "inventory_query",
                              "inventory_spec", "keyring_fetch",

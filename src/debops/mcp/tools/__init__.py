@@ -21,6 +21,8 @@ from .execute import tool_check, tool_run
 from .files import (tool_config_get, tool_inventory_query,
                     tool_inventory_spec, tool_project_files,
                     tool_project_read, tool_view_delete, tool_view_write)
+from .galaxy import (tool_collection_remove, tool_collection_require,
+                     tool_collection_sync)
 from .keyring import tool_keyring_fetch
 from .overrides import tool_overrides_write
 from .hosts import tool_ansible_facts, tool_ansible_ping
@@ -129,6 +131,13 @@ TOOL_ANNOTATIONS = {
                         'openWorldHint': False},
     'environment_unset': {'destructiveHint': True, 'idempotentHint': True,
                           'openWorldHint': False},
+    # Collection management fetches code over the network
+    'collection_require': {'destructiveHint': False,
+                           'idempotentHint': True, 'openWorldHint': True},
+    'collection_remove': {'destructiveHint': True, 'idempotentHint': True,
+                          'openWorldHint': False},
+    'collection_sync': {'destructiveHint': False, 'idempotentHint': True,
+                        'openWorldHint': True},
     # A check run changes nothing on the managed hosts, but the local
     # auto-commit may commit the project
     'check': {'destructiveHint': False, 'idempotentHint': True},
@@ -741,6 +750,60 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
          {'type': 'object', 'properties': {},
           'additionalProperties': False},
          make_sync_tool(project, policy, sync_state, 'push')),
+    ])
+
+    # Ansible Collection management: requirements file plus install
+    tools.extend([
+        ('collection_require',
+         'Require an Ansible Collection in the project: add or update '
+         'its entry in ansible/collections/requirements.yml (with '
+         '"version", and "source"/"type" for a git repository) and '
+         'install the project collections. The change is committed to '
+         'git automatically. The change is complete when this call '
+         'returns; a dependent call must wait for it (batched requests '
+         'run concurrently).',
+         {'type': 'object',
+          'properties': {'name': {'type': 'string',
+                                  'description': 'The collection, e.g. '
+                                  '"community.docker"'},
+                         'version': {'type': 'string',
+                                     'description': 'Version constraint, '
+                                     'e.g. ">=5.0" (a git ref with a '
+                                     'git source)'},
+                         'source': {'type': 'string',
+                                    'description': 'Install from this '
+                                    'URL instead of Ansible Galaxy '
+                                    '(a git repository)'},
+                         'type': {'type': 'string',
+                                  'description': 'The source type, e.g. '
+                                  '"git"'}},
+          'required': ['name']},
+         lambda arguments: tool_collection_require(project, policy,
+                                                   arguments)),
+        ('collection_remove',
+         'Remove an Ansible Collection from the project: drop its entry '
+         'from the requirements and lock files, and delete its '
+         'installed content from ansible/collections/ (ansible-galaxy '
+         'cannot remove). The change is committed to git '
+         'automatically. The change is complete when this call '
+         'returns; a dependent call must wait for it (batched requests '
+         'run concurrently).',
+         {'type': 'object',
+          'properties': {'name': {'type': 'string',
+                                  'description': 'The collection, e.g. '
+                                  '"community.docker"'}},
+          'required': ['name']},
+         lambda arguments: tool_collection_remove(project, policy,
+                                                  arguments)),
+        ('collection_sync',
+         'Install the committed collection requirements of the '
+         'project, for example after a pull brought new ones. The '
+         'change is complete when this call returns; a dependent call '
+         'must wait for it (batched requests run concurrently).',
+         {'type': 'object', 'properties': {},
+          'additionalProperties': False},
+         lambda arguments: tool_collection_sync(project, policy,
+                                                arguments)),
     ])
 
     # The overrides write tool injects content into read-only roles; it

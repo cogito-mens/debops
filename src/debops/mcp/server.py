@@ -66,6 +66,17 @@ def _confirmation_message(tool_name, arguments):
         return message
     if tool_name == 'project_push':
         return ("Push the project's committed history to its git origin?")
+    if tool_name == 'collection_require':
+        message = 'Install the Ansible Collection "{}"'.format(
+                arguments.get('name', '?'))
+        if arguments.get('version'):
+            message += ' (version {})'.format(arguments['version'])
+        if arguments.get('source'):
+            message += ' from {}'.format(arguments['source'])
+        return message + ' into the project?'
+    if tool_name == 'collection_remove':
+        return 'Remove the Ansible Collection "{}" from the ' \
+            'project?'.format(arguments.get('name', '?'))
     if tool_name in ('environment_set', 'environment_unset'):
         verb = 'Set' if tool_name == 'environment_set' else 'Unset'
         message = '{} the environment variable "{}"'.format(

@@ -42,13 +42,21 @@ execute_options = ["limit", "tags", "skip-tags"]
 # which support it. The confirmation is a courtesy, not a security
 # boundary; the 'execute' option above is the boundary.
 confirm = ["run", "project_push", "keyring_fetch",
-           "environment_set", "environment_unset"]
+           "environment_set", "environment_unset",
+           "collection_require", "collection_remove"]
 
 # The server's environment for tool runs comes from
 # '.debops/mcp/environment' (plain variables, tracked) and
 # '.debops/mcp/.env' (tokens, never committed; 0600). The agent sets
 # them with the 'environment_set'/'environment_unset' tools, with
 # confirmation per entry (see the 'confirm' option above).
+
+# Ansible Collections are managed with the 'collection_require' /
+# 'collection_remove' / 'collection_sync' tools, which edit
+# 'ansible/collections/requirements.yml' and install into
+# 'ansible/collections/' (never outside of the project). Requiring and
+# removing are confirmed by default; synchronizing the committed state
+# is not, since it only ever installs what the project committed.
 
 # The hosts the keyring tool may fetch GPG keys from (APT repository
 # keys and other trust anchors), as fnmatch globs matched against the

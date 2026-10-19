@@ -1073,8 +1073,10 @@ class ToolsTestCase(unittest.TestCase):
         names = [tool['name'] for tool in response['result']['tools']]
         self.assertEqual(sorted(names),
                          ['ansible_facts', 'ansible_ping', 'check',
-                          'collection_playbooks', 'collection_roles',
-                          'config_get', 'environment_list',
+                          'collection_playbooks', 'collection_remove',
+                          'collection_require', 'collection_roles',
+                          'collection_sync', 'config_get',
+                          'environment_list',
                           'environment_set', 'environment_unset',
                           'inventory_query',
                           'inventory_spec', 'keyring_fetch',
