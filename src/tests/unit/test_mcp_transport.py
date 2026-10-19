@@ -10,7 +10,8 @@ dependencies.
 
 from debops.mcp import rpc
 from debops.mcp.server import McpServer
-from debops.mcp.transport import UnixSocketTransport, ping_unix
+from debops.mcp.transport import (StdioTransport, UnixSocketTransport,
+                                  ping_unix)
 import json
 import os
 import shutil
@@ -36,6 +37,52 @@ def make_discover_request(request_id=1):
         '_meta': {'io.modelcontextprotocol/protocolVersion': '2026-07-28',
                   'io.modelcontextprotocol/clientCapabilities': {}},
     })
+
+
+class TransportLifecycleTestCase(unittest.TestCase):
+    """The on_ready/on_stop callbacks drive the serve hooks."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-lifecycle-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+
+    def test_socket_ready_and_stop(self):
+        events = []
+        path = os.path.join(self.tmpdir, 'cb.sock')
+        transport = UnixSocketTransport(path)
+        thread = threading.Thread(
+                target=transport.serve, args=(McpServer(),),
+                kwargs={'on_ready': lambda: events.append('ready'),
+                        'on_stop': lambda: events.append('stop')},
+                daemon=True)
+        thread.start()
+        for _ in range(500):
+            if os.path.exists(path):
+                break
+            time.sleep(0.01)
+        self.assertEqual(events, ['ready'])
+        transport.shutdown()
+        thread.join(timeout=5)
+        self.assertEqual(events, ['ready', 'stop'])
+
+    def test_stdio_ready_and_stop(self):
+        events = []
+        # An immediate EOF ends the stdio serving
+        import io
+        reader = io.BytesIO(b'')
+        writer = io.BytesIO()
+        import sys
+        old_stdin, old_stdout = sys.stdin, sys.stdout
+        sys.stdin = type('FakeStdin', (), {'buffer': reader})()
+        sys.stdout = type('FakeStdout', (), {'buffer': writer})()
+        try:
+            transport = StdioTransport()
+            transport.serve(McpServer(),
+                            on_ready=lambda: events.append('ready'),
+                            on_stop=lambda: events.append('stop'))
+        finally:
+            sys.stdin, sys.stdout = old_stdin, old_stdout
+        self.assertEqual(events, ['ready', 'stop'])
 
 
 class UnixSocketTransportTestCase(unittest.TestCase):

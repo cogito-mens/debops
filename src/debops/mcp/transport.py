@@ -78,7 +78,7 @@ class StdioTransport(object):
     goes to stderr.
     """
 
-    def serve(self, server):
+    def serve(self, server, on_ready=None, on_stop=None):
         logger.notice('MCP server serving on stdio')
         reader = sys.stdin.buffer
         writer = sys.stdout.buffer
@@ -87,6 +87,8 @@ class StdioTransport(object):
         # On stdio the client is the parent process
         peer_pid = os.getppid()
         dead = threading.Event()
+        if on_ready is not None:
+            on_ready()
         try:
             while True:
                 try:
@@ -116,6 +118,8 @@ class StdioTransport(object):
             raise
         finally:
             # Long-lived streams (subscriptions) end with the channel
+            if on_stop is not None:
+                on_stop()
             dead.set()
         # End of input (the client went away or is batching): let
         # in-flight requests finish and deliver their responses; every
@@ -167,7 +171,7 @@ class UnixSocketTransport(object):
         finally:
             probe.close()
 
-    def serve(self, server):
+    def serve(self, server, on_ready=None, on_stop=None):
         self._prepare_socket_path()
         old_umask = os.umask(0o077)
         try:
@@ -189,6 +193,8 @@ class UnixSocketTransport(object):
             signal.signal(signal.SIGTERM, lambda *_: self.shutdown())
         logger.notice('MCP server listening on %s (mode %04o)',
                       self.path, self.mode)
+        if on_ready is not None:
+            on_ready()
         try:
             while self._serving:
                 try:
@@ -211,6 +217,8 @@ class UnixSocketTransport(object):
                         args=(connection, server), daemon=True)
                 thread.start()
         finally:
+            if on_stop is not None:
+                on_stop()
             if previous_sigterm is not None:
                 signal.signal(signal.SIGTERM, previous_sigterm)
             listener.close()

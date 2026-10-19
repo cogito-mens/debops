@@ -1152,6 +1152,44 @@ def test_connect_call_interrupt_cancels(debops_source_dir, mcp_env,
         thread.join(timeout=5)
 
 
+def test_serve_lifecycle_hooks(run_debops, mcp_env, project_dir):
+    """The serve hooks fire in order across a stdio serve."""
+    marker = project_dir / "hooks.log"
+    for event in ("mcp-pre-start", "mcp-post-start", "mcp-pre-stop", "mcp-post-stop"):
+        hook_dir = project_dir / ".debops" / "hooks" / event
+        hook_dir.mkdir(parents=True)
+        script = hook_dir / "00-mark"
+        script.write_text("#!/bin/sh\n"
+                          "echo {} \"$DEBOPS_MCP_TRANSPORT\" >> \"{}\"\n"
+                          .format(event, marker))
+        script.chmod(0o755)
+
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=make_discover_request())
+    assert result.returncode == 0
+    lines = marker.read_text().splitlines()
+    assert [line.split(" ")[0] for line in lines] == [
+            "mcp-pre-start", "mcp-post-start", "mcp-pre-stop", "mcp-post-stop"]
+    # The transport lands in the hook environment
+    assert all(line.endswith(" stdio") for line in lines)
+
+
+def test_serve_pre_start_hook_aborts_startup(run_debops, mcp_env,
+                                             project_dir):
+    hook_dir = project_dir / ".debops" / "hooks" / "mcp-pre-start"
+    hook_dir.mkdir(parents=True)
+    script = hook_dir / "00-refuse"
+    script.write_text("#!/bin/sh\nexit 1\n")
+    script.chmod(0o755)
+
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=make_discover_request())
+    assert result.returncode == 1
+    assert "mcp-pre-start hook aborted" in result.stderr
+    # Nothing was served
+    assert "supportedVersions" not in result.stdout
+
+
 def test_connect_ping_missing_socket(run_debops, mcp_env, tmp_path):
     result = run_debops("mcp", "connect", str(tmp_path / "nosuch.sock"),
                         "--ping", env=mcp_env)

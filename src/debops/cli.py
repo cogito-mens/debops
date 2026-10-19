@@ -20,6 +20,7 @@ from .mcp import client as mcp_client
 from .mcp.client import UnixClient
 from .mcp.transport import StdioTransport, UnixSocketTransport
 from .mcp.transport import bridge_stdio_to_unix, ping_unix
+from .hooks import run_hooks
 from .utils import set_process_name
 from xdg.BaseDirectory import xdg_config_home
 import contextlib
@@ -364,6 +365,35 @@ class Interpreter(object):
                            prompts=prompts, killswitch=killswitch)
         register_project_tools(server,
                                enabled_check=killswitch.is_enabled)
+
+        # The lifecycle hooks: mcp-pre-start may abort the startup; the
+        # others only ever log a failure, so a hook cannot stall a
+        # running server or its shutdown
+        hook_env = {'DEBOPS_MCP_TRANSPORT':
+                    'unix' if args.socket else 'stdio'}
+        if args.socket:
+            hook_env['DEBOPS_MCP_SOCKET'] = os.path.abspath(
+                    os.path.expanduser(args.socket))
+        if not run_hooks(project.path, 'mcp-pre-start', extra_env=hook_env):
+            print('Error: the mcp-pre-start hook aborted the startup',
+                  file=sys.stderr)
+            sys.exit(1)
+
+        started = False
+
+        def _on_ready():
+            nonlocal started
+            started = True
+            if not run_hooks(project.path, 'mcp-post-start',
+                             extra_env=hook_env):
+                logger.warning('The mcp-post-start hook failed')
+
+        def _on_stop():
+            # A hung hook must not stall the shutdown
+            if not run_hooks(project.path, 'mcp-pre-stop', timeout=30,
+                             extra_env=hook_env):
+                logger.warning('The mcp-pre-stop hook failed')
+
         try:
             if args.socket:
                 transport = UnixSocketTransport(
@@ -371,7 +401,8 @@ class Interpreter(object):
                         max_connections=args.max_connections)
             else:
                 transport = StdioTransport()
-            transport.serve(server)
+            transport.serve(server, on_ready=_on_ready,
+                            on_stop=_on_stop)
         except (ValueError, FileExistsError, PermissionError,
                 OSError) as errmsg:
             # Errors go to stderr: in stdio mode stdout is reserved for
@@ -381,6 +412,11 @@ class Interpreter(object):
         except KeyboardInterrupt:
             # 128 + SIGINT; the transport cleans up after itself
             sys.exit(130)
+        finally:
+            if started:
+                if not run_hooks(project.path, 'mcp-post-stop', timeout=30,
+                                 extra_env=hook_env):
+                    logger.warning('The mcp-post-stop hook failed')
 
     def do_mcp_connect(self, args):
         self._mcp_refuse_if_disabled()
