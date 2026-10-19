@@ -82,7 +82,7 @@ def _local_playbooks(runner, project, policy):
     return local
 
 
-def _check_local_confirmation(local, context):
+def _check_local_confirmation(local, context, policy):
     """Ask the user before a check run of a project-local playbook.
 
     Returns None to proceed, or the result to send back (the
@@ -93,7 +93,8 @@ def _check_local_confirmation(local, context):
             'Run the project playbook {} in check mode? Its tasks can '
             'execute commands on the managed hosts even in check mode '
             '(check_mode).'.format(
-                ', '.join('"{}"'.format(target) for target in local)))
+                ', '.join('"{}"'.format(target) for target in local)),
+            required=(policy is not None and policy.confirm_required))
     if verdict is True:
         return None
     if verdict is False:
@@ -329,7 +330,7 @@ def _execute_playbook(project, policy, arguments, context, check,
                     'project (project.mcp.local_playbooks): '
                     + ', '.join(local))
         if local and check and 'check' in policy.confirm:
-            gated = _check_local_confirmation(local, context)
+            gated = _check_local_confirmation(local, context, policy)
             if gated is not None:
                 return gated
 

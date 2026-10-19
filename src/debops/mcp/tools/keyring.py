@@ -210,6 +210,15 @@ def tool_keyring_fetch(project, policy, arguments, context):
         answers = context.input_responses or {}
         if 'confirmation' not in answers:
             if not _supports_form_elicitation(context.client_capabilities):
+                if policy.confirm_required:
+                    logger.notice('keyring_fetch refused: the client '
+                                  'cannot elicit and the policy '
+                                  'requires confirmation')
+                    return error_result(
+                            'the operation requires user confirmation, '
+                            'which this client cannot provide (no form '
+                            'elicitation); refused by the project '
+                            'policy (project.mcp.confirm_required)')
                 logger.notice('keyring_fetch runs without user '
                               'confirmation: the client cannot elicit')
             else:

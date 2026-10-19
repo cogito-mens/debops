@@ -160,14 +160,15 @@ class ReadWriteLock(object):
 PROJECT_LOCK = ReadWriteLock()
 
 
-def confirmation_flow(context, message):
+def confirmation_flow(context, message, required=False):
     """The shared confirmation flow for self-confirming tools.
 
     Returns True when confirmed (or the client cannot elicit — the
-    skip is logged), False when the user declined, and an
-    'input_required' result dict when the user must be asked first.
-    In a task the question is the task's outstanding input request,
-    answered via 'tasks/update'.
+    skip is logged), False when the user declined, and a result dict
+    when the user must be asked first ('input_required'). With
+    'required', a client which cannot elicit is refused instead of
+    proceeded. In a task the question is the task's outstanding input
+    request, answered via 'tasks/update'.
     """
     from ..server import _supports_form_elicitation
     answers = context.input_responses or {}
@@ -200,6 +201,14 @@ def confirmation_flow(context, message):
         return (answer.get('action') == 'accept'
                 and content.get('confirmed') is True)
     if not _supports_form_elicitation(context.client_capabilities):
+        if required:
+            logger.notice('Refused: the client cannot elicit and the '
+                          'policy requires confirmation')
+            return error_result(
+                    'the operation requires user confirmation, which '
+                    'this client cannot provide (no form elicitation); '
+                    'refused by the project policy '
+                    '(project.mcp.confirm_required)')
         logger.notice('Proceeding without user confirmation: the '
                       'client cannot elicit')
         return True

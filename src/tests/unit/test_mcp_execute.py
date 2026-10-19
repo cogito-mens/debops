@@ -345,7 +345,7 @@ class ExecuteTestCase(unittest.TestCase):
 
         def ask():
             outcome.append(_check_local_confirmation(
-                    ['probe.yml'], context))
+                    ['probe.yml'], context, None))
 
         thread = threading.Thread(target=ask)
         thread.start()

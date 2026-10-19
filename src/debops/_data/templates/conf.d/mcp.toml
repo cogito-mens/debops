@@ -110,6 +110,12 @@ custom_tools = false
 # paths), which always applies.
 #environment_deny = []
 
+# By default, a client which cannot ask for confirmation gets
+# confirm-gated operations anyway (the skip is logged). With
+# 'confirm_required', such operations are refused instead; recommended
+# for headless clients.
+confirm_required = false
+
 # The minimum interval between git synchronizations with the origin,
 # in seconds.
 sync_interval = 60

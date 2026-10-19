@@ -346,8 +346,10 @@ class ProgressTestCase(unittest.TestCase):
 class ConfirmationGateTestCase(unittest.TestCase):
     """Tools named in the policy's confirm list ask the user first."""
 
-    def _server(self, confirm=('run',)):
-        policy = type('Policy', (), {'confirm': set(confirm)})()
+    def _server(self, confirm=('run',), confirm_required=False):
+        policy = type('Policy', (), {
+                'confirm': set(confirm),
+                'confirm_required': confirm_required})()
         server = McpServer(policy=policy)
         self.ran = []
         server.register_tool(
@@ -409,6 +411,23 @@ class ConfirmationGateTestCase(unittest.TestCase):
     def test_no_elicitation_capability_proceeds(self):
         server = self._server()
         response = self._call(server, capabilities={})
+        self.assertFalse(response['result']['isError'])
+        self.assertEqual(self.ran, [{'playbook': 'site'}])
+
+    def test_confirm_required_refuses_a_client_which_cannot_elicit(
+            self):
+        server = self._server(confirm_required=True)
+        response = self._call(server, capabilities={})
+        result = response['result']
+        self.assertTrue(result['isError'])
+        self.assertIn('confirm_required', result['content'][0]['text'])
+        self.assertEqual(self.ran, [])
+
+    def test_confirm_required_still_accepts_answers(self):
+        server = self._server(confirm_required=True)
+        response = self._call(server, input_responses={
+                'confirmation': {'action': 'accept',
+                                 'content': {'confirmed': True}}})
         self.assertFalse(response['result']['isError'])
         self.assertEqual(self.ran, [{'playbook': 'site'}])
 

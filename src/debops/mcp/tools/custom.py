@@ -77,7 +77,7 @@ def make_custom_tool(project, policy, name, path, enabled_check=None,
         # enabled must not open an unattended code execution path
         verdict = confirmation_flow(
                 context, 'Run the custom tool "{}" of this project?'
-                .format(name))
+                .format(name), required=policy.confirm_required)
         if verdict is not True:
             if verdict is False:
                 return error_result('the call was declined by the user')

@@ -217,6 +217,18 @@ class CustomToolRunTestCase(unittest.TestCase):
                             for line in recorded.output),
                         recorded.output)
 
+    def test_confirm_required_refuses_a_client_which_cannot_elicit(
+            self):
+        self.project.config.raw['project']['mcp']['confirm_required'] = \
+            True
+        policy = McpPolicy(self.project)
+        path = write_tool(self.tools_dir, 'echo-args')
+        handler = make_custom_tool(self.project, policy, 'echo-args',
+                                   path)
+        result = handler({}, self.context())
+        self.assertTrue(result['isError'])
+        self.assertIn('confirm_required', result['content'][0]['text'])
+
     def test_nonzero_exit_is_a_tool_error(self):
         handler = self.make_tool(
                 body='#!/bin/sh\necho broke >&2\nexit 3\n')

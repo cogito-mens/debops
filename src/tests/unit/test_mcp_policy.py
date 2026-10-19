@@ -173,6 +173,8 @@ class McpConfigTemplateTestCase(unittest.TestCase):
                          policy.external_content)
         self.assertEqual(values['overrides'], policy.overrides)
         self.assertEqual(values['custom_tools'], policy.custom_tools)
+        self.assertEqual(values['confirm_required'],
+                         policy.confirm_required)
         self.assertEqual(values['local_playbooks'],
                          policy.local_playbooks)
 
@@ -217,6 +219,13 @@ class ConfirmationPolicyTestCase(unittest.TestCase):
     def test_confirm_string_normalized(self):
         policy = self._policy({'confirm': 'run'})
         self.assertEqual(policy.confirm, {'run'})
+
+    def test_confirm_required_off_by_default(self):
+        self.assertFalse(self._policy({}).confirm_required)
+
+    def test_confirm_required_string_value(self):
+        policy = self._policy({'confirm_required': 'true'})
+        self.assertTrue(policy.confirm_required)
 
 
 class ContentPolicyTestCase(unittest.TestCase):

@@ -670,6 +670,21 @@ class McpServer(object):
                     'isError': True}
 
         if not _supports_form_elicitation(context.client_capabilities):
+            if self.policy.confirm_required:
+                logger.notice('Tool %s refused: the client cannot '
+                              'elicit and the policy requires '
+                              'confirmation', tool.name)
+                return {'resultType': 'complete',
+                        'content': [{'type': 'text',
+                                     'text': 'The operation requires '
+                                             'user confirmation, which '
+                                             'this client cannot '
+                                             'provide (no form '
+                                             'elicitation); refused by '
+                                             'the project policy '
+                                             '(project.mcp.'
+                                             'confirm_required).'}],
+                        'isError': True}
             # A client which cannot ask may not block the work; the
             # skip is written to the audit log
             logger.notice('Tool %s runs without user confirmation: '

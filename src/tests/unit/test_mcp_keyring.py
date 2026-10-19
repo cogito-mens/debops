@@ -308,6 +308,15 @@ class KeyringConfirmationTestCase(unittest.TestCase):
         result = self.call(self.plain)
         self.assertFalse(result['isError'], result)
 
+    def test_confirm_required_refuses_a_client_which_cannot_elicit(
+            self):
+        self.project.config.raw['project'] = {
+                'mcp': {'confirm_required': True}}
+        self.policy = McpPolicy(self.project)
+        result = self.call(self.plain)
+        self.assertTrue(result['isError'])
+        self.assertIn('confirm_required', result['content'][0]['text'])
+
 
 if __name__ == '__main__':
     unittest.main()
