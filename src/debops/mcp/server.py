@@ -457,6 +457,17 @@ class McpServer(object):
             raise rpc.JsonRpcError(rpc.INVALID_REQUEST, 'Invalid Request',
                                    request_id=request_id)
 
+        if method == 'initialize' and not is_notification:
+            # A legacy client has no fall-forward mechanism; name the
+            # supported versions, since this error may be the only
+            # diagnostic it can surface
+            raise rpc.JsonRpcError(
+                    rpc.METHOD_NOT_FOUND,
+                    'Unsupported protocol version: this server speaks '
+                    + PROTOCOL_VERSION,
+                    data={'supported': [PROTOCOL_VERSION]},
+                    request_id=request_id)
+
         # Notifications carry no '_meta' requirement; requests do
         if not is_notification:
             self._check_request_meta(message, request_id)

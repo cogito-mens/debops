@@ -107,6 +107,18 @@ class EnvelopeTestCase(unittest.TestCase):
         self.assertEqual(response['error']['data'],
                          {'method': 'resources/list'})
 
+    def test_initialize_names_the_supported_versions(self):
+        # A legacy client has no fall-forward mechanism; the error is
+        # the only diagnostic it gets
+        server = McpServer()
+        response = server.handle({'jsonrpc': '2.0', 'id': 1,
+                                  'method': 'initialize',
+                                  'params': {}})
+        error = response['error']
+        self.assertEqual(error['code'], rpc.METHOD_NOT_FOUND)
+        self.assertEqual(error['data']['supported'],
+                         [PROTOCOL_VERSION])
+
     def test_unknown_notification_ignored(self):
         server = McpServer()
         request = make_request('notifications/unknown')
