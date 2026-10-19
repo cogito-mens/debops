@@ -166,6 +166,7 @@ TOOL_CALL_EXAMPLES = {
     'overrides_write': ['path=templates/nginx/nginx.conf.j2 '
                         'content=...'],
     'config_get': ['key=project.default_view'],
+    'environment_list': [''],
     'inventory_query': ['action=graph',
                         'action=host host=web1.example.com'],
     'inventory_spec': ['spec="version: 0\\nfiles:\\n  hosts.yml: ..." '

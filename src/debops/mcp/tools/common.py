@@ -179,6 +179,35 @@ def check_free_space(policy):
                     free // (1024 * 1024), min_free // (1024 * 1024)))
 
 
+def _read_env_file(path):
+    """A dotenv file as a dict; an unreadable file reads as empty."""
+    try:
+        from dotenv import dotenv_values
+        return {key: value for key, value in dotenv_values(path).items()
+                if value is not None}
+    except Exception:
+        logger.warning('Cannot read the environment file: %s', path,
+                       exc_info=True)
+        return {}
+
+
+def mcp_environ(project):
+    """The environment for the tool subprocesses of the MCP server.
+
+    The process environment, then the project environment, then the
+    project MCP environment files ('.debops/mcp/environment' for plain
+    variables, '.debops/mcp/.env' for tokens), parsed fresh at each
+    call so that a change applies to the next run without a restart.
+    """
+    env = os.environ.copy()
+    env.update(project.config._env_vars)
+    for name in ('environment', '.env'):
+        path = os.path.join(project.path, '.debops', 'mcp', name)
+        if os.path.isfile(path):
+            env.update(_read_env_file(path))
+    return env
+
+
 def _project_lock_path(project, policy):
     """The flock file for cross-process exclusion on this project."""
     git_dir = os.path.join(project.path, '.git')

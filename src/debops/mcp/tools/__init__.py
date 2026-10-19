@@ -15,6 +15,7 @@ from .collections import (COLLECTION_INDEX_TTL, galaxy_collection_list,
                           index_from_galaxy, restrict_content,
                           tool_collection_playbooks,
                           tool_collection_roles)
+from .environment import tool_environment_list
 from .execute import tool_check, tool_run
 from .files import (tool_config_get, tool_inventory_query,
                     tool_inventory_spec, tool_project_files,
@@ -68,7 +69,8 @@ def execution_schema(policy):
 # project lock so a writer (a run, a sync, secrets) cannot interleave
 READ_LOCKED_TOOLS = frozenset((
     'project_status', 'project_files', 'project_read', 'config_get',
-    'inventory_query', 'playbooks', 'playbook_info', 'role_info',
+    'environment_list', 'inventory_query', 'playbooks', 'playbook_info',
+    'role_info',
     'role_defaults', 'role_variables', 'role_argspec', 'role_tasks',
     'role_handlers', 'role_templates', 'role_files', 'collection_roles',
     'collection_playbooks',
@@ -84,6 +86,7 @@ TOOL_ANNOTATIONS = {
     # Pure reads of project or package content
     'project_status': _READ_ONLY,
     'project_files': _READ_ONLY,
+    'environment_list': _READ_ONLY,
     'project_read': _READ_ONLY,
     'config_get': _READ_ONLY,
     'inventory_query': _READ_ONLY,
@@ -305,6 +308,18 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                  '"project.default_view"'}},
           'required': ['key']},
          lambda arguments: tool_config_get(project, arguments)),
+        ('environment_list',
+         'List the environment variables the server\'s tool runs get, '
+         'by origin: the project MCP environment file (with values), '
+         'the tokens file (names only), the project environment and the '
+         'process environment (names only).',
+         {'type': 'object',
+          'properties': {'filter': {'type': 'string',
+                                    'description': 'Only include '
+                                    'variables whose name contains '
+                                    'this string'}}},
+         lambda arguments: tool_environment_list(project, policy,
+                                                 arguments)),
         ('inventory_query',
          'Inspect the computed Ansible inventory with '
          '"ansible-inventory": "graph" shows the group tree, "list" '

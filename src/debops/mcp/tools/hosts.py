@@ -19,8 +19,8 @@ import yaml
 
 from ...ansible.inventory import AnsibleInventory
 from ..server import RequestCancelled
-from .common import error_result, text_result
-from .common import exclusive_project
+from .common import (error_result, exclusive_project, mcp_environ,
+                     text_result)
 from .execute import resolve_hosts, run_cancellable
 
 logger = logging.getLogger(__name__)
@@ -129,8 +129,7 @@ def _exec(project, policy, arguments, context, module, module_filter):
         unlocked = False
         try:
             unlocked = inventory.unlock()
-            env = os.environ.copy()
-            env.update(project.config._env_vars)
+            env = mcp_environ(project)
 
             # Resolve the pattern to concrete hosts first: the inventory
             # is the security boundary, and the resolution is the audit

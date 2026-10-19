@@ -31,7 +31,8 @@ from ...ansibleplaybookrunner import AnsiblePlaybookRunner
 from ...hooks import run_hooks
 from ..policy import EXECUTE_OPTIONS
 from ..server import RequestCancelled
-from .common import error_result, exclusive_project, text_result
+from .common import (error_result, exclusive_project, mcp_environ,
+                     text_result)
 
 logger = logging.getLogger(__name__)
 
@@ -277,8 +278,7 @@ def _execute_playbook(project, policy, arguments, context, check,
         try:
             unlocked = inventory.unlock()
 
-            env = os.environ.copy()
-            env.update(project.config._env_vars)
+            env = mcp_environ(project)
 
             # Resolve the affected hosts before running: the inventory
             # is the security boundary, and the resolution is the audit

@@ -21,7 +21,7 @@ import tempfile
 
 from ..policy import confine_under, is_denied_component
 from .common import (dump_default, error_result, exclusive_project,
-                     shared_project, text_result)
+                     mcp_environ, shared_project, text_result)
 
 logger = logging.getLogger(__name__)
 
@@ -157,8 +157,7 @@ def tool_inventory_query(project, arguments):
                                 'must be a host name')
         command.append(host)
 
-    env = os.environ.copy()
-    env.update(project.config._env_vars)
+    env = mcp_environ(project)
     try:
         result = subprocess.run(
                 command, env=env, cwd=project.path,

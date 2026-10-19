@@ -17,7 +17,7 @@ import re
 import subprocess
 
 from ..policy import confine_under
-from .common import (error_result, text_result)
+from .common import error_result, mcp_environ, text_result
 from .playbooks import (list_playbooks, parse_playbook, playbook_summary,
                         render_playbook_info, target_form)
 
@@ -42,8 +42,7 @@ def galaxy_collection_list(project):
     collections installed there visible. No hooks run and the inventory
     stays locked: listing collections needs neither.
     """
-    env = os.environ.copy()
-    env.update(project.config._env_vars)
+    env = mcp_environ(project)
     try:
         result = subprocess.run(
                 ['ansible-galaxy', 'collection', 'list', '--format', 'json'],
