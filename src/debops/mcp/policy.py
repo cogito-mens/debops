@@ -233,6 +233,15 @@ class McpPolicy(object):
         if self.custom_tools:
             logger.notice('Custom script tools enabled by policy')
 
+        # Additional variable names the environment tools refuse to
+        # set; the built-in list (the loader, interpreter and Ansible
+        # code paths) always applies and cannot be lifted
+        environment_deny = mcp_config.get('environment_deny', [])
+        if isinstance(environment_deny, str):
+            environment_deny = [environment_deny]
+        self.environment_deny = [str(entry)
+                                 for entry in environment_deny or []]
+
         # Free disk space the write operations require on the project's
         # filesystem; below this they refuse, because a git operation
         # which dies mid-write can leave a broken repository. An

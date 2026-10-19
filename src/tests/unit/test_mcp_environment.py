@@ -159,6 +159,45 @@ class EnvironmentWriteTestCase(unittest.TestCase):
         self.assertEqual(self.commits,
                          ['DebOps MCP: environment_set REGION'])
 
+    def test_code_path_variables_are_refused(self):
+        # A variable which redirects code loading plus a planted file
+        # is controller-side code execution; the tools refuse them
+        from debops.mcp.tools.environment import tool_environment_set
+        for name in ('PATH', 'LD_PRELOAD', 'PYTHONPATH',
+                     'ANSIBLE_CONFIG', 'ANSIBLE_LIBRARY',
+                     'ANSIBLE_CALLBACK_PLUGINS', 'ANSIBLE_ROLES_PATH',
+                     'ANSIBLE_COLLECTIONS_PATH'):
+            result = tool_environment_set(
+                    self.project, self.policy,
+                    {'name': name, 'value': '/tmp/planted'})
+            self.assertTrue(result['isError'], name)
+            self.assertIn('redirects where code is loaded',
+                          result['content'][0]['text'], name)
+        self.assertFalse(os.path.exists(self.env_path()))
+
+    def test_benign_variables_still_work(self):
+        from debops.mcp.tools.environment import tool_environment_set
+        result = tool_environment_set(
+                self.project, self.policy,
+                {'name': 'ANSIBLE_FORCE_COLOR', 'value': '1'})
+        self.assertFalse(result['isError'], result)
+
+    def test_policy_extends_the_deny_list(self):
+        self.project.config.raw['project'] = {
+                'mcp': {'environment_deny': ['AWS_PROFILE']}}
+        policy = McpPolicy(self.project)
+        from debops.mcp.tools.environment import tool_environment_set
+        result = tool_environment_set(
+                self.project, policy,
+                {'name': 'AWS_PROFILE', 'value': 'prod'})
+        self.assertTrue(result['isError'])
+        self.assertIn('environment_deny', result['content'][0]['text'])
+        # The built-in list still applies on top
+        result = tool_environment_set(
+                self.project, policy,
+                {'name': 'PATH', 'value': '/tmp/x'})
+        self.assertTrue(result['isError'])
+
     def test_set_preserves_comments_and_other_entries(self):
         os.makedirs(os.path.dirname(self.env_path()))
         with open(self.env_path(), 'w') as fp:

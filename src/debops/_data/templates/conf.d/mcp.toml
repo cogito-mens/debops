@@ -105,6 +105,11 @@ overrides = false
 # enabled, and every call asks the user to confirm.
 custom_tools = false
 
+# Additional variable names which environment_set refuses to set, on
+# top of the built-in list (PATH, LD_*, PYTHON*, the Ansible code
+# paths), which always applies.
+#environment_deny = []
+
 # The minimum interval between git synchronizations with the origin,
 # in seconds.
 sync_interval = 60

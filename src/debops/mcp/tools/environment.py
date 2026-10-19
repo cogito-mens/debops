@@ -24,6 +24,34 @@ MCP_ENV_FILES = ('environment', '.env')
 # A dotenv variable name
 ENV_NAME_PATTERN = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 
+# Variable names the environment tools refuse to set: they redirect
+# where the dynamic loader, the Python interpreter or Ansible resolve
+# code from, so a value pointing at a writable directory (a file
+# planted with view_write, say) would execute as the server's account
+# at the next run. Operators can still set them by editing the file
+# directly; 'project.mcp.environment_deny' extends the list
+ENV_DENY_NAMES = frozenset((
+        'PATH', 'LD_PRELOAD', 'LD_LIBRARY_PATH',
+        'PYTHONPATH', 'PYTHONHOME',
+        'ANSIBLE_CONFIG', 'ANSIBLE_LIBRARY', 'ANSIBLE_MODULE_UTILS',
+        'ANSIBLE_ROLES_PATH',
+        'ANSIBLE_COLLECTIONS_PATH', 'ANSIBLE_COLLECTIONS_PATHS'))
+
+
+def _denied_env_reason(name, policy):
+    """Why a variable name is refused by the environment tools, or
+    None."""
+    if (name in ENV_DENY_NAMES
+            or (name.startswith('ANSIBLE_')
+                and name.endswith('_PLUGINS'))):
+        return ('it redirects where code is loaded from; an operator '
+                'can set it in the file directly')
+    denied = getattr(policy, 'environment_deny', None) or ()
+    if name in denied:
+        return 'denied by the project policy ' \
+               '(project.mcp.environment_deny)'
+    return None
+
 
 def _mcp_env_path(project, name):
     return os.path.join(project.path, '.debops', 'mcp', name)
@@ -155,6 +183,10 @@ def _write_environment(project, policy, arguments, secret):
     name = str(arguments.get('name') or '')
     if not ENV_NAME_PATTERN.match(name):
         return error_result('invalid variable name: {!r}'.format(name))
+    denied_reason = _denied_env_reason(name, policy)
+    if denied_reason is not None:
+        return error_result('the variable {} is refused: {}'.format(
+                name, denied_reason))
     value = arguments.get('value')
     if value is not None:
         if not isinstance(value, str):
