@@ -70,7 +70,8 @@ write_allow = ["resources/**", "playbooks/**", "ansible/playbooks/**",
 # 'ansible/', are anchored at the project directory instead of the view
 # root. To let agents author project skills and prompts (served from
 # '.debops/mcp/'), allow them explicitly:
-#write_allow = ["resources/**", "playbooks/**",
+#write_allow = ["resources/**", "playbooks/**", "ansible/playbooks/**",
+#               "/playbooks/**",
 #               ".debops/mcp/skills/**", ".debops/mcp/prompts/**"]
 
 # Under '.debops/' only the MCP content directories are writable at
