@@ -57,6 +57,12 @@ class Task(object):
         self._answers = {}
         self._answered = {}
         self._lock = threading.Lock()
+        # Set by the registry: called with the task on every change
+        self._on_change = None
+
+    def _changed(self):
+        if self._on_change is not None:
+            self._on_change(self)
 
     def describe(self):
         """The task as the wire shape, with its status payload."""
@@ -89,6 +95,7 @@ class Task(object):
         with self._lock:
             self.status_message = message
             self.last_updated_at = _now()
+        self._changed()
 
     def ask(self, key, request):
         """Block the task on an input request until the client answers.
@@ -106,6 +113,7 @@ class Task(object):
             self._answered[key] = event
             self.status = 'input_required'
             self.last_updated_at = _now()
+        self._changed()
         try:
             while not event.wait(0.5):
                 if self.cancel_event.is_set():
@@ -119,6 +127,7 @@ class Task(object):
                 if self.status == 'input_required':
                     self.status = 'working'
                     self.last_updated_at = _now()
+            self._changed()
 
     def answer(self, key, response):
         """Record the answer to an outstanding input request.
@@ -139,17 +148,20 @@ class Task(object):
             self.status = 'completed'
             self.result = result
             self.last_updated_at = _now()
+        self._changed()
 
     def fail(self, error):
         with self._lock:
             self.status = 'failed'
             self.error = error
             self.last_updated_at = _now()
+        self._changed()
 
     def mark_cancelled(self):
         with self._lock:
             self.status = 'cancelled'
             self.last_updated_at = _now()
+        self._changed()
 
     def cancel(self):
         self.cancel_event.set()
@@ -161,12 +173,19 @@ class TaskRegistry(object):
     def __init__(self):
         self._tasks = {}
         self._lock = threading.Lock()
+        # Set by the server: called with the task on every change
+        self.on_task_change = None
 
     def create(self, ttl_ms, poll_interval_ms=1000):
         task = Task(ttl_ms, poll_interval_ms)
+        task._on_change = self._changed
         with self._lock:
             self._tasks[task.task_id] = task
         return task
+
+    def _changed(self, task):
+        if self.on_task_change is not None:
+            self.on_task_change(task)
 
     def get(self, task_id):
         """The task, or None when unknown or expired.

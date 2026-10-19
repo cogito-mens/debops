@@ -255,6 +255,7 @@ class McpServer(object):
         self._subscriptions_lock = threading.Lock()
         # The task registry: long-running work the client polls for
         self._tasks = TaskRegistry()
+        self._tasks.on_task_change = self._emit_task_change
         if self.skills is not None:
             self._methods['resources/list'] = self._resources_list
             self._methods['resources/read'] = self._resources_read
@@ -772,6 +773,16 @@ class McpServer(object):
                                                  []):
                 subscription['queue'].put(message)
 
+    def _emit_task_change(self, task):
+        """Push a task status notification to its subscribers."""
+        message = {'jsonrpc': '2.0', 'method': 'notifications/tasks',
+                   'params': task.describe()}
+        with self._subscriptions_lock:
+            subscriptions = list(self._subscriptions.values())
+        for subscription in subscriptions:
+            if task.task_id in subscription['filter'].get('taskIds', []):
+                subscription['queue'].put(message)
+
     def content_fingerprint(self):
         """A fingerprint of the project content served (skills, prompts)."""
         return {
@@ -825,6 +836,17 @@ class McpServer(object):
                 if str(uri).startswith(SKILL_URI_PREFIX)]
         if uris:
             honored['resourceSubscriptions'] = uris
+        task_ids = requested.get('taskIds')
+        if task_ids:
+            # Task notifications require the client to have declared
+            # the tasks extension
+            if not self._client_supports(context, TASKS_EXTENSION):
+                raise rpc.JsonRpcError(
+                        -32021, 'Missing required client capability',
+                        data={'requiredCapabilities':
+                              {'extensions': {TASKS_EXTENSION: {}}}},
+                        request_id=request_id)
+            honored['taskIds'] = [str(task_id) for task_id in task_ids]
 
         event_queue = self._subscribe(request_id, honored)
         cancel_event = threading.Event()
