@@ -19,7 +19,7 @@ import stat
 import subprocess
 import tempfile
 
-from ..policy import READ_DENY_COMPONENTS, confine_under
+from ..policy import confine_under, is_denied_component
 from .common import (dump_default, error_result, exclusive_project,
                      shared_project, text_result)
 
@@ -207,7 +207,7 @@ def _authorized_write_path(project, policy, relative):
     # The deny list is unconditional, so that a misconfigured
     # 'write_allow' cannot open the secrets or the git metadata
     for part in canonical_relative.split('/'):
-        if part in READ_DENY_COMPONENTS:
+        if is_denied_component(part):
             raise ValueError('path is denied by policy: ' + relative)
     # The project machinery is never writable: under '.debops/' only the
     # MCP content directories exist for the write tools, so that no

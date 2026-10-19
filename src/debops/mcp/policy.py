@@ -81,11 +81,17 @@ def confine_under(root, path):
 
 # Path components and file names never served by the read tools: the
 # secrets directories of the infrastructure views, git metadata (which
-# includes git-crypt key material), encfs key material and Python
-# virtual environments
+# includes git-crypt key material), encfs key material, Python virtual
+# environments and dotenv files (which hold tokens)
 READ_DENY_COMPONENTS = frozenset((
         'secret', '.git', '.encfs.secret', '.encfs6.keyfile',
-        '.encfs6.xml', '__pycache__', 'venv'))
+        '.encfs6.xml', '__pycache__', 'venv', '.env'))
+
+
+def is_denied_component(part):
+    """Whether a path component is denied to the read and write tools."""
+    return part in READ_DENY_COMPONENTS or part.startswith('.env.')
+
 
 # ansible-playbook options the execution tools may pass through;
 # 'project.mcp.execute_options' restricts the set
@@ -288,7 +294,7 @@ class McpPolicy(object):
         """
         relative_path = relative_path.strip('/')
         for part in relative_path.split('/'):
-            if part in READ_DENY_COMPONENTS:
+            if is_denied_component(part):
                 return True
         for denied in self.read_deny:
             if (relative_path == denied

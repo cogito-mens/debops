@@ -174,6 +174,20 @@ class McpConfigTemplateTestCase(unittest.TestCase):
         self.assertEqual(values['overrides'], policy.overrides)
 
 
+class EnvFileDenyTestCase(unittest.TestCase):
+
+    def _policy(self):
+        return McpPolicy(FakeProject('/srv/projects/example'))
+
+    def test_dotenv_files_are_denied_to_readers(self):
+        policy = self._policy()
+        for path in ('.env', 'ansible/.env', 'ansible/.env.local',
+                     '.debops/mcp/.env'):
+            self.assertTrue(policy.is_read_denied(path), path)
+        self.assertFalse(policy.is_read_denied('.debops/environment'))
+        self.assertFalse(policy.is_read_denied('playbooks/deploy.yml'))
+
+
 class ConfirmationPolicyTestCase(unittest.TestCase):
 
     def _policy(self, mcp_config):

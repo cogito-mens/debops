@@ -13,7 +13,7 @@ tool is therefore not registered by default; a project enables it with
 
 import os
 
-from ..policy import READ_DENY_COMPONENTS, confine_under
+from ..policy import confine_under, is_denied_component
 from .common import error_result
 from .files import (_is_git_tracked_project, _parse_write_mode,
                     _write_committed)
@@ -48,7 +48,7 @@ def tool_overrides_write(project, policy, arguments):
         return error_result('overrides are written under files/, tasks/ '
                             'or templates/: ' + relative)
     for part in parts:
-        if part in READ_DENY_COMPONENTS:
+        if is_denied_component(part):
             return error_result('path is denied by policy: ' + relative)
 
     # Writes are recoverable and attributable only with git

@@ -583,6 +583,13 @@ class ViewWriteTestCase(unittest.TestCase):
         self.assertIn('denied by policy',
                       response['content'][0]['text'])
 
+    def test_dotenv_files_are_never_writable(self):
+        for path in ('playbooks/.env', 'resources/.env.local'):
+            response = self.write_scoped(path)
+            self.assertTrue(response['isError'], path)
+            self.assertIn('denied by policy',
+                          response['content'][0]['text'], path)
+
     def test_project_machinery_is_never_writable(self):
         # Even a wildcard allow cannot open the configuration, the
         # hooks or the environment: only the MCP content directories
