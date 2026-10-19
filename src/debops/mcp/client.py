@@ -306,7 +306,7 @@ def format_tools(tools):
     """Render a tools/list result as lines for humans."""
     lines = ['tools ({}):'.format(len(tools))]
     width = max([len(tool['name']) for tool in tools] + [0])
-    for tool in tools:
+    for tool in sorted(tools, key=lambda tool: tool['name']):
         flags = _tool_flags(tool)
         suffix = ' [{}]'.format(', '.join(flags)) if flags else ''
         lines.append('    {}  {}{}'.format(
@@ -370,7 +370,8 @@ def format_resources(resources):
     """Render a resources/list result as lines for humans."""
     lines = ['resources ({}):'.format(len(resources))]
     width = max([len(resource['name']) for resource in resources] + [0])
-    for resource in resources:
+    for resource in sorted(resources, key=lambda resource:
+                           resource['name']):
         lines.append('    {}  {}'.format(
                 resource['name'].ljust(width),
                 _shorten(resource.get('description', ''))))
@@ -380,7 +381,9 @@ def format_resources(resources):
 def format_prompts(prompts):
     """Render a prompts/list result as lines for humans."""
     lines = ['prompts ({}):'.format(len(prompts))]
-    for prompt in prompts:
+    width = max([len(prompt['name']) for prompt in prompts] + [0])
+    for prompt in sorted(prompts, key=lambda prompt: prompt['name']):
         lines.append('    {}  {}'.format(
-                prompt['name'], prompt.get('description', '')))
+                prompt['name'].ljust(width),
+                _shorten(prompt.get('description', ''))))
     return lines

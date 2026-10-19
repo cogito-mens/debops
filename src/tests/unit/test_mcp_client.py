@@ -82,8 +82,9 @@ class FormatterTestCase(unittest.TestCase):
         plain = {'name': 'check', 'description': 'Check things.',
                  'annotations': {'destructiveHint': False}}
         lines = client.format_tools([gated, plain])
-        self.assertIn('[destructive, confirm]', lines[1])
-        self.assertNotIn('confirm', lines[2])
+        by_name = {line.split()[0]: line for line in lines[1:]}
+        self.assertIn('[destructive, confirm]', by_name['run'])
+        self.assertNotIn('confirm', by_name['check'])
 
         detail = client.format_tool(gated)
         self.assertIn('annotations: destructive, confirm', detail)
@@ -121,12 +122,13 @@ class FormatterTestCase(unittest.TestCase):
         self.assertIn('capabilities: (none)', text)
 
     def test_format_tools(self):
+        # Deliberately unsorted: the listing comes out alphabetical
         lines = client.format_tools([
+            {'name': 'status', 'description': 'Show the status.',
+             'annotations': {'readOnlyHint': True}},
             {'name': 'run',
              'description': 'Run things. Carefully.',
              'annotations': {'destructiveHint': True}},
-            {'name': 'status', 'description': 'Show the status.',
-             'annotations': {'readOnlyHint': True}},
         ])
         self.assertEqual(lines[0], 'tools (2):')
         self.assertIn('run', lines[1])
@@ -135,16 +137,31 @@ class FormatterTestCase(unittest.TestCase):
         self.assertIn('[read-only]', lines[2])
 
     def test_format_prompts(self):
+        # Deliberately unsorted: the listing comes out alphabetical
         lines = client.format_prompts([
             {'name': 'review-a-role',
              'description': 'Review a role against the conventions.'},
             {'name': 'bootstrap', 'description': 'Bootstrap a host.'},
         ])
         self.assertEqual(lines[0], 'prompts (2):')
-        self.assertEqual(lines[1],
-                         '    review-a-role  Review a role against '
-                         'the conventions.')
-        self.assertEqual(lines[2], '    bootstrap  Bootstrap a host.')
+        self.assertEqual(lines[1].split(),
+                         ['bootstrap', 'Bootstrap', 'a', 'host.'])
+        self.assertEqual(lines[2].split()[:2],
+                         ['review-a-role', 'Review'])
+        # The descriptions line up in a column
+        self.assertEqual(lines[1].index('Bootstrap'),
+                         lines[2].index('Review'))
+
+    def test_format_resources(self):
+        lines = client.format_resources([
+            {'name': 'skill://zfs', 'description': 'Manage ZFS.'},
+            {'name': 'skill://apt', 'description': 'Manage APT.'},
+        ])
+        self.assertEqual(lines[0], 'resources (2):')
+        self.assertIn('skill://apt', lines[1])
+        self.assertIn('skill://zfs', lines[2])
+        self.assertEqual(lines[1].index('Manage'),
+                         lines[2].index('Manage'))
 
     def test_format_tool(self):
         lines = client.format_tool({
