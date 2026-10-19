@@ -52,6 +52,16 @@ VIEW_META_KEY = 'org.debops/view'
 SUBSCRIPTION_ID_KEY = 'io.modelcontextprotocol/subscriptionId'
 
 
+def _reject_cursor(params):
+    """Reject a pagination cursor on a list method: the lists are
+    never paginated, so any cursor received is an invalid one."""
+    if params.get('cursor') is not None:
+        raise rpc.JsonRpcError(
+                rpc.INVALID_PARAMS, 'Invalid params',
+                data={'details': 'invalid cursor: the list is not '
+                      'paginated; repeat the request without it'})
+
+
 def _supports_form_elicitation(capabilities):
     """Whether the client declared form-mode elicitation support."""
     elicitation = capabilities.get('elicitation')
@@ -598,6 +608,7 @@ class McpServer(object):
         }
 
     def _tools_list(self, params, context):
+        _reject_cursor(params)
         # The tool set is fixed at startup; a short TTL lets clients
         # pick up a restarted daemon's changed policy reasonably fast
         return {'tools': [tool.describe() for tool in self.tools.values()],
@@ -729,6 +740,7 @@ class McpServer(object):
                 }}
 
     def _prompts_list(self, params, context):
+        _reject_cursor(params)
         return {'prompts': self.prompts.list(),
                 'ttlMs': 60000, 'cacheScope': 'private'}
 
@@ -754,6 +766,7 @@ class McpServer(object):
                                           'text': rendered['text']}}]}
 
     def _resources_list(self, params, context):
+        _reject_cursor(params)
         # The skills are static package content; they change only with
         # a package upgrade
         return {'resources': self.skills.list(),

@@ -119,6 +119,17 @@ class EnvelopeTestCase(unittest.TestCase):
         self.assertEqual(error['data']['supported'],
                          [PROTOCOL_VERSION])
 
+    def test_list_rejects_a_cursor(self):
+        # The lists are never paginated, so any cursor is invalid
+        server = McpServer()
+        server.register_tool('status', 'Status', {'type': 'object'},
+                             lambda arguments: {'content': [],
+                                                'isError': False})
+        response = server.handle(make_request(
+                'tools/list', params={'cursor': 'eyJwYWdlIjoyfQ=='}))
+        self.assertEqual(response['error']['code'], rpc.INVALID_PARAMS)
+        self.assertIn('cursor', response['error']['data']['details'])
+
     def test_unknown_notification_ignored(self):
         server = McpServer()
         request = make_request('notifications/unknown')

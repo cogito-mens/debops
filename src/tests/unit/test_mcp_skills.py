@@ -188,6 +188,13 @@ class ServerResourcesTestCase(unittest.TestCase):
         self.assertEqual(contents[0]['text'], GOOD_SKILL)
         self.assertEqual(contents[0]['mimeType'], 'text/markdown')
 
+    def test_resources_list_rejects_a_cursor(self):
+        server = McpServer(skills=self.library)
+        response = server.handle({'jsonrpc': '2.0', '_meta': REQUEST_META,
+                                  'id': 1, 'method': 'resources/list',
+                                  'params': {'cursor': 'e30='}})
+        self.assertEqual(response['error']['code'], rpc.INVALID_PARAMS)
+
     def test_resources_read_unknown_uri(self):
         server = McpServer(skills=self.library)
         response = server.handle({'jsonrpc': '2.0', '_meta': REQUEST_META, 'id': 3,
