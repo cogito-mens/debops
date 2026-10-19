@@ -230,12 +230,19 @@ def _authorized_write_path(project, policy, relative):
     # opens 'ansible.cfg', which decides where Ansible loads code from
     if canonical_relative.startswith('.debops/'):
         parts = canonical_relative.split('/')
-        if len(parts) < 4 or parts[1:3] not in (['mcp', 'skills'],
-                                                ['mcp', 'prompts']):
-            raise ValueError('only the MCP content directories '
-                             '(.debops/mcp/skills/, '
-                             '.debops/mcp/prompts/) are writable: '
-                             + relative)
+        writable = ['.debops/mcp/skills/', '.debops/mcp/prompts/']
+        allowed = (len(parts) >= 4 and parts[1:3] in (['mcp', 'skills'],
+                                                      ['mcp', 'prompts']))
+        # Custom script tools are writable only when the policy enabled
+        # them; a tool is a single file directly in the directory
+        if policy.custom_tools:
+            writable.append('.debops/mcp/tools/')
+            if len(parts) == 4 and parts[1:3] == ['mcp', 'tools']:
+                allowed = True
+        if not allowed:
+            raise ValueError('only the MCP content directories ({}) '
+                             'are writable: {}'.format(
+                                 ', '.join(writable), relative))
     if os.path.basename(canonical_relative) == 'ansible.cfg':
         raise ValueError('path is denied by policy: ' + relative)
     if not any(fnmatch.fnmatch(canonical_relative, pattern)
@@ -280,9 +287,17 @@ def _validate_mcp_content(relative, content):
         meta = _parse_frontmatter_text(content)
         if not meta.get('description'):
             return 'the prompt has no description in the frontmatter'
+    elif kind == 'tools':
+        if len(parts) != 4:
+            return ('a custom tool is a single file directly in '
+                    '.debops/mcp/tools/: ' + relative)
+        if not SKILL_NAME_PATTERN.match(parts[3]):
+            return 'invalid tool name: ' + parts[3]
+        if not content.startswith('#!'):
+            return 'a custom tool must start with a shebang (#!/...)'
     else:
-        return 'unknown MCP content kind: {} (expected skills/ or ' \
-               'prompts/)'.format(kind)
+        return 'unknown MCP content kind: {} (expected skills/, ' \
+               'prompts/ or tools/)'.format(kind)
     return None
 
 
@@ -339,6 +354,12 @@ def tool_view_write(project, policy, arguments, server=None):
     invalid = _validate_mcp_content(view_relative, content)
     if invalid is not None:
         return error_result(invalid)
+
+    if (mode is None and content.startswith('#!')
+            and view_relative.startswith('.debops/mcp/tools/')
+            and view_relative.count('/') == 3):
+        # A custom script tool is only discovered when it is executable
+        mode = 0o755
 
     def announce():
         _announce_mcp_content_change(server, view_relative)
@@ -446,6 +467,11 @@ def _announce_mcp_content_change(server, view_relative):
             server.emit_resource_updated('skill://' + parts[3])
     elif parts[2] == 'prompts':
         server.emit_list_changed('prompts')
+    elif parts[2] == 'tools':
+        # A custom script tool appeared or went away; the reload
+        # announces a changed tool surface itself. The write lock is
+        # already held here, as the reload expects
+        server.reload()
 
 
 def tool_view_delete(project, policy, arguments, server=None):

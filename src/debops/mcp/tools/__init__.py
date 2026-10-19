@@ -15,6 +15,7 @@ from .collections import (COLLECTION_INDEX_TTL, galaxy_collection_list,
                           index_from_galaxy, restrict_content,
                           tool_collection_playbooks,
                           tool_collection_roles)
+from .custom import discover_custom_tools, make_custom_tool
 from .environment import (tool_environment_list, tool_environment_set,
                           tool_environment_unset)
 from .execute import tool_check, tool_run
@@ -939,6 +940,26 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
          True, False, True),
     ])
 
+    # Custom script tools: code on the controller, off by default,
+    # confirmed per call. The names join the confirm set so that the
+    # clients show the confirmation marker; the tools elicit
+    # themselves, so the generic gate stays out of the way
+    custom_names = set()
+    if policy is not None and policy.custom_tools:
+        for custom_name, (path, custom_description) in \
+                discover_custom_tools(project).items():
+            custom_names.add(custom_name)
+            tools.append((
+                custom_name,
+                custom_description or 'A custom tool of this project',
+                {'type': 'object'},
+                make_custom_tool(project, policy, custom_name, path,
+                                 enabled_check=enabled_check,
+                                 on_disabled=server.cancel_all),
+                True, True, False,
+                {'destructiveHint': True, 'idempotentHint': False,
+                 'openWorldHint': True}))
+
     # The overrides write tool injects content into read-only roles; it
     # is not registered unless the project enables it
     if policy is not None and policy.overrides:
@@ -974,12 +995,15 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
     # Tools the policy gates on user confirmation carry the marker and
     # say so in their description; an ungated tool never mentions it
     confirm = set(policy.confirm) if policy is not None else set()
+    confirm |= custom_names
 
     for entry in tools:
         name, description, schema, handler = entry[:4]
         needs_context = entry[4] if len(entry) > 4 else False
         self_confirms = entry[5] if len(entry) > 5 else False
         task_eligible = entry[6] if len(entry) > 6 else False
+        annotations = (entry[7] if len(entry) > 7
+                       else TOOL_ANNOTATIONS.get(name))
         handler = _wrap_resource_errors(handler)
         if name in READ_LOCKED_TOOLS:
             handler = _wrap_shared_lock(project, policy, handler)
@@ -993,6 +1017,6 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                  output_schema=TOOL_OUTPUT_SCHEMAS.get(
                                      name),
                                  needs_context=needs_context,
-                                 annotations=TOOL_ANNOTATIONS.get(name),
+                                 annotations=annotations,
                                  meta=meta, self_confirms=self_confirms,
                                  task_eligible=task_eligible)

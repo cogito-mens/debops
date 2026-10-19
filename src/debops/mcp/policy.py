@@ -223,6 +223,16 @@ class McpPolicy(object):
         if self.overrides:
             logger.notice('The overrides write tool enabled by policy')
 
+        # Custom script tools ('.debops/mcp/tools/') run code on the
+        # controller as the server's account; they are not registered
+        # unless the project enables them, and every call is confirmed
+        custom_tools = mcp_config.get('custom_tools', False)
+        if isinstance(custom_tools, str):
+            custom_tools = strtobool(custom_tools)
+        self.custom_tools = bool(custom_tools)
+        if self.custom_tools:
+            logger.notice('Custom script tools enabled by policy')
+
         # Free disk space the write operations require on the project's
         # filesystem; below this they refuse, because a git operation
         # which dies mid-write can leave a broken repository. An

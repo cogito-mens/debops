@@ -99,6 +99,12 @@ write_allow = ["resources/**", "playbooks/**", "ansible/playbooks/**",
 # next playbook execution; it is not registered unless enabled.
 overrides = false
 
+# Custom script tools from '.debops/mcp/tools/': executable scripts
+# which run as the server's account on the controller, with the
+# project as the working directory. They are not registered unless
+# enabled, and every call asks the user to confirm.
+custom_tools = false
+
 # The minimum interval between git synchronizations with the origin,
 # in seconds.
 sync_interval = 60

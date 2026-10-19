@@ -160,6 +160,53 @@ class ReadWriteLock(object):
 PROJECT_LOCK = ReadWriteLock()
 
 
+def confirmation_flow(context, message):
+    """The shared confirmation flow for self-confirming tools.
+
+    Returns True when confirmed (or the client cannot elicit — the
+    skip is logged), False when the user declined, and an
+    'input_required' result dict when the user must be asked first.
+    In a task the question is the task's outstanding input request,
+    answered via 'tasks/update'.
+    """
+    from ..server import _supports_form_elicitation
+    answers = context.input_responses or {}
+    if 'confirmation' in answers:
+        answer = answers.get('confirmation') or {}
+        content = answer.get('content') or {}
+        return (answer.get('action') == 'accept'
+                and content.get('confirmed') is True)
+    request = {
+        'method': 'elicitation/create',
+        'params': {
+            'mode': 'form',
+            'message': message,
+            'requestedSchema': {
+                'type': 'object',
+                'properties': {
+                    'confirmed': {
+                        'type': 'boolean',
+                        'title': 'Confirm',
+                        'description': 'I understand and want to '
+                        'proceed',
+                        'default': False}},
+                'required': ['confirmed'],
+            },
+        },
+    }
+    if context.task is not None:
+        answer = context.task.ask('confirmation', request)
+        content = answer.get('content') or {}
+        return (answer.get('action') == 'accept'
+                and content.get('confirmed') is True)
+    if not _supports_form_elicitation(context.client_capabilities):
+        logger.notice('Proceeding without user confirmation: the '
+                      'client cannot elicit')
+        return True
+    return {'resultType': 'input_required',
+            'inputRequests': {'confirmation': request}}
+
+
 class ProjectResourceError(RuntimeError):
     """An exclusive operation refused before it started (disk full)."""
 

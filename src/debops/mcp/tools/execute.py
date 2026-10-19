@@ -30,10 +30,10 @@ from ...ansible.inventory import AnsibleInventory
 from ...ansibleplaybookrunner import AnsiblePlaybookRunner
 from ...hooks import run_hooks
 from ..policy import EXECUTE_OPTIONS
-from ..server import RequestCancelled, _supports_form_elicitation
+from ..server import RequestCancelled
 from .playbooks import project_playbook_dirs
-from .common import (error_result, exclusive_project, mcp_environ,
-                     text_result)
+from .common import (confirmation_flow, error_result, exclusive_project,
+                     mcp_environ, text_result)
 
 logger = logging.getLogger(__name__)
 
@@ -86,72 +86,20 @@ def _check_local_confirmation(local, context):
     """Ask the user before a check run of a project-local playbook.
 
     Returns None to proceed, or the result to send back (the
-    elicitation request, or the refusal). In a task, the question is
-    the task's outstanding input request, answered via 'tasks/update'.
+    elicitation request, or the refusal).
     """
-    message = ('Run the project playbook {} in check mode? Its tasks '
-               'can execute commands on the managed hosts even in '
-               'check mode (check_mode).'.format(
-                   ', '.join('"{}"'.format(target) for target in local)))
-    if context.task is not None:
-        answer = context.task.ask('confirmation', {
-                'method': 'elicitation/create',
-                'params': {
-                    'mode': 'form',
-                    'message': message,
-                    'requestedSchema': {
-                        'type': 'object',
-                        'properties': {
-                            'confirmed': {
-                                'type': 'boolean',
-                                'title': 'Confirm',
-                                'description': 'I understand and want '
-                                'to proceed',
-                                'default': False}},
-                        'required': ['confirmed']}}})
-        content = answer.get('content') or {}
-        if (answer.get('action') == 'accept'
-                and content.get('confirmed') is True):
-            return None
-        logger.notice('The check of a project playbook was declined')
-        return error_result('the run was declined by the user')
-
-    answers = context.input_responses or {}
-    if 'confirmation' in answers:
-        answer = answers.get('confirmation') or {}
-        content = answer.get('content') or {}
-        if (answer.get('action') == 'accept'
-                and content.get('confirmed') is True):
-            return None
-        logger.notice('The check of a project playbook was declined')
-        return error_result('the run was declined by the user')
-    if not _supports_form_elicitation(context.client_capabilities):
-        # A client which cannot ask may not block the work; the skip
-        # is written to the audit log
-        logger.notice('Check of a project playbook runs without user '
-                      'confirmation: the client cannot elicit')
+    verdict = confirmation_flow(
+            context,
+            'Run the project playbook {} in check mode? Its tasks can '
+            'execute commands on the managed hosts even in check mode '
+            '(check_mode).'.format(
+                ', '.join('"{}"'.format(target) for target in local)))
+    if verdict is True:
         return None
-    return {'resultType': 'input_required',
-            'inputRequests': {
-                'confirmation': {
-                    'method': 'elicitation/create',
-                    'params': {
-                        'mode': 'form',
-                        'message': message,
-                        'requestedSchema': {
-                            'type': 'object',
-                            'properties': {
-                                'confirmed': {
-                                    'type': 'boolean',
-                                    'title': 'Confirm',
-                                    'description': 'I understand and '
-                                    'want to proceed',
-                                    'default': False}},
-                            'required': ['confirmed'],
-                        },
-                    },
-                },
-            }}
+    if verdict is False:
+        logger.notice('The check of a project playbook was declined')
+        return error_result('the run was declined by the user')
+    return verdict
 
 
 # Play and task headers in ansible-playbook output drive progress
@@ -256,16 +204,18 @@ def resolve_hosts(env, cwd, command, timeout=30):
 
 
 def run_cancellable(command, env, cwd, context, timeout, on_line=None,
-                    enabled_check=None, on_disabled=None):
+                    enabled_check=None, on_disabled=None, input_data=None):
     """Run a command with cancellation, a timeout and capped output.
 
     Returns (output, returncode, status) where status is one of 'done',
     'cancelled', 'timeout' or 'disabled'. Only the last
     EXECUTE_OUTPUT_LIMIT bytes of combined output are kept. on_line is
     called with each output line as it arrives (progress reporting).
+    'input_data' is written to the command's standard input.
     """
     process = subprocess.Popen(
             command, env=env, cwd=cwd,
+            stdin=(subprocess.PIPE if input_data is not None else None),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             universal_newlines=True, bufsize=1)
 
@@ -281,6 +231,14 @@ def run_cancellable(command, env, cwd, context, timeout, on_line=None,
 
     reader = threading.Thread(target=read_output, daemon=True)
     reader.start()
+
+    if input_data is not None:
+        try:
+            process.stdin.write(input_data)
+            process.stdin.close()
+        except (BrokenPipeError, OSError):
+            # The command exited without reading its input
+            pass
 
     deadline = time.monotonic() + timeout
     cancelled = False
