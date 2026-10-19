@@ -36,6 +36,7 @@ debops.egg-info/
 dist/
 build/
 src/debops/__version__.py
+ansible/collections/ansible_collections/debops/debops/galaxy.yml
 VERSION
 
 # C extensions

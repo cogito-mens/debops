@@ -42,6 +42,11 @@ spdx: test-spdx
 versions:       ## Check versions of upstream software
 versions: check-versions
 
+.PHONY: dev-version
+dev-version:    ## Stamp the generated version files from git describe
+dev-version:
+	@lib/ansible-galaxy/stamp-version
+
 .PHONY: docker
 docker:         ## Check Docker image build
 docker: test-docker-build
