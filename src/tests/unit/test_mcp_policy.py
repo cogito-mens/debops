@@ -221,8 +221,13 @@ class ConfirmationPolicyTestCase(unittest.TestCase):
         policy = self._policy({'confirm': 'run'})
         self.assertEqual(policy.confirm, {'run'})
 
-    def test_confirm_required_off_by_default(self):
-        self.assertFalse(self._policy({}).confirm_required)
+    def test_confirm_required_on_by_default(self):
+        # Security is the default; the proceed-anyway behavior is the
+        # deliberate opt-out for a trusted client which cannot elicit
+        self.assertTrue(self._policy({}).confirm_required)
+        self.assertFalse(
+                self._policy({'confirm_required': False})
+                .confirm_required)
 
     def test_confirm_required_string_value(self):
         policy = self._policy({'confirm_required': 'true'})

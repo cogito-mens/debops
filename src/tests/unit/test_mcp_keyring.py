@@ -304,15 +304,16 @@ class KeyringConfirmationTestCase(unittest.TestCase):
         self.assertTrue(result['isError'])
         self.assertIn('does not match', result['content'][0]['text'])
 
-    def test_client_without_elicitation_proceeds(self):
+    def test_client_without_elicitation_proceeds_when_opted_out(self):
+        # The proceed behavior is the deliberate opt-out
+        self.project.config.raw['project'] = {
+                'mcp': {'confirm_required': False}}
+        self.policy = McpPolicy(self.project)
         result = self.call(self.plain)
         self.assertFalse(result['isError'], result)
 
-    def test_confirm_required_refuses_a_client_which_cannot_elicit(
-            self):
-        self.project.config.raw['project'] = {
-                'mcp': {'confirm_required': True}}
-        self.policy = McpPolicy(self.project)
+    def test_client_without_elicitation_is_refused_by_default(self):
+        # confirm_required defaults on
         result = self.call(self.plain)
         self.assertTrue(result['isError'])
         self.assertIn('confirm_required', result['content'][0]['text'])

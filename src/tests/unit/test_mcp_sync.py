@@ -72,6 +72,10 @@ class SyncTestCase(unittest.TestCase):
         project.push = sync('push')
         self.project = project
 
+        # The confirmation gate is covered by the server tests; these
+        # exercise the sync mechanics with a client which cannot elicit
+        self.project.config.raw['project'] = {
+                'mcp': {'confirm_required': False}}
         self.policy = McpPolicy(self.project)
         self.server = McpServer(project=self.project, policy=self.policy)
         register_project_tools(

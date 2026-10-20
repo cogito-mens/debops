@@ -207,8 +207,14 @@ class CustomToolRunTestCase(unittest.TestCase):
         self.assertEqual(request['params']['mode'], 'form')
         self.assertIn('echo-args', request['params']['message'])
 
-    def test_a_client_without_elicitation_proceeds(self):
-        handler = self.make_tool()
+    def test_a_client_without_elicitation_proceeds_when_opted_out(self):
+        # The proceed behavior is the deliberate opt-out
+        self.project.config.raw['project']['mcp']['confirm_required'] = \
+            False
+        policy = McpPolicy(self.project)
+        path = write_tool(self.tools_dir, 'echo-args')
+        handler = make_custom_tool(self.project, policy, 'echo-args',
+                                   path)
         with self.assertLogs('debops.mcp.tools.common',
                              level='NOTICE') as recorded:
             result = handler({'a': 'b'}, self.context())
@@ -217,14 +223,10 @@ class CustomToolRunTestCase(unittest.TestCase):
                             for line in recorded.output),
                         recorded.output)
 
-    def test_confirm_required_refuses_a_client_which_cannot_elicit(
-            self):
-        self.project.config.raw['project']['mcp']['confirm_required'] = \
-            True
-        policy = McpPolicy(self.project)
-        path = write_tool(self.tools_dir, 'echo-args')
-        handler = make_custom_tool(self.project, policy, 'echo-args',
-                                   path)
+    def test_a_client_without_elicitation_is_refused_by_default(self):
+        # confirm_required defaults on: the client never asked, so the
+        # call is refused
+        handler = self.make_tool()
         result = handler({}, self.context())
         self.assertTrue(result['isError'])
         self.assertIn('confirm_required', result['content'][0]['text'])

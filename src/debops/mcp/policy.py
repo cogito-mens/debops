@@ -242,16 +242,17 @@ class McpPolicy(object):
         self.environment_deny = [str(entry)
                                  for entry in environment_deny or []]
 
-        # By default a client which cannot elicit gets confirm-gated
-        # operations anyway (logged in the journal); 'confirm_required'
-        # refuses them instead, for headless or untrusted clients
-        confirm_required = mcp_config.get('confirm_required', False)
+        # A client which cannot elicit is refused confirm-gated
+        # operations: security is the default, not an opt-in. Setting
+        # this false is the deliberate opt-out for a trusted client
+        # which cannot ask (the skip is logged)
+        confirm_required = mcp_config.get('confirm_required', True)
         if isinstance(confirm_required, str):
             confirm_required = strtobool(confirm_required)
         self.confirm_required = bool(confirm_required)
-        if self.confirm_required:
-            logger.notice('Confirmation is mandatory: clients which '
-                          'cannot elicit are refused by policy')
+        if not self.confirm_required:
+            logger.notice('Confirmation is optional by policy: clients '
+                          'which cannot elicit proceed anyway')
 
         # Free disk space the write operations require on the project's
         # filesystem; below this they refuse, because a git operation

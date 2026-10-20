@@ -53,6 +53,15 @@ REQUEST_META = {
 }
 
 
+def disable_confirm_gate(project_dir):
+    """Opt a test project out of the confirmation gate (on by default);
+    the gate itself is covered by the unit tests."""
+    confd = project_dir / ".debops" / "conf.d"
+    confd.mkdir(parents=True, exist_ok=True)
+    (confd / "mcp-test.toml").write_text(
+            "[project.mcp]\nconfirm_required = false\n")
+
+
 def make_discover_request(request_id=1):
     return json.dumps({
         "jsonrpc": "2.0", "id": request_id,
@@ -356,6 +365,7 @@ def test_check_tool_runs_a_playbook_in_check_mode(run_debops, mcp_env,
                                                   project_dir):
     if shutil.which("ansible-playbook") is None:
         pytest.skip("ansible-playbook is not installed")
+    disable_confirm_gate(project_dir)
 
     # A legacy project keeps its ansible.cfg in the project root
     (project_dir / "ansible.cfg").write_text(
@@ -397,6 +407,7 @@ def test_check_runs_multiple_playbooks_in_order(run_debops, mcp_env,
                                                 project_dir):
     if shutil.which("ansible-playbook") is None:
         pytest.skip("ansible-playbook is not installed")
+    disable_confirm_gate(project_dir)
 
     (project_dir / "ansible.cfg").write_text(
             "[defaults]\ninventory = ansible/inventory\n")
@@ -446,6 +457,7 @@ def test_write_check_run_loop_via_stdio(run_debops, mcp_env,
         pytest.skip("ansible-playbook is not installed")
     if shutil.which("git") is None:
         pytest.skip("git is not installed")
+    disable_confirm_gate(project_dir)
 
     # The write tools require a git-tracked project
     env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1",
@@ -1371,6 +1383,7 @@ def test_pull_refreshes_the_project_via_stdio(run_debops, mcp_env,
 def test_check_with_limit_resolves_hosts(run_debops, mcp_env, project_dir):
     if shutil.which("ansible-playbook") is None:
         pytest.skip("ansible-playbook is not installed")
+    disable_confirm_gate(project_dir)
 
     (project_dir / "ansible.cfg").write_text(
             "[defaults]\ninventory = ansible/inventory\n")
