@@ -418,7 +418,7 @@ class Interpreter(object):
             if policy.view_root is None:
                 logger.notice('No active infrastructure view (the '
                               'default view is unset or unknown); the '
-                              'view_list, view_switch and view_create '
+                              'view.list, view.switch and view.create '
                               'tools remain available')
             project_content = None
             prompts = None

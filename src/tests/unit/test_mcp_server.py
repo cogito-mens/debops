@@ -233,6 +233,42 @@ class ToolsTestCase(unittest.TestCase):
         self.assertEqual(response['error']['code'], rpc.INVALID_PARAMS)
         self.assertIn('nope', response['error']['data']['details'])
 
+    def test_alias_resolves_to_the_canonical_tool(self):
+        server = McpServer()
+        server.register_tool(
+                'run', 'Run it', {'type': 'object'},
+                lambda arguments: {'content': [{'type': 'text',
+                                                'text': 'ran'}],
+                                   'isError': False})
+        server.aliases['playbook.run'] = 'run'
+        response = server.handle(make_request(
+                'tools/call',
+                params={'name': 'playbook.run', 'arguments': {}}))
+        self.assertEqual(response['result']['content'][0]['text'],
+                         'ran')
+
+    def test_alias_is_never_listed(self):
+        server = McpServer()
+        server.register_tool(
+                'run', 'Run it', {'type': 'object'},
+                lambda arguments: {'content': [], 'isError': False})
+        server.aliases['playbook.run'] = 'run'
+        response = server.handle(make_request('tools/list'))
+        names = [tool['name'] for tool in response['result']['tools']]
+        self.assertEqual(names, ['run'])
+
+    def test_alias_without_the_canonical_is_an_unknown_tool(self):
+        # A dangling alias (the canonical tool is gated off) resolves
+        # to nothing
+        server = McpServer()
+        server.aliases['playbook.run'] = 'run'
+        response = server.handle(make_request(
+                'tools/call',
+                params={'name': 'playbook.run', 'arguments': {}}))
+        self.assertEqual(response['error']['code'], rpc.INVALID_PARAMS)
+        self.assertIn('unknown tool: playbook.run',
+                      response['error']['data']['details'])
+
     def test_registered_tool_listed_and_called(self):
         server = McpServer()
 

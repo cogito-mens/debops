@@ -40,14 +40,14 @@ Procedural knowledge, in Markdown.
 - The project skill **shadows** a packaged skill of the same name (the way
   project roles shadow collection roles).
 - Skills are validated at write time; an invalid `SKILL.md` is refused.
-- A write, a delete, or a `project_pull` which changes the skills announces
+- A write, a delete, or a `project.pull` which changes the skills announces
   it to subscribed clients (`resources/list_changed`, and
   `resources/updated` for the skill's URI).
 - Serving is gated by `project.mcp.project_content` (on by default).
 
 ## Writing skills with the write tools
 
-Skills live outside the infrastructure view, so `file_write` must be allowed
+Skills live outside the infrastructure view, so `file.write` must be allowed
 to reach them — by default it is not. The project administrator opts in:
 
 ```toml
@@ -60,7 +60,7 @@ write_allow = ["resources/**", "playbooks/**",
 Then, per skill file:
 
 ```
-file_write path=.debops/mcp/skills/my-skill/SKILL.md content="..."
+file.write path=.debops/mcp/skills/my-skill/SKILL.md content="..."
 ```
 
 Paths under `.debops/` are anchored at the project directory, in legacy and

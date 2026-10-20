@@ -79,9 +79,9 @@ def _confirmation_message(tool_name, arguments):
         if arguments.get('limit'):
             message += ' Limited to: {}.'.format(arguments['limit'])
         return message
-    if tool_name == 'project_push':
+    if tool_name == 'project.push':
         return ("Push the project's committed history to its git origin?")
-    if tool_name == 'collection_require':
+    if tool_name == 'collection.require':
         message = 'Install the Ansible Collection "{}"'.format(
                 arguments.get('name', '?'))
         if arguments.get('version'):
@@ -89,17 +89,17 @@ def _confirmation_message(tool_name, arguments):
         if arguments.get('source'):
             message += ' from {}'.format(arguments['source'])
         return message + ' into the project?'
-    if tool_name == 'collection_remove':
+    if tool_name == 'collection.remove':
         return 'Remove the Ansible Collection "{}" from the ' \
             'project?'.format(arguments.get('name', '?'))
-    if tool_name in ('environment_set', 'environment_unset'):
-        verb = 'Set' if tool_name == 'environment_set' else 'Unset'
+    if tool_name in ('environment.set', 'environment.unset'):
+        verb = 'Set' if tool_name == 'environment.set' else 'Unset'
         message = '{} the environment variable "{}"'.format(
                 verb, arguments.get('name', '?'))
         if arguments.get('secret'):
             return message + (' in the untracked tokens file (never '
                               'committed to git)?')
-        if tool_name == 'environment_set' and arguments.get('value'):
+        if tool_name == 'environment.set' and arguments.get('value'):
             return message + ' to "{}" in the tracked environment ' \
                 'file?'.format(arguments['value'])
         return message + ' in the tracked environment file?'
@@ -279,6 +279,9 @@ class McpServer(object):
         # The kill switch; None means always enabled
         self.killswitch = killswitch
         self.tools = {}
+        # Hidden aliases, answered by their canonical tools and never
+        # listed; the registration entry points fill them in
+        self.aliases = {}
         # Cancellation registry: request id -> cancel event, for the
         # requests currently being handled
         self._active_requests = {}
@@ -334,7 +337,7 @@ class McpServer(object):
 
         The rebuild closure (set by 'debops mcp serve') validates the
         view by constructing the project with it, rebuilds the policy
-        and swaps the tool surface in whole. Called by the view_switch
+        and swaps the tool surface in whole. Called by the view.switch
         tool with the exclusive project lock held.
         """
         if self._rebuild is None:
@@ -636,6 +639,14 @@ class McpServer(object):
     def _tools_call(self, params, context):
         name = params.get('name')
         tool = self.tools.get(name)
+        if tool is None and name in self.aliases:
+            # A hidden alias resolves to its canonical tool, quietly;
+            # the alias never appears in the tools list
+            canonical = self.aliases[name]
+            tool = self.tools.get(canonical)
+            if tool is not None:
+                logger.notice('Tool alias resolved: %s -> %s',
+                              name, canonical)
         if tool is None:
             logger.warning('Unknown tool requested: %s', name)
             raise rpc.JsonRpcError(

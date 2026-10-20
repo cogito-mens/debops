@@ -45,14 +45,14 @@ arguments are ignored.
 - A project prompt **shadows** a packaged prompt of the same name.
 - Prompts are validated at write time; a file without a frontmatter
   description is refused.
-- A write, a delete, or a `project_pull` which changes the prompts announces
+- A write, a delete, or a `project.pull` which changes the prompts announces
   it to subscribed clients (`prompts/list_changed`).
 - Serving is gated by `project.mcp.project_content` (on by default) and the
   `prompts` capability appears only when valid prompts exist.
 
 ## Writing prompts with the write tools
 
-Prompts live outside the infrastructure view, so `file_write` must be allowed
+Prompts live outside the infrastructure view, so `file.write` must be allowed
 to reach them — by default it is not. The project administrator opts in:
 
 ```toml
@@ -65,7 +65,7 @@ write_allow = ["resources/**", "playbooks/**",
 Then:
 
 ```
-file_write path=.debops/mcp/prompts/my-prompt.md content="..."
+file.write path=.debops/mcp/prompts/my-prompt.md content="..."
 ```
 
 Paths under `.debops/` are anchored at the project directory, in legacy and

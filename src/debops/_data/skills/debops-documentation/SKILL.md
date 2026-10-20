@@ -18,7 +18,7 @@ The URL scheme is `https://docs.debops.org/en/<slug>/...` where the slug is:
 - `stable-X.Y` — a release line, e.g. `stable-3.3`
 
 There is no plain `stable` slug; it does not resolve. Match the slug to the
-DebOps version in use — the `role_info` tool already produces documentation
+DebOps version in use — the `role.info` tool already produces documentation
 links with the right slug for the project's version.
 
 ## Entry points

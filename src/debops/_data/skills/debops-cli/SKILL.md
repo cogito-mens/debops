@@ -477,9 +477,9 @@ question above is about *that* install.
 ## The MCP server alternative
 
 When the DebOps MCP server (`debops mcp serve`) is connected, prefer its tools
-for inspection (`project_status`, `project_read`, `inventory_query`,
-`role_info`, `role_defaults`, `role_tasks`, `role_handlers`,
-`role_templates`, `role_files`, `playbooks`, `playbook_info`, `secret_paths`),
-sync the project with `project_pull` and share your changes with
-`project_push`, and use `check` before any `run`. The CLI knowledge in this
+for inspection (`project.status`, `project.read`, `inventory.query`,
+`role.info`, `role.defaults`, `role.tasks`, `role.handlers`,
+`role.templates`, `role.files`, `playbook.list`, `playbook.info`, `secret.paths`),
+sync the project with `project.pull` and share your changes with
+`project.push`, and use `check` before any `run`. The CLI knowledge in this
 skill still applies — the tools wrap the same semantics.

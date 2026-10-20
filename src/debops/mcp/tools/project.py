@@ -61,8 +61,8 @@ def tool_project_status(project, policy, arguments):
                 policy.view_root,
                 '' if view_root_present else ' (missing)'))
     else:
-        lines.append('View: none — list them with "view_list", '
-                     'activate one with "view_switch"')
+        lines.append('View: none — list them with "view.list", '
+                     'activate one with "view.switch"')
         lines.append('Views available: {}'.format(
                 ', '.join(views) if views else 'none registered'))
     lines.append('Inventory: {}'.format(inventory))

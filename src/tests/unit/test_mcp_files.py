@@ -101,10 +101,10 @@ class FilesTestCase(unittest.TestCase):
     def result_text(self, response):
         return response['result']['content'][0]['text']
 
-    # -- project_files ---------------------------------------------------
+    # -- project.files ---------------------------------------------------
 
     def test_project_files(self):
-        text = self.result_text(self.call_tool('project_files'))
+        text = self.result_text(self.call_tool('project.files'))
         self.assertIn('ansible/inventory/hosts', text)
         self.assertIn('ansible/inventory/group_vars/all/ferm.yml', text)
         self.assertIn('.debops/conf.d/project.yml', text)
@@ -115,51 +115,51 @@ class FilesTestCase(unittest.TestCase):
 
     def test_project_files_subdir_and_filter(self):
         text = self.result_text(self.call_tool(
-                'project_files', {'path': 'ansible/inventory',
+                'project.files', {'path': 'ansible/inventory',
                                   'filter': 'ferm'}))
         self.assertIn('group_vars/all/ferm.yml', text)
         self.assertNotIn('hosts', text)
 
     def test_project_files_rejects_traversal(self):
-        response = self.call_tool('project_files', {'path': '../..'})
+        response = self.call_tool('project.files', {'path': '../..'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('escapes its allowed directory',
                       self.result_text(response))
 
-    # -- project_read ------------------------------------------------------
+    # -- project.read ------------------------------------------------------
 
     def test_project_read(self):
         text = self.result_text(self.call_tool(
-                'project_read',
+                'project.read',
                 {'path': 'ansible/inventory/group_vars/all/ferm.yml'}))
         self.assertIn('ferm__enabled: True', text)
 
     def test_project_read_rejects_traversal(self):
-        response = self.call_tool('project_read', {'path': '../../../etc'})
+        response = self.call_tool('project.read', {'path': '../../../etc'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('escapes its allowed directory',
                       self.result_text(response))
 
     def test_project_read_denies_secrets(self):
-        response = self.call_tool('project_read',
+        response = self.call_tool('project.read',
                                   {'path': 'ansible/secret/passwords.yml'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('denied', self.result_text(response))
 
     def test_project_read_denies_git_metadata(self):
-        response = self.call_tool('project_read',
+        response = self.call_tool('project.read',
                                   {'path': '.git/git-crypt/keys/key.gpg'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('denied by policy', self.result_text(response))
 
     def test_project_read_rejects_binary_files(self):
-        response = self.call_tool('project_read',
+        response = self.call_tool('project.read',
                                   {'path': 'ansible/inventory/blob.bin'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('UTF-8', self.result_text(response))
 
     def test_project_read_missing_file(self):
-        response = self.call_tool('project_read',
+        response = self.call_tool('project.read',
                                   {'path': 'nosuch.yml'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('file not found', self.result_text(response))
@@ -174,38 +174,38 @@ class FilesTestCase(unittest.TestCase):
                                collection_index_provider=lambda: {})
         response = server.handle({
                 'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                'params': {'_meta': REQUEST_META, 'name': 'project_read',
+                'params': {'_meta': REQUEST_META, 'name': 'project.read',
                            'arguments': {'path': 'ansible/playbooks/'
                                          'custom.yml'}}})
         self.assertTrue(response['result']['isError'])
         self.assertIn('denied', response['result']['content'][0]['text'])
 
-    # -- config_get ---------------------------------------------------------
+    # -- config.get ---------------------------------------------------------
 
     def test_config_get(self):
-        text = self.result_text(self.call_tool('config_get',
+        text = self.result_text(self.call_tool('config.get',
                                                {'key': 'syslog.level'}))
         self.assertIn('warning', text)
 
     def test_config_get_subtree(self):
-        text = self.result_text(self.call_tool('config_get',
+        text = self.result_text(self.call_tool('config.get',
                                                {'key': 'project'}))
         self.assertIn('name: project', text)
 
     def test_config_get_missing_key(self):
-        response = self.call_tool('config_get', {'key': 'nosuch.key'})
+        response = self.call_tool('config.get', {'key': 'nosuch.key'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('configuration key not found',
                       self.result_text(response))
 
     def test_config_get_refuses_secret_named_keys(self):
         # The configuration tree is not for secrets
-        response = self.call_tool('config_get', {'key': 'myapp.api_token'})
+        response = self.call_tool('config.get', {'key': 'myapp.api_token'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('secret', response['result']['content'][0]['text'])
 
     def test_config_get_withholds_them_in_a_subtree(self):
-        response = self.call_tool('config_get', {'key': 'myapp'})
+        response = self.call_tool('config.get', {'key': 'myapp'})
         self.assertFalse(response['result']['isError'], response)
         text = response['result']['content'][0]['text']
         self.assertNotIn('s3cr3t', text)
@@ -220,10 +220,10 @@ class FilesTestCase(unittest.TestCase):
         # neither holds a secret
         for key in ('ansible.defaults.vault_password_file',
                     'ansible.defaults.become_ask_pass'):
-            response = self.call_tool('config_get', {'key': key})
+            response = self.call_tool('config.get', {'key': key})
             self.assertFalse(response['result']['isError'], key)
 
-    # -- inventory_query ----------------------------------------------------
+    # -- inventory.query ----------------------------------------------------
 
     def test_inventory_query_graph(self):
         with mock.patch('debops.mcp.tools.files.subprocess.run') as run:
@@ -231,19 +231,19 @@ class FilesTestCase(unittest.TestCase):
                     args=[], returncode=0,
                     stdout='@all:\n  |--@testgroup:\n  |  |--testhost\n',
                     stderr='')
-            response = self.call_tool('inventory_query',
+            response = self.call_tool('inventory.query',
                                       {'action': 'graph'})
         command = run.call_args[0][0]
         self.assertEqual(command[:2], ['ansible-inventory', '--graph'])
         self.assertIn('@testgroup', self.result_text(response))
 
     def test_inventory_query_host_requires_a_host(self):
-        response = self.call_tool('inventory_query', {'action': 'host'})
+        response = self.call_tool('inventory.query', {'action': 'host'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('must be a host name', self.result_text(response))
 
     def test_inventory_query_host_rejects_option_injection(self):
-        response = self.call_tool('inventory_query',
+        response = self.call_tool('inventory.query',
                                   {'action': 'host', 'host': '--list'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('must be a host name', self.result_text(response))
@@ -253,7 +253,7 @@ class FilesTestCase(unittest.TestCase):
             run.return_value = subprocess.CompletedProcess(
                     args=[], returncode=1, stdout='',
                     stderr='ERROR! the inventory could not be parsed')
-            response = self.call_tool('inventory_query',
+            response = self.call_tool('inventory.query',
                                       {'action': 'graph'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('could not be parsed', self.result_text(response))
@@ -263,7 +263,7 @@ class FilesTestCase(unittest.TestCase):
             run.return_value = subprocess.CompletedProcess(
                     args=[], returncode=0,
                     stdout='x' * (128 * 1024), stderr='')
-            response = self.call_tool('inventory_query',
+            response = self.call_tool('inventory.query',
                                       {'action': 'list'})
         self.assertIn('truncated', self.result_text(response))
 

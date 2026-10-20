@@ -86,35 +86,35 @@ class ToolAccessTestCase(unittest.TestCase):
 
     def test_all_tools_allowed_by_default(self):
         policy = McpPolicy(FakeProject('/srv/projects/example'))
-        self.assertTrue(policy.is_tool_allowed('role_info'))
+        self.assertTrue(policy.is_tool_allowed('role.info'))
         self.assertTrue(policy.is_tool_allowed('anything'))
 
     def test_deny_list(self):
         policy = McpPolicy(FakeProject(
                 '/srv/projects/example',
-                raw_config={'project': {'mcp': {'deny': ['role_info']}}}))
-        self.assertFalse(policy.is_tool_allowed('role_info'))
-        self.assertTrue(policy.is_tool_allowed('role_variables'))
+                raw_config={'project': {'mcp': {'deny': ['role.info']}}}))
+        self.assertFalse(policy.is_tool_allowed('role.info'))
+        self.assertTrue(policy.is_tool_allowed('role.variables'))
 
     def test_allow_list_restricts(self):
         policy = McpPolicy(FakeProject(
                 '/srv/projects/example',
-                raw_config={'project': {'mcp': {'allow': ['role_info']}}}))
-        self.assertTrue(policy.is_tool_allowed('role_info'))
-        self.assertFalse(policy.is_tool_allowed('role_variables'))
+                raw_config={'project': {'mcp': {'allow': ['role.info']}}}))
+        self.assertTrue(policy.is_tool_allowed('role.info'))
+        self.assertFalse(policy.is_tool_allowed('role.variables'))
 
     def test_deny_wins_over_allow(self):
         policy = McpPolicy(FakeProject(
                 '/srv/projects/example',
-                raw_config={'project': {'mcp': {'allow': ['role_info'],
-                                                'deny': ['role_info']}}}))
-        self.assertFalse(policy.is_tool_allowed('role_info'))
+                raw_config={'project': {'mcp': {'allow': ['role.info'],
+                                                'deny': ['role.info']}}}))
+        self.assertFalse(policy.is_tool_allowed('role.info'))
 
     def test_misshapen_configuration_tolerated(self):
         policy = McpPolicy(FakeProject(
                 '/srv/projects/example',
                 raw_config={'project': {'mcp': 'bogus'}}))
-        self.assertTrue(policy.is_tool_allowed('role_info'))
+        self.assertTrue(policy.is_tool_allowed('role.info'))
 
 
 class ResourcePolicyTestCase(unittest.TestCase):
@@ -213,10 +213,10 @@ class ConfirmationPolicyTestCase(unittest.TestCase):
     def test_default_confirmations(self):
         policy = self._policy({})
         self.assertEqual(policy.confirm,
-                         {'run', 'check', 'project_push',
-                          'keyring_fetch', 'environment_set',
-                          'environment_unset', 'collection_require',
-                          'collection_remove'})
+                         {'run', 'check', 'project.push',
+                          'keyring.fetch', 'environment.set',
+                          'environment.unset', 'collection.require',
+                          'collection.remove'})
 
     def test_confirm_list_overrides(self):
         policy = self._policy({'confirm': ['run']})

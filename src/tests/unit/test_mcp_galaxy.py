@@ -277,7 +277,7 @@ class CollectionToolsTestCase(unittest.TestCase):
         self.assertIn("- name: 'community.crypto'", text)
         self.assertIn('# A comment header', text)
         self.assertEqual(self.commits,
-                         ['DebOps MCP: collection_require '
+                         ['DebOps MCP: collection.require '
                           'community.crypto'])
 
     def test_require_with_a_git_source(self):
@@ -313,9 +313,9 @@ class CollectionToolsTestCase(unittest.TestCase):
         self.assertTrue(result['isError'])
         self.assertIn('installation failed',
                       result['content'][0]['text'])
-        self.assertIn('collection_sync', result['content'][0]['text'])
+        self.assertIn('collection.sync', result['content'][0]['text'])
         self.assertEqual(self.commits,
-                         ['DebOps MCP: collection_require '
+                         ['DebOps MCP: collection.require '
                           'community.crypto'])
 
     def test_require_validates_the_name(self):
@@ -364,7 +364,7 @@ class CollectionToolsTestCase(unittest.TestCase):
                                'requirements.lock.yml')) as fp:
             self.assertNotIn('community.docker', fp.read())
         self.assertEqual(self.commits,
-                         ['DebOps MCP: collection_remove '
+                         ['DebOps MCP: collection.remove '
                           'community.docker'])
 
     def test_remove_absent_is_unchanged(self):
@@ -398,7 +398,7 @@ class CollectionToolsTestCase(unittest.TestCase):
             TASKS_EXTENSION
         server = McpServer()
         server.register_tool(
-                'collection_sync', 'Sync', {'type': 'object'},
+                'collection.sync', 'Sync', {'type': 'object'},
                 lambda arguments, context: tool_collection_sync(
                         self.project, self.policy, arguments, context),
                 needs_context=True, task_eligible=True)
@@ -412,7 +412,7 @@ class CollectionToolsTestCase(unittest.TestCase):
                     'jsonrpc': '2.0', 'id': 1,
                     'method': 'tools/call',
                     'params': {'_meta': meta,
-                               'name': 'collection_sync',
+                               'name': 'collection.sync',
                                'arguments': {}}})
             result = response['result']
             self.assertEqual(result['resultType'], 'task')

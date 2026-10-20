@@ -2,7 +2,7 @@
 # Copyright (C) 2026 DebOps <https://debops.org/>
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""The 'keyring_fetch' tool: fetch a GPG key into the project keyring.
+"""The 'keyring.fetch' tool: fetch a GPG key into the project keyring.
 
 The keyring holds trust anchors for third-party software (APT
 repositories, signed data), so the agent names a source and an expected
@@ -92,7 +92,7 @@ def _fetch_url(url, sources):
     like the initial URL."""
     _check_fetch_hop(url, sources)
     request = urllib.request.Request(
-            url, headers={'User-Agent': 'debops-mcp keyring_fetch'})
+            url, headers={'User-Agent': 'debops-mcp keyring.fetch'})
     opener = urllib.request.build_opener(_CheckedRedirectHandler(sources))
     try:
         with opener.open(request, timeout=FETCH_TIMEOUT) as response:
@@ -240,12 +240,12 @@ def tool_keyring_fetch(project, policy, arguments, context):
 
     # The confirmation carries the server-computed fingerprint, so the
     # user confirms verified data instead of the model's claims
-    if policy is not None and 'keyring_fetch' in policy.confirm:
+    if policy is not None and 'keyring.fetch' in policy.confirm:
         answers = context.input_responses or {}
         if 'confirmation' not in answers:
             if not _supports_form_elicitation(context.client_capabilities):
                 if policy.confirm_required:
-                    logger.notice('keyring_fetch refused: the client '
+                    logger.notice('keyring.fetch refused: the client '
                                   'cannot elicit and the policy '
                                   'requires confirmation')
                     return error_result(
@@ -253,7 +253,7 @@ def tool_keyring_fetch(project, policy, arguments, context):
                             'which this client cannot provide (no form '
                             'elicitation); refused by the project '
                             'policy (project.mcp.confirm_required)')
-                logger.notice('keyring_fetch runs without user '
+                logger.notice('keyring.fetch runs without user '
                               'confirmation: the client cannot elicit')
             else:
                 return {'resultType': 'input_required',
@@ -294,12 +294,12 @@ def tool_keyring_fetch(project, policy, arguments, context):
     filename = '0x{}.asc'.format(fingerprint)
     path = confine_under(_keyring_dir(project), filename)
     with exclusive_project(project, policy,
-                           note='keyring_fetch ' + filename):
+                           note='keyring.fetch ' + filename):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w') as fp:
             fp.write(armored)
-        # The commit is part of the tool's contract, as for file_write
-        project.commit(message='DebOps MCP: keyring_fetch ' + filename)
+        # The commit is part of the tool's contract, as for file.write
+        project.commit(message='DebOps MCP: keyring.fetch ' + filename)
 
     lines = ['# Key fetched into the keyring', '',
              'fingerprint: {}'.format(format_fingerprint(fingerprint)),

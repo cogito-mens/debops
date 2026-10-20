@@ -44,14 +44,14 @@ execute_diff = false
 #ansible_hosts = []
 #execute_hosts = []
 
-# Whether the ad-hoc host tools (ansible_facts, ansible_ping) escalate
+# Whether the ad-hoc host tools (ansible.facts, ansible.ping) escalate
 # privileges on the remote host by default. The DebOps local facts read
 # package and file state, which needs root; without it they degrade to
 # false negatives. Playbook runs are not affected (roles escalate in
 # their own tasks). The per-call 'become' argument overrides this.
 become = false
 
-# Pin the active infrastructure view: the view_switch tool is refused.
+# Pin the active infrastructure view: the view.switch tool is refused.
 # The same pinning is available per server process with the serve
 # '--view-lock' option; the two combine. The change is global — all
 # connected clients share the active view either way.
@@ -60,9 +60,9 @@ become = false
 # Tools which ask the user for confirmation before they run, on clients
 # which support it. The confirmation is a courtesy, not a security
 # boundary; the 'execute' option above is the boundary.
-confirm = ["run", "check", "project_push", "keyring_fetch",
-           "environment_set", "environment_unset",
-           "collection_require", "collection_remove"]
+confirm = ["run", "check", "project.push", "keyring.fetch",
+           "environment.set", "environment.unset",
+           "collection.require", "collection.remove"]
 
 # Whether playbooks living in the project itself may run with the
 # 'check' and 'run' tools. They are agent-writable content: a playbook
@@ -75,11 +75,11 @@ local_playbooks = true
 # The server's environment for tool runs comes from
 # '.debops/mcp/environment' (plain variables, tracked) and
 # '.debops/mcp/.env' (tokens, never committed; 0600). The agent sets
-# them with the 'environment_set'/'environment_unset' tools, with
+# them with the 'environment.set'/'environment.unset' tools, with
 # confirmation per entry (see the 'confirm' option above).
 
-# Ansible Collections are managed with the 'collection_require' /
-# 'collection_remove' / 'collection_sync' tools, which edit
+# Ansible Collections are managed with the 'collection.require' /
+# 'collection.remove' / 'collection.sync' tools, which edit
 # 'ansible/collections/requirements.yml' and install into
 # 'ansible/collections/' (never outside of the project). Requiring and
 # removing are confirmed by default; synchronizing the committed state
@@ -92,8 +92,8 @@ local_playbooks = true
 # tool above.
 keyring_sources = ["keyserver.ubuntu.com", "keybase.io"]
 
-# The paths the write tools ('file_write', 'file_delete',
-# 'inventory_spec') may touch, as fnmatch globs. The default covers
+# The paths the write tools ('file.write', 'file.delete',
+# 'inventory.spec') may touch, as fnmatch globs. The default covers
 # every location the playbook runner resolves: the view's playbooks
 # and resources, the shared 'ansible/playbooks/' (including the loose
 # roles in its 'roles/'), and the project-root 'playbooks/' of
@@ -113,7 +113,7 @@ write_allow = ["resources/**", "playbooks/**", "ansible/playbooks/**",
 # all, so no pattern can open the configuration, the hooks or the
 # environment; 'ansible.cfg' is never writable either.
 
-# The 'overrides_write' tool injects files, templates and tasks into
+# The 'overrides.write' tool injects files, templates and tasks into
 # read-only roles (ansible/overrides/), run on the managed hosts at the
 # next playbook execution; it is not registered unless enabled.
 overrides = false
@@ -124,7 +124,7 @@ overrides = false
 # enabled, and every call asks the user to confirm.
 custom_tools = false
 
-# Additional variable names which environment_set refuses to set, on
+# Additional variable names which environment.set refuses to set, on
 # top of the built-in list (PATH, LD_*, PYTHON*, the Ansible code
 # paths), which always applies.
 #environment_deny = []

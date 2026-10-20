@@ -2,7 +2,7 @@
 # Copyright (C) 2026 DebOps <https://debops.org/>
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""The 'overrides_write' tool: write into the project's overrides.
+"""The 'overrides.write' tool: write into the project's overrides.
 
 The 'ansible/overrides/' directory injects alternative files, templates
 and additional tasks into read-only roles via the '*_src' lookups; the
@@ -57,4 +57,4 @@ def tool_overrides_write(project, policy, arguments):
 
     return _write_committed(
             project, policy, path, 'ansible/overrides/' + relative,
-            content, mode, 'overrides_write ' + relative)
+            content, mode, 'overrides.write ' + relative)

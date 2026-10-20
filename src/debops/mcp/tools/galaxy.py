@@ -4,10 +4,10 @@
 
 """Manage the project's Ansible Collections.
 
-'collection_require' adds or updates an entry in the project
+'collection.require' adds or updates an entry in the project
 requirements file ('ansible/collections/requirements.yml') and installs
-the collections; 'collection_remove' removes an entry together with the
-installed content (which ansible-galaxy cannot do); 'collection_sync'
+the collections; 'collection.remove' removes an entry together with the
+installed content (which ansible-galaxy cannot do); 'collection.sync'
 installs the committed state, for example after a pull. All three
 commit their changes to git with provenance.
 """
@@ -216,7 +216,7 @@ def tool_collection_require(project, policy, arguments, context,
 
     requirements = _requirements_path(project)
     with exclusive_project(project, policy,
-                           note='collection_require ' + name):
+                           note='collection.require ' + name):
         try:
             if os.path.isfile(requirements):
                 text = _read_text(requirements)
@@ -244,7 +244,7 @@ def tool_collection_require(project, policy, arguments, context,
         # The requirements entry is the intended state; it is committed
         # even when the install fails, and the failure is reported
         commit_error = commit_or_report(
-                project, 'collection_require ' + name,
+                project, 'collection.require ' + name,
                 'the requirement was written')
         if commit_error is not None:
             return commit_error
@@ -252,7 +252,7 @@ def tool_collection_require(project, policy, arguments, context,
     if install_error is not None:
         return error_result('the requirement was written and committed, '
                             'but the installation failed: {} (retry with '
-                            'collection_sync)'.format(install_error))
+                            'collection.sync)'.format(install_error))
     tail = output.strip()[-_OUTPUT_TAIL:]
     lines = ['# Collection required: {}'.format(name), '',
              'The requirements file and the installation are committed.']
@@ -273,7 +273,7 @@ def tool_collection_remove(project, policy, arguments):
 
     removed = []
     with exclusive_project(project, policy,
-                           note='collection_remove ' + name):
+                           note='collection.remove ' + name):
         for path in (_requirements_path(project), _lock_path(project)):
             if not os.path.isfile(path):
                 continue
@@ -306,7 +306,7 @@ def tool_collection_remove(project, policy, arguments):
             return text_result('unchanged: {} is not required nor '
                                'installed\n'.format(name))
         commit_error = commit_or_report(
-                project, 'collection_remove ' + name,
+                project, 'collection.remove ' + name,
                 'the collection was removed')
         if commit_error is not None:
             return commit_error
@@ -319,7 +319,7 @@ def tool_collection_remove(project, policy, arguments):
 def tool_collection_sync(project, policy, arguments, context,
                          enabled_check=None, on_disabled=None):
     """Install the committed collection requirements."""
-    with exclusive_project(project, policy, note='collection_sync'):
+    with exclusive_project(project, policy, note='collection.sync'):
         try:
             output = _galaxy_install(
                     project, context, enabled_check=enabled_check,

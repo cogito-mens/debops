@@ -481,7 +481,7 @@ Commands:
                                  'are served, read-only')
         parser.add_argument('--view-lock', action='store_true',
                             help='pin the active infrastructure view: '
-                                 'the view_switch tool is refused (same '
+                                 'the view.switch tool is refused (same '
                                  'as project.mcp.view_lock in the '
                                  'project configuration)')
         parser.add_argument('--instance', type=str, metavar='NAME',

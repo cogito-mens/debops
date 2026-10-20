@@ -81,7 +81,7 @@ class SecretPathsTestCase(unittest.TestCase):
             inv.return_value.unlock.return_value = unlocked
             return self.server.handle({
                 'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                'params': {'_meta': REQUEST_META, 'name': 'secret_paths',
+                'params': {'_meta': REQUEST_META, 'name': 'secret.paths',
                            'arguments': arguments or {}}}), inv
 
     def result_text(self, response):
@@ -109,7 +109,7 @@ class SecretPathsTestCase(unittest.TestCase):
         structured = result['structuredContent']
         self.assertEqual(check_schema(structured,
                                       TOOL_OUTPUT_SCHEMAS
-                                      ['secret_paths']), [])
+                                      ['secret.paths']), [])
         self.assertIn('credentials/hostname/root_account/password',
                       structured)
 
@@ -152,7 +152,7 @@ class SecretPathsTestCase(unittest.TestCase):
                     'git working directory not clean')
             response = self.server.handle({
                 'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                'params': {'_meta': REQUEST_META, 'name': 'secret_paths',
+                'params': {'_meta': REQUEST_META, 'name': 'secret.paths',
                            'arguments': {}}})
             self.assertTrue(response['result']['isError'])
             self.assertIn('cannot unlock', self.result_text(response))
@@ -177,14 +177,14 @@ class SecretPathsTestCase(unittest.TestCase):
 
     def test_deny_list_removes_the_tool(self):
         self.project.config.raw['project'] = {'mcp': {'deny':
-                                                      ['secret_paths']}}
+                                                      ['secret.paths']}}
         server = McpServer(project=self.project,
                            policy=McpPolicy(self.project))
         register_project_tools(
                 server, roles_path=self.tmpdir,
                 playbooks_path=self.tmpdir,
                 collection_index_provider=lambda: {})
-        self.assertNotIn('secret_paths', server.tools)
+        self.assertNotIn('secret.paths', server.tools)
 
 
 class NoSecretsTestCase(unittest.TestCase):
@@ -204,7 +204,7 @@ class NoSecretsTestCase(unittest.TestCase):
                                collection_index_provider=lambda: {})
         response = server.handle({
                 'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                'params': {'_meta': REQUEST_META, 'name': 'secret_paths',
+                'params': {'_meta': REQUEST_META, 'name': 'secret.paths',
                            'arguments': {}}})
         self.assertIn('no secrets directory',
                       response['result']['content'][0]['text'])

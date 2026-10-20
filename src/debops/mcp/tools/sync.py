@@ -55,7 +55,7 @@ def render_sync_report(report):
 
 
 def make_sync_tool(project, policy, sync_state, direction, server=None):
-    """Build the 'project_pull' / 'project_push' tool handler."""
+    """Build the 'project.pull' / 'project.push' tool handler."""
     def tool(arguments):
         interval = policy.sync_interval if policy is not None else 60
         # The throttle check and the mark must be atomic with the sync,

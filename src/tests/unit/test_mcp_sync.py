@@ -95,7 +95,7 @@ class SyncTestCase(unittest.TestCase):
         return response['result']['content'][0]['text']
 
     def test_pull_reports_changes(self):
-        response = self.call_tool('project_pull')
+        response = self.call_tool('project.pull')
         text = self.result_text(response)
         self.assertFalse(response['result']['isError'])
         self.assertIn('files changed: 3', text)
@@ -109,13 +109,13 @@ class SyncTestCase(unittest.TestCase):
         from debops.mcp.tools import TOOL_OUTPUT_SCHEMAS
         self.assertEqual(check_schema(structured,
                                       TOOL_OUTPUT_SCHEMAS
-                                      ['project_pull']), [])
+                                      ['project.pull']), [])
 
     def test_changed_pull_refreshes_the_project(self):
         # The refresh runs on a fresh ProjectDir which reads the
         # configuration as just pulled
         with mock.patch('debops.mcp.tools.sync.ProjectDir') as fresh:
-            text = self.result_text(self.call_tool('project_pull'))
+            text = self.result_text(self.call_tool('project.pull'))
         fresh.return_value.refresh.assert_called_once()
         self.assertEqual(fresh.call_args[1]['path'], self.tmpdir)
         self.assertIn('project refreshed', text)
@@ -123,7 +123,7 @@ class SyncTestCase(unittest.TestCase):
     def test_unchanged_pull_does_not_refresh(self):
         self.reports['pull'] = PULL_CLEAN
         with mock.patch('debops.mcp.tools.sync.ProjectDir') as fresh:
-            text = self.result_text(self.call_tool('project_pull'))
+            text = self.result_text(self.call_tool('project.pull'))
         self.assertIn('Already up to date', text)
         fresh.return_value.refresh.assert_not_called()
 
@@ -131,7 +131,7 @@ class SyncTestCase(unittest.TestCase):
         with mock.patch('debops.mcp.tools.sync.ProjectDir') as fresh:
             fresh.return_value.refresh.side_effect = \
                 RuntimeError('no ansible.cfg for you')
-            response = self.call_tool('project_pull')
+            response = self.call_tool('project.pull')
         text = self.result_text(response)
         self.assertFalse(response['result']['isError'])
         self.assertIn('files changed: 3', text)
@@ -139,14 +139,14 @@ class SyncTestCase(unittest.TestCase):
 
     def test_push_never_refreshes(self):
         with mock.patch('debops.mcp.tools.sync.ProjectDir') as fresh:
-            self.result_text(self.call_tool('project_push'))
+            self.result_text(self.call_tool('project.push'))
         fresh.return_value.refresh.assert_not_called()
 
     def test_changed_pull_announces_content_changes(self):
         # New skills or prompts may have arrived by git
         with mock.patch.object(self.server,
                                'announce_content_changes') as announce:
-            self.call_tool('project_pull')
+            self.call_tool('project.pull')
         announce.assert_called_once()
         (before,), _kwargs = announce.call_args
         self.assertEqual(sorted(before), ['prompts', 'skills'])
@@ -155,57 +155,57 @@ class SyncTestCase(unittest.TestCase):
         self.reports['pull'] = PULL_CLEAN
         with mock.patch.object(self.server,
                                'announce_content_changes') as announce:
-            self.call_tool('project_pull')
+            self.call_tool('project.pull')
         announce.assert_not_called()
 
     def test_changed_pull_reloads_the_policy(self):
         with mock.patch.object(self.server, 'reload') as reload_:
-            self.call_tool('project_pull')
+            self.call_tool('project.pull')
         reload_.assert_called_once()
 
     def test_unchanged_pull_does_not_reload(self):
         self.reports['pull'] = PULL_CLEAN
         with mock.patch.object(self.server, 'reload') as reload_:
-            self.call_tool('project_pull')
+            self.call_tool('project.pull')
         reload_.assert_not_called()
 
     def test_pull_up_to_date(self):
         self.reports['pull'] = PULL_CLEAN
-        text = self.result_text(self.call_tool('project_pull'))
+        text = self.result_text(self.call_tool('project.pull'))
         self.assertIn('Already up to date', text)
 
     def test_push_reports_commits(self):
-        text = self.result_text(self.call_tool('project_push'))
+        text = self.result_text(self.call_tool('project.push'))
         self.assertIn('pushed 1 commit(s)', text)
         self.assertIn('Add a thing', text)
 
     def test_push_nothing_to_push(self):
         self.reports['push'] = PUSH_CLEAN
-        text = self.result_text(self.call_tool('project_push'))
+        text = self.result_text(self.call_tool('project.push'))
         self.assertIn('Nothing to push', text)
 
     def test_second_call_is_throttled(self):
-        self.call_tool('project_pull')
-        response = self.call_tool('project_pull')
+        self.call_tool('project.pull')
+        response = self.call_tool('project.pull')
         self.assertTrue(response['result']['isError'])
         self.assertIn('retry in', self.result_text(response))
 
     def test_throttle_is_per_direction(self):
-        self.call_tool('project_pull')
+        self.call_tool('project.pull')
         # Push is still allowed while pull is throttled
-        response = self.call_tool('project_push')
+        response = self.call_tool('project.push')
         self.assertFalse(response['result']['isError'])
 
     def test_errors_pass_through(self):
         self.fail_with = ValueError('the project has no origin')
-        response = self.call_tool('project_pull')
+        response = self.call_tool('project.pull')
         self.assertTrue(response['result']['isError'])
         self.assertIn('no origin', self.result_text(response))
 
     def test_project_without_git_is_an_error_result(self):
         self.fail_with = ValueError('the project directory is not a git '
                                     'repository')
-        for name in ('project_pull', 'project_push'):
+        for name in ('project.pull', 'project.push'):
             response = self.call_tool(name)
             self.assertTrue(response['result']['isError'], name)
             self.assertIn('not a git repository',
@@ -213,15 +213,15 @@ class SyncTestCase(unittest.TestCase):
 
     def test_push_can_be_denied_alone(self):
         self.project.config.raw['project'] = {'mcp': {'deny':
-                                                      ['project_push']}}
+                                                      ['project.push']}}
         server = McpServer(project=self.project,
                            policy=McpPolicy(self.project))
         register_project_tools(
                 server, roles_path=self.tmpdir,
                 playbooks_path=self.tmpdir,
                 collection_index_provider=lambda: {})
-        self.assertIn('project_pull', server.tools)
-        self.assertNotIn('project_push', server.tools)
+        self.assertIn('project.pull', server.tools)
+        self.assertNotIn('project.push', server.tools)
 
 
 if __name__ == '__main__':

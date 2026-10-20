@@ -322,7 +322,7 @@ class ViewWriteTestCase(unittest.TestCase):
                          0o755)
         # The commit is part of the write
         self.assertEqual(self.commits,
-                         ['DebOps MCP: file_write '
+                         ['DebOps MCP: file.write '
                           'resources/scripts/hello.sh'])
 
     def test_unchanged_content_commits_nothing(self):
@@ -423,7 +423,7 @@ class ViewWriteTestCase(unittest.TestCase):
             raise RuntimeError('disk ate it')
 
         project = type('Project', (), {'commit': _fail})()
-        result = commit_or_report(project, 'file_write x',
+        result = commit_or_report(project, 'file.write x',
                                   'created: x')
         self.assertTrue(result['isError'])
         text = result['content'][0]['text']
@@ -453,7 +453,7 @@ class ViewWriteTestCase(unittest.TestCase):
         response = server.handle({
                 'jsonrpc': '2.0', 'id': 1,
                 'method': 'tools/call',
-                'params': {'_meta': REQUEST_META, 'name': 'file_write',
+                'params': {'_meta': REQUEST_META, 'name': 'file.write',
                            'arguments': {'path': 'playbooks/x.yml',
                                          'content': '---\n'}}})
         result = response['result']
@@ -480,7 +480,7 @@ class ViewWriteTestCase(unittest.TestCase):
         # The write itself landed
         self.assertEqual(self.written('playbooks/x.yml'), '---\n')
 
-    # -- file_delete ---------------------------------------------------
+    # -- file.delete ---------------------------------------------------
 
     def delete(self, path):
         from debops.mcp.tools.files import tool_file_delete
@@ -495,7 +495,7 @@ class ViewWriteTestCase(unittest.TestCase):
         self.assertFalse(os.path.exists(
                 os.path.join(self.view_root, 'playbooks', 'deploy.yml')))
         self.assertEqual(self.commits[-1],
-                         'DebOps MCP: file_delete playbooks/deploy.yml')
+                         'DebOps MCP: file.delete playbooks/deploy.yml')
 
     def test_delete_missing_file_is_an_error(self):
         response = self.delete('playbooks/nosuch.yml')
@@ -768,7 +768,7 @@ class OverridesWriteTestCase(unittest.TestCase):
                 'jsonrpc': '2.0', 'id': 1,
                 'method': 'tools/list', 'params': {'_meta': REQUEST_META, }})
         names = [tool['name'] for tool in response['result']['tools']]
-        self.assertNotIn('overrides_write', names)
+        self.assertNotIn('overrides.write', names)
 
     def test_registered_when_enabled(self):
         self.project.config.raw['project'] = {'mcp': {'overrides': True}}
@@ -779,7 +779,7 @@ class OverridesWriteTestCase(unittest.TestCase):
                 'jsonrpc': '2.0', 'id': 1,
                 'method': 'tools/list', 'params': {'_meta': REQUEST_META, }})
         names = [tool['name'] for tool in response['result']['tools']]
-        self.assertIn('overrides_write', names)
+        self.assertIn('overrides.write', names)
 
     def test_write_lands_and_commits(self):
         response = self.write('tasks/extra.yml',
@@ -789,7 +789,7 @@ class OverridesWriteTestCase(unittest.TestCase):
         with open(os.path.join(self.target, 'tasks', 'extra.yml')) as fp:
             self.assertEqual(fp.read(), '---\n- name: extra\n')
         self.assertEqual(self.commits,
-                         ['DebOps MCP: overrides_write tasks/extra.yml'])
+                         ['DebOps MCP: overrides.write tasks/extra.yml'])
 
     def test_only_the_known_subdirectories(self):
         for path in ('other/x', 'files', 'files/', 'files/../out',
@@ -877,7 +877,7 @@ class InventorySpecTestCase(unittest.TestCase):
         with open(os.path.join(self.inventory_dir, 'hosts')) as fp:
             self.assertEqual(fp.read(), '[web]\nweb1\n')
         self.assertEqual(self.commits,
-                         ['DebOps MCP: inventory_spec'])
+                         ['DebOps MCP: inventory.spec'])
 
     def test_dry_run_writes_nothing(self):
         result = self.call_spec('version: 0\n'
@@ -927,7 +927,7 @@ class InventorySpecTestCase(unittest.TestCase):
         self.assertFalse(result['isError'])
         self.assertEqual(check_schema(result['structuredContent'],
                                       TOOL_OUTPUT_SCHEMAS
-                                      ['inventory_spec']), [])
+                                      ['inventory.spec']), [])
         self.assertEqual(result['structuredContent']['written'],
                          ['hosts'])
 
@@ -1139,7 +1139,7 @@ class ToolsTestCase(unittest.TestCase):
         return result['structuredContent']
 
     def test_structured_playbooks(self):
-        entries = self._check_structured('playbooks')
+        entries = self._check_structured('playbook.list')
         targets = [entry['target'] for entry in entries]
         self.assertIn('custom', targets)
         self.assertIn('service/testrole', targets)
@@ -1149,46 +1149,46 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('Project playbooks', custom['section'])
 
     def test_structured_collection_roles(self):
-        entries = self._check_structured('collection_roles')
+        entries = self._check_structured('collection.roles')
         collections = {entry['collection']: entry for entry in entries}
         self.assertIn('testns.testcoll', collections)
         self.assertIn('plainrole',
                       collections['testns.testcoll']['roles'])
 
     def test_structured_collection_playbooks(self):
-        entries = self._check_structured('collection_playbooks')
+        entries = self._check_structured('collection.playbooks')
         targets = [entry['target'] for entry in entries]
         self.assertIn('testns.testcoll/install', targets)
-        entries = self._check_structured('collection_playbooks',
+        entries = self._check_structured('collection.playbooks',
                                          {'collection':
                                           'testns.testcoll'})
         self.assertEqual([entry['target'] for entry in entries],
                          ['testns.testcoll/install'])
 
     def test_structured_project_status(self):
-        data = self._check_structured('project_status')
+        data = self._check_structured('project.status')
         self.assertEqual(data['name'], 'project')
         self.assertEqual(data['view'], 'system')
         self.assertIn(data['inventory'], ('present', 'absent'))
 
     def test_structured_project_files(self):
-        self._check_structured('project_files')
+        self._check_structured('project.files')
 
     def test_structured_config_get(self):
         self.project.config.raw['project'] = {'mcp': {'execute':
                                                       'check'}}
-        data = self._check_structured('config_get',
+        data = self._check_structured('config.get',
                                       {'key': 'project.mcp.execute'})
         self.assertEqual(data['key'], 'project.mcp.execute')
         self.assertEqual(data['value'], 'check')
 
     def test_structured_environment_list(self):
-        data = self._check_structured('environment_list')
+        data = self._check_structured('environment.list')
         self.assertIn('tracked', data)
         self.assertIn('process', data)
 
     def test_structured_playbook_info(self):
-        data = self._check_structured('playbook_info',
+        data = self._check_structured('playbook.info',
                                       {'playbook': 'custom'})
         self.assertEqual(data['playbook'], 'custom')
         self.assertEqual(data['plays'][0]['name'],
@@ -1196,12 +1196,17 @@ class ToolsTestCase(unittest.TestCase):
         self.assertEqual(data['groups'], ['custom_group'])
 
     def test_structured_role_info(self):
-        data = self._check_structured('role_info', {'name': 'testrole'})
+        data = self._check_structured('role.info', {'name': 'testrole'})
         self.assertEqual(data['name'], 'testrole')
         self.assertEqual(data['description'], 'A test role')
         self.assertGreaterEqual(data['counts']['tasks'], 1)
 
     # -- registration --------------------------------------------------
+
+    def test_aliases_registered_with_the_tools(self):
+        # The hidden namespace guess resolves to the bare verb
+        self.assertEqual(self.server.aliases,
+                         {'playbook.run': 'run', 'playbook.check': 'check'})
 
     def test_tools_are_listed(self):
         response = self.server.handle({
@@ -1209,23 +1214,23 @@ class ToolsTestCase(unittest.TestCase):
                 'params': {'_meta': REQUEST_META, }})
         names = [tool['name'] for tool in response['result']['tools']]
         self.assertEqual(sorted(names),
-                         ['ansible_facts', 'ansible_ping', 'check',
-                          'collection_playbooks', 'collection_remove',
-                          'collection_require', 'collection_roles',
-                          'collection_sync', 'config_get',
-                          'environment_list',
-                          'environment_set', 'environment_unset',
-                          'file_delete', 'file_write',
-                          'inventory_query',
-                          'inventory_spec', 'keyring_fetch',
-                          'playbook_info',
-                          'playbooks', 'project_files', 'project_pull',
-                          'project_push', 'project_read', 'project_status',
-                          'role_argspec', 'role_defaults', 'role_files',
-                          'role_handlers', 'role_info', 'role_tasks',
-                          'role_templates', 'role_variables',
-                          'secret_paths', 'view_create', 'view_list',
-                          'view_switch'])
+                         ['ansible.facts', 'ansible.ping', 'check',
+                          'collection.playbooks', 'collection.remove',
+                          'collection.require', 'collection.roles',
+                          'collection.sync', 'config.get',
+                          'environment.list',
+                          'environment.set', 'environment.unset',
+                          'file.delete', 'file.write',
+                          'inventory.query',
+                          'inventory.spec', 'keyring.fetch',
+                          'playbook.info',
+                          'playbook.list', 'project.files', 'project.pull',
+                          'project.push', 'project.read', 'project.status',
+                          'role.argspec', 'role.defaults', 'role.files',
+                          'role.handlers', 'role.info', 'role.tasks',
+                          'role.templates', 'role.variables',
+                          'secret.paths', 'view.create', 'view.list',
+                          'view.switch'])
 
     def test_registration_into_a_staging_registry(self):
         # A reload builds the new surface aside and swaps it in whole;
@@ -1255,16 +1260,16 @@ class ToolsTestCase(unittest.TestCase):
         annotations = {tool['name']: tool.get('annotations', {})
                        for tool in response['result']['tools']}
         # Pure reads are marked read-only
-        self.assertEqual(annotations['project_status'],
+        self.assertEqual(annotations['project.status'],
                          {'readOnlyHint': True, 'openWorldHint': False})
-        self.assertEqual(annotations['role_defaults'],
+        self.assertEqual(annotations['role.defaults'],
                          {'readOnlyHint': True, 'openWorldHint': False})
         # Host queries are read-only but reach out over SSH
-        self.assertEqual(annotations['ansible_ping'],
+        self.assertEqual(annotations['ansible.ping'],
                          {'readOnlyHint': True})
         # Changes and pushes are destructive; check runs are not
         self.assertTrue(annotations['run']['destructiveHint'])
-        self.assertTrue(annotations['project_push']['destructiveHint'])
+        self.assertTrue(annotations['project.push']['destructiveHint'])
         self.assertFalse(annotations['check']['destructiveHint'])
 
     def _tools_by_name(self, mcp_config):
@@ -1280,14 +1285,14 @@ class ToolsTestCase(unittest.TestCase):
 
     def test_confirm_gated_tools_carry_the_marker(self):
         tools = self._tools_by_name({'execute': 'all'})
-        # The default confirm list gates 'run' and 'project_push'
+        # The default confirm list gates 'run' and 'project.push'
         self.assertEqual(tools['run']['_meta'],
                          {'org.debops/confirm': True})
-        self.assertEqual(tools['project_push']['_meta'],
+        self.assertEqual(tools['project.push']['_meta'],
                          {'org.debops/confirm': True})
-        self.assertEqual(tools['environment_set']['_meta'],
+        self.assertEqual(tools['environment.set']['_meta'],
                          {'org.debops/confirm': True})
-        self.assertEqual(tools['environment_unset']['_meta'],
+        self.assertEqual(tools['environment.unset']['_meta'],
                          {'org.debops/confirm': True})
         self.assertIn('asks the user to confirm',
                       tools['run']['description'])
@@ -1295,10 +1300,10 @@ class ToolsTestCase(unittest.TestCase):
         self.assertEqual(tools['check']['_meta'],
                          {'org.debops/confirm': True})
         # Ungated tools say nothing about confirmation
-        self.assertNotIn('_meta', tools['project_status'])
+        self.assertNotIn('_meta', tools['project.status'])
         self.assertNotIn('confirm',
-                         tools['project_status']['description'])
-        self.assertNotIn('_meta', tools['file_write'])
+                         tools['project.status']['description'])
+        self.assertNotIn('_meta', tools['file.write'])
 
     def test_confirm_disabled_marks_nothing(self):
         tools = self._tools_by_name({'execute': 'all', 'confirm': []})
@@ -1316,7 +1321,7 @@ class ToolsTestCase(unittest.TestCase):
             self.assertNotIn('_meta', tool, tool['name'])
 
     def test_denied_tool_is_not_registered(self):
-        self.project.config.raw['project'] = {'mcp': {'deny': ['role_info']}}
+        self.project.config.raw['project'] = {'mcp': {'deny': ['role.info']}}
         server = McpServer(project=self.project,
                            policy=McpPolicy(self.project))
         register_project_tools(server, roles_path=self.roles_path)
@@ -1324,12 +1329,12 @@ class ToolsTestCase(unittest.TestCase):
                 'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list',
                 'params': {'_meta': REQUEST_META, }})
         names = [tool['name'] for tool in response['result']['tools']]
-        self.assertNotIn('role_info', names)
+        self.assertNotIn('role.info', names)
 
-    # -- project_status --------------------------------------------------
+    # -- project.status --------------------------------------------------
 
     def test_project_status(self):
-        response = self.call_tool('project_status')
+        response = self.call_tool('project.status')
         text = self.result_text(response)
         self.assertFalse(response['result']['isError'])
         self.assertIn('Project: project', text)
@@ -1338,10 +1343,10 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('Inventory: present', text)
         self.assertIn('Encryption: none', text)
 
-    # -- role_info -------------------------------------------------------
+    # -- role.info -------------------------------------------------------
 
     def test_role_info(self):
-        response = self.call_tool('role_info', {'name': 'testrole'})
+        response = self.call_tool('role.info', {'name': 'testrole'})
         text = self.result_text(response)
         self.assertIn('# debops.testrole', text)
         self.assertIn('A test role', text)
@@ -1354,17 +1359,17 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('- dependencies: debops.otherrole', text)
 
     def test_role_info_accepts_qualified_name(self):
-        response = self.call_tool('role_info',
+        response = self.call_tool('role.info',
                                   {'name': 'debops.testrole'})
         self.assertIn('# debops.testrole', self.result_text(response))
 
     def test_role_info_unknown_role(self):
-        response = self.call_tool('role_info', {'name': 'nosuch'})
+        response = self.call_tool('role.info', {'name': 'nosuch'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('nosuch', self.result_text(response))
 
     def test_role_info_rejects_path_traversal(self):
-        response = self.call_tool('role_info', {'name': '../../etc'})
+        response = self.call_tool('role.info', {'name': '../../etc'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('role not found or invalid',
                       self.result_text(response))
@@ -1381,14 +1386,14 @@ class ToolsTestCase(unittest.TestCase):
         self.assertEqual(_docs_version_slug(None), 'master')
 
     def test_role_info_has_documentation_for_bundled_roles(self):
-        response = self.call_tool('role_info', {'name': 'testrole'})
+        response = self.call_tool('role.info', {'name': 'testrole'})
         text = self.result_text(response)
         self.assertIn('- documentation: https://docs.debops.org/en/master/'
                       'ansible/roles/testrole/index.html#debops-testrole',
                       text)
 
     def test_role_info_no_documentation_for_project_roles(self):
-        response = self.call_tool('role_info', {'name': 'shadowrole'})
+        response = self.call_tool('role.info', {'name': 'shadowrole'})
         self.assertNotIn('documentation:', self.result_text(response))
 
     def test_role_info_documentation_uses_the_server_version(self):
@@ -1401,13 +1406,13 @@ class ToolsTestCase(unittest.TestCase):
                 collection_index_provider=lambda: self.collection_index)
         response = server.handle({
                 'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                'params': {'_meta': REQUEST_META, 'name': 'role_info',
+                'params': {'_meta': REQUEST_META, 'name': 'role.info',
                            'arguments': {'name': 'testrole'}}})
         self.assertIn('en/stable-3.2/',
                       response['result']['content'][0]['text'])
 
     def test_role_defaults_full_links_to_documentation(self):
-        response = self.call_tool('role_defaults',
+        response = self.call_tool('role.defaults',
                                   {'name': 'testrole', 'detail': 'full'})
         text = self.result_text(response)
         self.assertIn('Detailed documentation: https://docs.debops.org/'
@@ -1415,13 +1420,13 @@ class ToolsTestCase(unittest.TestCase):
                       'defaults-detailed.html', text)
 
     def test_role_defaults_brief_has_no_link(self):
-        response = self.call_tool('role_defaults', {'name': 'testrole'})
+        response = self.call_tool('role.defaults', {'name': 'testrole'})
         self.assertNotIn('docs.debops.org', self.result_text(response))
 
-    # -- role_defaults --------------------------------------------------
+    # -- role.defaults --------------------------------------------------
 
     def test_role_defaults_full(self):
-        response = self.call_tool('role_defaults',
+        response = self.call_tool('role.defaults',
                                   {'name': 'testrole', 'detail': 'full'})
         text = self.result_text(response)
         # Documented variables carry their description and default value
@@ -1436,7 +1441,7 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('## testrole__extra', text)
 
     def test_role_defaults_names_detail(self):
-        response = self.call_tool('role_defaults',
+        response = self.call_tool('role.defaults',
                                   {'name': 'testrole', 'detail': 'names'})
         text = self.result_text(response)
         self.assertIn('(4)', text)
@@ -1446,7 +1451,7 @@ class ToolsTestCase(unittest.TestCase):
         self.assertNotIn('```', text)
 
     def test_role_defaults_brief_is_the_default(self):
-        response = self.call_tool('role_defaults', {'name': 'testrole'})
+        response = self.call_tool('role.defaults', {'name': 'testrole'})
         text = self.result_text(response)
         # One compact line per variable, no full documentation
         self.assertIn('- **testrole__enabled** — Enable or disable the '
@@ -1455,7 +1460,7 @@ class ToolsTestCase(unittest.TestCase):
         self.assertNotIn('## testrole__enabled', text)
 
     def test_role_defaults_brief_truncates_long_defaults(self):
-        response = self.call_tool('role_defaults',
+        response = self.call_tool('role.defaults',
                                   {'name': 'testrole',
                                    'filter': 'long_list'})
         text = self.result_text(response)
@@ -1465,7 +1470,7 @@ class ToolsTestCase(unittest.TestCase):
         self.assertTrue(line.endswith('…`)'))
 
     def test_role_defaults_format_json(self):
-        response = self.call_tool('role_defaults',
+        response = self.call_tool('role.defaults',
                                   {'name': 'testrole', 'format': 'json'})
         document = json.loads(self.result_text(response))
         self.assertIs(document['testrole__enabled'], True)
@@ -1474,20 +1479,20 @@ class ToolsTestCase(unittest.TestCase):
         self.assertEqual(len(document['testrole__long_list']), 30)
 
     def test_role_defaults_format_json_honors_the_filter(self):
-        response = self.call_tool('role_defaults',
+        response = self.call_tool('role.defaults',
                                   {'name': 'testrole', 'format': 'json',
                                    'filter': 'port'})
         document = json.loads(self.result_text(response))
         self.assertEqual(sorted(document), ['testrole__port'])
 
     def test_role_defaults_invalid_format(self):
-        response = self.call_tool('role_defaults',
+        response = self.call_tool('role.defaults',
                                   {'name': 'testrole', 'format': 'yaml'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('invalid format', self.result_text(response))
 
     def test_role_tasks_format_json(self):
-        response = self.call_tool('role_tasks',
+        response = self.call_tool('role.tasks',
                                   {'name': 'testrole', 'file': 'main',
                                    'format': 'json'})
         document = json.loads(self.result_text(response))
@@ -1496,13 +1501,13 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('ansible.builtin.apt', document[0])
 
     def test_role_tasks_overview_format_json(self):
-        response = self.call_tool('role_tasks',
+        response = self.call_tool('role.tasks',
                                   {'name': 'testrole', 'format': 'json'})
         document = json.loads(self.result_text(response))
         self.assertEqual(document, {'extra': 1, 'main': 3})
 
     def test_role_variables_format_json(self):
-        response = self.call_tool('role_variables',
+        response = self.call_tool('role.variables',
                                   {'name': 'testrole', 'format': 'json'})
         document = json.loads(self.result_text(response))
         self.assertEqual(document['testrole__state_dir'],
@@ -1510,13 +1515,13 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIs(document['testrole__internal'], True)
 
     def test_role_defaults_invalid_detail(self):
-        response = self.call_tool('role_defaults',
+        response = self.call_tool('role.defaults',
                                   {'name': 'testrole', 'detail': 'everything'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('invalid detail level', self.result_text(response))
 
     def test_role_defaults_filter(self):
-        response = self.call_tool('role_defaults',
+        response = self.call_tool('role.defaults',
                                   {'name': 'testrole', 'filter': 'port',
                                    'detail': 'full'})
         text = self.result_text(response)
@@ -1524,20 +1529,20 @@ class ToolsTestCase(unittest.TestCase):
         self.assertNotIn('testrole__enabled', text)
 
     def test_role_defaults_no_match(self):
-        response = self.call_tool('role_defaults',
+        response = self.call_tool('role.defaults',
                                   {'name': 'testrole', 'filter': 'zzz'})
         self.assertIn('no matching variables', self.result_text(response))
 
     def test_role_defaults_unknown_role(self):
-        response = self.call_tool('role_defaults', {'name': 'nosuch'})
+        response = self.call_tool('role.defaults', {'name': 'nosuch'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('role not found or invalid',
                       self.result_text(response))
 
-    # -- role_variables (vars/) ----------------------------------------------
+    # -- role.variables (vars/) ----------------------------------------------
 
     def test_role_variables_reads_vars(self):
-        response = self.call_tool('role_variables', {'name': 'testrole'})
+        response = self.call_tool('role.variables', {'name': 'testrole'})
         text = self.result_text(response)
         self.assertIn('- **testrole__state_dir** — Internal state '
                       'directory of the test role. (default: '
@@ -1545,21 +1550,21 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('- **testrole__internal** (default: `true`)', text)
 
     def test_role_variables_full(self):
-        response = self.call_tool('role_variables',
+        response = self.call_tool('role.variables',
                                   {'name': 'testrole', 'detail': 'full'})
         text = self.result_text(response)
         self.assertIn('## testrole__state_dir', text)
         self.assertIn('```yaml\n/run/testrole\n```', text)
 
     def test_role_variables_no_vars(self):
-        response = self.call_tool('role_variables', {'name': 'splitrole'})
+        response = self.call_tool('role.variables', {'name': 'splitrole'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('no variables', self.result_text(response))
 
     # -- split defaults files ----------------------------------------------
 
     def test_role_defaults_split_defaults(self):
-        response = self.call_tool('role_defaults',
+        response = self.call_tool('role.defaults',
                                   {'name': 'splitrole', 'detail': 'full'})
         text = self.result_text(response)
         self.assertFalse(response['result']['isError'])
@@ -1575,14 +1580,14 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('from-b', text)
 
     def test_role_info_counts_split_defaults(self):
-        response = self.call_tool('role_info', {'name': 'splitrole'})
+        response = self.call_tool('role.info', {'name': 'splitrole'})
         text = self.result_text(response)
         self.assertIn('- defaults: 3 variables', text)
 
-    # -- collection_roles --------------------------------------------------
+    # -- collection.roles --------------------------------------------------
 
     def test_collection_roles(self):
-        response = self.call_tool('collection_roles')
+        response = self.call_tool('collection.roles')
         text = self.result_text(response)
         self.assertIn('## testns.testcoll (1.0.0)', text)
         self.assertIn('- emptyrole', text)
@@ -1590,7 +1595,7 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('- specrole', text)
 
     def test_collection_roles_filter(self):
-        response = self.call_tool('collection_roles', {'filter': 'zzz'})
+        response = self.call_tool('collection.roles', {'filter': 'zzz'})
         self.assertIn('no collections with roles',
                       self.result_text(response))
 
@@ -1604,7 +1609,7 @@ class ToolsTestCase(unittest.TestCase):
         response = server.handle({
                 'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                 'params': {'_meta': REQUEST_META,
-                           'name': 'collection_roles', 'arguments': {}}})
+                           'name': 'collection.roles', 'arguments': {}}})
         self.assertTrue(response['result']['isError'])
         self.assertIn('ansible-galaxy',
                       response['result']['content'][0]['text'])
@@ -1612,7 +1617,7 @@ class ToolsTestCase(unittest.TestCase):
     # -- fully qualified role names (unified resolution) ---------------------
 
     def test_role_info_with_fqcn(self):
-        response = self.call_tool('role_info',
+        response = self.call_tool('role.info',
                                   {'name': 'testns.testcoll.plainrole'})
         text = self.result_text(response)
         self.assertIn('A plainly documented role', text)
@@ -1621,13 +1626,13 @@ class ToolsTestCase(unittest.TestCase):
 
     def test_role_info_rejects_bad_fqcn(self):
         for name in ('two.parts', 'a.b.c.d', '../..'):
-            response = self.call_tool('role_info', {'name': name})
+            response = self.call_tool('role.info', {'name': name})
             self.assertTrue(response['result']['isError'], name)
             self.assertIn('role not found or invalid',
                           self.result_text(response), name)
 
     def test_role_argspec_with_fqcn(self):
-        response = self.call_tool('role_argspec',
+        response = self.call_tool('role.argspec',
                                   {'name': 'testns.testcoll.specrole'})
         text = self.result_text(response)
         self.assertIn('argument spec: main', text)
@@ -1635,7 +1640,7 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('- **specrole__password** (str, required)', text)
 
     def test_role_argspec_full(self):
-        response = self.call_tool('role_argspec',
+        response = self.call_tool('role.argspec',
                                   {'name': 'testns.testcoll.specrole',
                                    'detail': 'full'})
         text = self.result_text(response)
@@ -1645,25 +1650,25 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('```yaml\npresent\n```', text)
 
     def test_role_argspec_none_present(self):
-        response = self.call_tool('role_argspec', {'name': 'testrole'})
+        response = self.call_tool('role.argspec', {'name': 'testrole'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('no argument specs', self.result_text(response))
 
     def test_role_variables_with_fqcn(self):
-        response = self.call_tool('role_variables',
+        response = self.call_tool('role.variables',
                                   {'name': 'testns.testcoll.plainrole'})
         text = self.result_text(response)
         self.assertIn('- **plainrole__internal_state** — The internal '
                       'state of the plain role. (default: `\'on\'`)', text)
 
     def test_role_defaults_with_fqcn(self):
-        response = self.call_tool('role_defaults',
+        response = self.call_tool('role.defaults',
                                   {'name': 'testns.testcoll.specrole'})
         text = self.result_text(response)
         self.assertIn('- **specrole__extra_default**', text)
 
     def test_role_variables_fqcn_unknown_collection(self):
-        response = self.call_tool('role_variables',
+        response = self.call_tool('role.variables',
                                   {'name': 'nosuch.collection.role'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('role not found or invalid',
@@ -1716,7 +1721,7 @@ class ToolsTestCase(unittest.TestCase):
         self.assertEqual(playbook_summary(path), 'imports 1 playbook')
 
     def test_playbooks_list(self):
-        response = self.call_tool('playbooks')
+        response = self.call_tool('playbook.list')
         text = self.result_text(response)
         self.assertIn('## Project playbooks (view "system")', text)
         self.assertIn('- `custom` — Custom project playbook '
@@ -1729,7 +1734,7 @@ class ToolsTestCase(unittest.TestCase):
         self.assertNotIn('vars', text)
 
     def test_playbooks_filter(self):
-        response = self.call_tool('playbooks', {'filter': 'testrole'})
+        response = self.call_tool('playbook.list', {'filter': 'testrole'})
         text = self.result_text(response)
         self.assertIn('service/testrole', text)
         self.assertNotIn('`site`', text)
@@ -1746,13 +1751,14 @@ class ToolsTestCase(unittest.TestCase):
                 collection_index_provider=lambda: self.collection_index)
         response = server.handle({
                 'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                'params': {'_meta': REQUEST_META, 'name': 'playbooks', 'arguments': {}}})
+                'params': {'_meta': REQUEST_META,
+                           'name': 'playbook.list', 'arguments': {}}})
         text = response['result']['content'][0]['text']
         self.assertIn('## Playbook sets (view configuration)', text)
         self.assertIn('- `web` → service/nginx, service/php_fpm', text)
 
     def test_playbook_info(self):
-        response = self.call_tool('playbook_info',
+        response = self.call_tool('playbook.info',
                                   {'playbook': 'service/testrole'})
         text = self.result_text(response)
         self.assertFalse(response['result']['isError'])
@@ -1766,13 +1772,13 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('- debops_service_testrole', text)
 
     def test_playbook_info_imports(self):
-        response = self.call_tool('playbook_info', {'playbook': 'site'})
+        response = self.call_tool('playbook.info', {'playbook': 'site'})
         text = self.result_text(response)
         self.assertIn('## Imported playbooks', text)
         self.assertIn('- service/testrole.yml', text)
 
     def test_playbook_info_project_playbook(self):
-        response = self.call_tool('playbook_info', {'playbook': 'custom'})
+        response = self.call_tool('playbook.info', {'playbook': 'custom'})
         text = self.result_text(response)
         # The task-level include_role statement is found
         self.assertIn('- testrole', text)
@@ -1796,7 +1802,7 @@ class ToolsTestCase(unittest.TestCase):
 
     def test_playbook_info_rejects_traversal(self):
         for name in ('../defaults/main', '/etc/passwd', 'nosuch'):
-            response = self.call_tool('playbook_info', {'playbook': name})
+            response = self.call_tool('playbook.info', {'playbook': name})
             self.assertTrue(response['result']['isError'], name)
             self.assertIn('playbook not found or invalid',
                           self.result_text(response), name)
@@ -1804,7 +1810,7 @@ class ToolsTestCase(unittest.TestCase):
     # -- collection playbooks ----------------------------------------------
 
     def test_collection_playbooks(self):
-        response = self.call_tool('collection_playbooks',
+        response = self.call_tool('collection.playbooks',
                                   {'collection': 'testns.testcoll'})
         text = self.result_text(response)
         self.assertIn('# Playbooks in testns.testcoll (1.0.0)', text)
@@ -1812,14 +1818,14 @@ class ToolsTestCase(unittest.TestCase):
                       '(hosts: localhost)', text)
 
     def test_collection_playbooks_no_playbooks_dir(self):
-        response = self.call_tool('collection_playbooks',
+        response = self.call_tool('collection.playbooks',
                                   {'collection': 'testns.nosuch'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('collection not found or invalid',
                       self.result_text(response))
 
     def test_collection_playbooks_all_collections(self):
-        response = self.call_tool('collection_playbooks')
+        response = self.call_tool('collection.playbooks')
         text = self.result_text(response)
         self.assertIn('# Collections with playbooks visible to Ansible '
                       '(1)', text)
@@ -1829,16 +1835,16 @@ class ToolsTestCase(unittest.TestCase):
 
     def test_collection_playbooks_all_collections_filtered(self):
         # The filter matches the qualified 'namespace.collection/path'
-        response = self.call_tool('collection_playbooks',
+        response = self.call_tool('collection.playbooks',
                                   {'filter': 'testcoll/inst'})
         self.assertIn('install', self.result_text(response))
-        response = self.call_tool('collection_playbooks',
+        response = self.call_tool('collection.playbooks',
                                   {'filter': 'nomatch'})
         self.assertIn('no collections with playbooks found',
                       self.result_text(response))
 
     def test_playbook_info_slash_collection_form(self):
-        response = self.call_tool('playbook_info',
+        response = self.call_tool('playbook.info',
                                   {'playbook': 'testns.testcoll/install'})
         text = self.result_text(response)
         self.assertIn('Execution target: `testns.testcoll/install`',
@@ -1847,14 +1853,14 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('- testns.testcoll.plainrole', text)
 
     def test_playbook_info_fqcn_form(self):
-        response = self.call_tool('playbook_info',
+        response = self.call_tool('playbook.info',
                                   {'playbook': 'testns.testcoll.install'})
         text = self.result_text(response)
         # The dotted form is itself a valid execution target
         self.assertIn('Execution target: `testns.testcoll.install`', text)
 
     def test_playbook_info_collection_traversal_rejected(self):
-        response = self.call_tool('playbook_info',
+        response = self.call_tool('playbook.info',
                                   {'playbook':
                                    'testns.testcoll/../roles/plainrole'})
         self.assertTrue(response['result']['isError'])
@@ -1862,10 +1868,10 @@ class ToolsTestCase(unittest.TestCase):
                       self.result_text(response))
 
     # -- content policy -----------------------------------------------------
-    # -- role_tasks / role_templates / role_files ----------------------------
+    # -- role.tasks / role.templates / role.files ----------------------------
 
     def test_role_tasks_overview(self):
-        response = self.call_tool('role_tasks', {'name': 'testrole'})
+        response = self.call_tool('role.tasks', {'name': 'testrole'})
         text = self.result_text(response)
         self.assertIn('- `main` — 3 tasks', text)
         self.assertIn('- `extra` — 1 task', text)
@@ -1880,14 +1886,14 @@ class ToolsTestCase(unittest.TestCase):
             fp.write('- name: Only task\n'
                      '  ansible.builtin.debug:\n'
                      '    msg: the one thing\n')
-        response = self.call_tool('role_tasks', {'name': 'solorole'})
+        response = self.call_tool('role.tasks', {'name': 'solorole'})
         text = self.result_text(response)
         self.assertIn('- Only task — ansible.builtin.debug', text)
         self.assertIn('(1 task)', text)
         self.assertNotIn('tasks files', text)
 
     def test_role_tasks_file_brief(self):
-        response = self.call_tool('role_tasks',
+        response = self.call_tool('role.tasks',
                                   {'name': 'testrole', 'file': 'main'})
         text = self.result_text(response)
         self.assertIn('- Install the test packages — ansible.builtin.apt',
@@ -1897,7 +1903,7 @@ class ToolsTestCase(unittest.TestCase):
         self.assertNotIn('when:', text)
 
     def test_role_tasks_file_full(self):
-        response = self.call_tool('role_tasks',
+        response = self.call_tool('role.tasks',
                                   {'name': 'testrole', 'file': 'main',
                                    'detail': 'full'})
         text = self.result_text(response)
@@ -1905,7 +1911,7 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('tags: role::testrole, skip::testrole', text)
 
     def test_role_tasks_filter(self):
-        response = self.call_tool('role_tasks',
+        response = self.call_tool('role.tasks',
                                   {'name': 'testrole', 'file': 'main',
                                    'filter': 'configure'})
         text = self.result_text(response)
@@ -1925,65 +1931,65 @@ class ToolsTestCase(unittest.TestCase):
             resolve_role_or_error([self.roles_path], {'name': 'no../pe'})
 
     def test_role_tasks_unknown_file(self):
-        response = self.call_tool('role_tasks',
+        response = self.call_tool('role.tasks',
                                   {'name': 'testrole', 'file': 'nosuch'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('file not found', self.result_text(response))
 
     def test_role_tasks_traversal_rejected(self):
-        response = self.call_tool('role_tasks',
+        response = self.call_tool('role.tasks',
                                   {'name': 'testrole',
                                    'file': '../defaults/main'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('invalid task file', self.result_text(response))
 
     def test_role_tasks_no_tasks_dir(self):
-        response = self.call_tool('role_tasks', {'name': 'splitrole'})
+        response = self.call_tool('role.tasks', {'name': 'splitrole'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('no tasks', self.result_text(response))
 
     def test_role_templates(self):
-        response = self.call_tool('role_templates', {'name': 'testrole'})
+        response = self.call_tool('role.templates', {'name': 'testrole'})
         text = self.result_text(response)
         self.assertIn('- etc/testrole/config.j2', text)
 
-        response = self.call_tool('role_templates',
+        response = self.call_tool('role.templates',
                                   {'name': 'testrole',
                                    'path': 'etc/testrole/config.j2'})
         self.assertIn('ansible_managed', self.result_text(response))
 
     def test_role_templates_traversal_rejected(self):
-        response = self.call_tool('role_templates',
+        response = self.call_tool('role.templates',
                                   {'name': 'testrole',
                                    'path': '../../defaults/main.yml'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('invalid path', self.result_text(response))
 
     def test_role_files(self):
-        response = self.call_tool('role_files', {'name': 'testrole'})
+        response = self.call_tool('role.files', {'name': 'testrole'})
         self.assertIn('- etc/motd.txt', self.result_text(response))
 
-        response = self.call_tool('role_files',
+        response = self.call_tool('role.files',
                                   {'name': 'testrole',
                                    'path': 'etc/motd.txt'})
         self.assertIn('A static file', self.result_text(response))
 
     def test_role_files_missing(self):
-        response = self.call_tool('role_files', {'name': 'splitrole'})
+        response = self.call_tool('role.files', {'name': 'splitrole'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('no files', self.result_text(response))
 
-    # -- role_handlers -------------------------------------------------------
+    # -- role.handlers -------------------------------------------------------
 
     def test_role_handlers_overview(self):
-        response = self.call_tool('role_handlers', {'name': 'testrole'})
+        response = self.call_tool('role.handlers', {'name': 'testrole'})
         text = self.result_text(response)
         self.assertIn('- `main` — 2 handlers', text)
         self.assertIn('- `extra` — 1 handler', text)
         self.assertIn('(3 handlers)', text)
 
     def test_role_handlers_file_with_listen(self):
-        response = self.call_tool('role_handlers',
+        response = self.call_tool('role.handlers',
                                   {'name': 'testrole', 'file': 'main'})
         text = self.result_text(response)
         self.assertIn('- Restart the test service — '
@@ -1991,7 +1997,7 @@ class ToolsTestCase(unittest.TestCase):
                       text)
 
     def test_role_handlers_no_handlers_dir(self):
-        response = self.call_tool('role_handlers', {'name': 'splitrole'})
+        response = self.call_tool('role.handlers', {'name': 'splitrole'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('no handlers', self.result_text(response))
 
@@ -2010,7 +2016,7 @@ class ToolsTestCase(unittest.TestCase):
         return server
 
     def test_role_tools_search_project_first(self):
-        response = self.call_tool('role_info', {'name': 'shadowrole'})
+        response = self.call_tool('role.info', {'name': 'shadowrole'})
         self.assertIn('The project copy', self.result_text(response))
 
     def test_bundled_content_off_hides_bundled_roles(self):
@@ -2018,14 +2024,14 @@ class ToolsTestCase(unittest.TestCase):
         # The project role still works...
         response = server.handle({
                 'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                'params': {'_meta': REQUEST_META, 'name': 'role_info',
+                'params': {'_meta': REQUEST_META, 'name': 'role.info',
                            'arguments': {'name': 'shadowrole'}}})
         self.assertIn('The project copy',
                       response['result']['content'][0]['text'])
         # ... and the bundled-only role is not found
         response = server.handle({
                 'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
-                'params': {'_meta': REQUEST_META, 'name': 'role_info',
+                'params': {'_meta': REQUEST_META, 'name': 'role.info',
                            'arguments': {'name': 'testrole'}}})
         self.assertTrue(response['result']['isError'])
 
@@ -2036,14 +2042,15 @@ class ToolsTestCase(unittest.TestCase):
         _shutil.rmtree(os.path.join(self.project.path, 'ansible',
                                     'collections'))
         server = self._server_with_policy({'bundled_content': False})
-        self.assertNotIn('role_info', server.tools)
-        self.assertNotIn('role_variables', server.tools)
+        self.assertNotIn('role.info', server.tools)
+        self.assertNotIn('role.variables', server.tools)
 
     def test_bundled_content_off_removes_collection_playbooks(self):
         server = self._server_with_policy({'bundled_content': False})
         response = server.handle({
                 'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                'params': {'_meta': REQUEST_META, 'name': 'playbooks', 'arguments': {}}})
+                'params': {'_meta': REQUEST_META,
+                           'name': 'playbook.list', 'arguments': {}}})
         text = response['result']['content'][0]['text']
         self.assertIn('Project playbooks', text)
         self.assertNotIn('DebOps collection', text)
@@ -2068,7 +2075,7 @@ class ToolsTestCase(unittest.TestCase):
         response = server.handle({
                 'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                 'params': {'_meta': REQUEST_META,
-                           'name': 'collection_roles', 'arguments': {}}})
+                           'name': 'collection.roles', 'arguments': {}}})
         text = response['result']['content'][0]['text']
         self.assertIn('debops.debops', text)
         self.assertIn('local.local', text)
@@ -2119,34 +2126,43 @@ class DocumentationModeTestCase(unittest.TestCase):
                 'params': {'_meta': REQUEST_META, }})
         names = [tool['name'] for tool in response['result']['tools']]
         self.assertEqual(sorted(names),
-                         ['collection_playbooks', 'collection_roles',
-                          'playbook_info', 'playbooks',
-                          'role_argspec', 'role_defaults', 'role_files',
-                          'role_handlers', 'role_info', 'role_tasks',
-                          'role_templates', 'role_variables'])
+                         ['collection.playbooks', 'collection.roles',
+                          'playbook.info', 'playbook.list',
+                          'role.argspec', 'role.defaults', 'role.files',
+                          'role.handlers', 'role.info', 'role.tasks',
+                          'role.templates', 'role.variables'])
 
     def test_role_info_works_on_the_bundled_content(self):
-        response = self.call_tool('role_info', {'name': 'testrole'})
+        response = self.call_tool('role.info', {'name': 'testrole'})
         text = response['result']['content'][0]['text']
         self.assertFalse(response['result'].get('isError', False))
         self.assertIn('testrole', text)
 
     def test_playbook_info_works_on_the_bundled_content(self):
-        response = self.call_tool('playbook_info',
+        response = self.call_tool('playbook.info',
                                   {'playbook': 'service/testrole'})
         text = response['result']['content'][0]['text']
         self.assertIn('Execution target: `service/testrole`', text)
 
     def test_no_project_playbooks_section(self):
-        response = self.call_tool('playbooks')
+        response = self.call_tool('playbook.list')
         text = response['result']['content'][0]['text']
         self.assertIn('service/testrole', text)
         self.assertNotIn('Project playbooks', text)
 
     def test_project_tools_are_not_registered(self):
-        response = self.call_tool('project_read', {'path': 'ansible.cfg'})
+        response = self.call_tool('project.read', {'path': 'ansible.cfg'})
         self.assertIn('error', response)
-        self.assertIn('unknown tool: project_read',
+        self.assertIn('unknown tool: project.read',
+                      response['error']['data']['details'])
+
+    def test_aliases_dangle_without_the_canonical_tool(self):
+        # The alias table is registered, but the documentation mode has
+        # no 'run' to resolve to
+        self.assertEqual(self.server.aliases.get('playbook.run'), 'run')
+        response = self.call_tool('playbook.run', {})
+        self.assertIn('error', response)
+        self.assertIn('unknown tool: playbook.run',
                       response['error']['data']['details'])
 
 

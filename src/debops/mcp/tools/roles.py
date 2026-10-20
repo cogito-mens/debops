@@ -441,7 +441,7 @@ def _load_tasks(tasks_file):
 
 def _tool_role_tasklist(roles_paths, arguments, subdir,
                         index_provider=None):
-    """Shared implementation of role_tasks and role_handlers."""
+    """Shared implementation of role.tasks and role.handlers."""
     kind = 'handler' if subdir == 'handlers' else 'task'
     try:
         name, path = resolve_role_or_error(roles_paths, arguments,

@@ -70,12 +70,12 @@ def _parse_facts(output):
         except ValueError:
             blocks.append((pending_host, payload))
         else:
-            # The facts live in the result envelope's 'ansible_facts'
+            # The facts live in the result envelope's 'ansible.facts'
             # key; the tools present the facts namespace itself (a
             # failed host has no envelope and stays raw)
             if isinstance(facts, dict) and isinstance(
-                    facts.get('ansible_facts'), dict):
-                facts = facts['ansible_facts']
+                    facts.get('ansible.facts'), dict):
+                facts = facts['ansible.facts']
             blocks.append((pending_host, facts))
         pending_host = None
         pending_lines = []

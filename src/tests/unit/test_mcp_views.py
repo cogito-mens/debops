@@ -2,7 +2,7 @@
 # Copyright (C) 2026 DebOps <https://debops.org/>
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Tests for the view lifecycle tools (view_list/switch/create)."""
+"""Tests for the view lifecycle tools (view.list/switch/create)."""
 
 import os
 import shutil
@@ -80,7 +80,7 @@ class ViewsTestCase(unittest.TestCase):
         import json
         data = json.loads(result['content'][0]['text'])
         self.assertEqual(check_schema(
-                data, TOOL_OUTPUT_SCHEMAS['view_list']), [])
+                data, TOOL_OUTPUT_SCHEMAS['view.list']), [])
         self.assertEqual(data['active'], 'system')
         self.assertFalse(data['locked'])
 
@@ -165,9 +165,9 @@ class ViewsTestCase(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.path.join(
                 self.tmpdir, 'ansible', 'views', 'staging')))
         self.assertIn('staging', self.project.config.raw['views'])
-        self.assertEqual(self.commits, ['DebOps MCP: view_create '
+        self.assertEqual(self.commits, ['DebOps MCP: view.create '
                                         'staging'])
-        self.assertIn('view_switch', result['content'][0]['text'])
+        self.assertIn('view.switch', result['content'][0]['text'])
 
     def test_create_validates_the_name(self):
         for bad in ('web-servers', 'UPPER', '../x', 'a/b', ''):
@@ -277,18 +277,18 @@ class NoViewSurfaceTestCase(unittest.TestCase):
         })
 
     def test_view_bound_tools_answer_with_the_guidance(self):
-        for name in ('file_write', 'inventory_query', 'secret_paths'):
+        for name in ('file.write', 'inventory.query', 'secret.paths'):
             response = self.call_tool(name, {})
             self.assertTrue(response['result']['isError'], name)
             self.assertIn(NO_ACTIVE_VIEW,
                           response['result']['content'][0]['text'], name)
 
     def test_view_tools_and_status_still_work(self):
-        response = self.call_tool('view_list')
+        response = self.call_tool('view.list')
         self.assertFalse(response['result'].get('isError', False))
         self.assertIn('Active: none',
                       response['result']['content'][0]['text'])
-        response = self.call_tool('project_status')
+        response = self.call_tool('project.status')
         self.assertIn('View: none',
                       response['result']['content'][0]['text'])
 
@@ -298,8 +298,8 @@ class NoViewSurfaceTestCase(unittest.TestCase):
                 'params': {'_meta': REQUEST_META, }})
         names = [tool['name'] for tool in response['result']['tools']]
         # A client which cached tools/list keeps valid names
-        self.assertIn('file_write', names)
-        self.assertIn('view_switch', names)
+        self.assertIn('file.write', names)
+        self.assertIn('view.switch', names)
 
 
 if __name__ == '__main__':

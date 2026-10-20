@@ -28,7 +28,7 @@ ENV_NAME_PATTERN = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 # Variable names the environment tools refuse to set: they redirect
 # where the dynamic loader, the Python interpreter or Ansible resolve
 # code from, so a value pointing at a writable directory (a file
-# planted with file_write, say) would execute as the server's account
+# planted with file.write, say) would execute as the server's account
 # at the next run. Operators can still set them by editing the file
 # directly; 'project.mcp.environment_deny' extends the list
 ENV_DENY_NAMES = frozenset((
@@ -208,8 +208,8 @@ def _write_environment(project, policy, arguments, secret):
     if refused is not None:
         return refused
 
-    note = '{} {}'.format('environment_set' if value is not None
-                          else 'environment_unset', name)
+    note = '{} {}'.format('environment.set' if value is not None
+                          else 'environment.unset', name)
     with exclusive_project(project, policy, note=note):
         old_text = ''
         if os.path.isfile(path):

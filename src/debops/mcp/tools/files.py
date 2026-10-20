@@ -222,7 +222,7 @@ def _authorized_write_path(project, policy, relative):
     """Resolve a write path, enforcing the write policy.
 
     Anchors: a leading '/' resolves at the project directory (spelled
-    as 'project_read' shows them); '.debops/' and 'ansible/' paths
+    as 'project.read' shows them); '.debops/' and 'ansible/' paths
     resolve at the project directory too, so they reach the same place
     in legacy and modern projects; anything else resolves at the view
     root. Patterns follow the same anchoring: a pattern only ever
@@ -395,7 +395,7 @@ def tool_file_write(project, policy, arguments, server=None):
     def announce():
         _announce_mcp_content_change(server, view_relative)
     return _write_committed(project, policy, path, view_relative,
-                            content, mode, 'file_write ' + view_relative,
+                            content, mode, 'file.write ' + view_relative,
                             after=announce)
 
 
@@ -524,7 +524,7 @@ def tool_file_delete(project, policy, arguments, server=None):
                             'policy (project.mcp.project_content)')
 
     with exclusive_project(project, policy,
-                           note='file_delete ' + view_relative):
+                           note='file.delete ' + view_relative):
         if not os.path.lexists(path):
             return error_result('file not found: ' + view_relative)
         if not os.path.isfile(path):
@@ -535,10 +535,10 @@ def tool_file_delete(project, policy, arguments, server=None):
             return error_result('cannot delete {}: {}'.format(
                     view_relative, errmsg))
         _announce_mcp_content_change(server, view_relative)
-        # The commit is part of the tool's contract, as for file_write;
+        # The commit is part of the tool's contract, as for file.write;
         # when it fails the file is gone but NOT recorded in git
         commit_error = commit_or_report(
-                project, 'file_delete ' + view_relative,
+                project, 'file.delete ' + view_relative,
                 'deleted: {}'.format(view_relative))
         if commit_error is not None:
             return commit_error
@@ -665,7 +665,7 @@ def tool_inventory_spec(project, policy, arguments):
     if refused is not None:
         return refused
 
-    with exclusive_project(project, policy, note='inventory_spec'):
+    with exclusive_project(project, policy, note='inventory.spec'):
         # Everything present is user content: without 'overwrite' the
         # specification may only add paths, not modify or remove them
         result = inventory.apply_spec(
@@ -673,9 +673,9 @@ def tool_inventory_spec(project, policy, arguments):
                 overwrite=overwrite, keep=keep)
         if result['written'] or result['removed']:
             # The commit is part of the tool's contract, as for
-            # file_write; when it fails the changes are NOT recorded
+            # file.write; when it fails the changes are NOT recorded
             try:
-                project.commit(message='DebOps MCP: inventory_spec')
+                project.commit(message='DebOps MCP: inventory.spec')
             except Exception as errmsg:
                 report_text, _structured = _inventory_spec_report(
                         result, inventory.path, dry_run=False)

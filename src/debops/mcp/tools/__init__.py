@@ -82,12 +82,12 @@ FORMAT_PROPERTY = {'type': 'string', 'enum': ['text', 'json'],
 # Tools which read the project directory; they run under the shared
 # project lock so a writer (a run, a sync, secrets) cannot interleave
 READ_LOCKED_TOOLS = frozenset((
-    'project_status', 'project_files', 'project_read', 'config_get',
-    'environment_list', 'inventory_query', 'playbooks', 'playbook_info',
-    'view_list', 'role_info',
-    'role_defaults', 'role_variables', 'role_argspec', 'role_tasks',
-    'role_handlers', 'role_templates', 'role_files', 'collection_roles',
-    'collection_playbooks',
+    'project.status', 'project.files', 'project.read', 'config.get',
+    'environment.list', 'inventory.query', 'playbook.list', 'playbook.info',
+    'view.list', 'role.info',
+    'role.defaults', 'role.variables', 'role.argspec', 'role.tasks',
+    'role.handlers', 'role.templates', 'role.files', 'collection.roles',
+    'collection.playbooks',
 ))
 
 # The output schemas of the tools which return structuredContent;
@@ -99,27 +99,27 @@ _RECAP_SCHEMA = {'type': 'object',
                      'additionalProperties': {'type': 'integer'}}}
 
 TOOL_OUTPUT_SCHEMAS = {
-    'playbooks': {'type': 'array', 'items': {
+    'playbook.list': {'type': 'array', 'items': {
         'type': 'object',
         'properties': {'target': {'type': 'string'},
                        'section': {'type': 'string'},
                        'summary': {'type': 'string'}},
         'required': ['target', 'section', 'summary']}},
-    'collection_roles': {'type': 'array', 'items': {
+    'collection.roles': {'type': 'array', 'items': {
         'type': 'object',
         'properties': {'collection': {'type': 'string'},
                        'version': {'type': 'string'},
                        'roles': {'type': 'array',
                                  'items': {'type': 'string'}}},
         'required': ['collection', 'version', 'roles']}},
-    'collection_playbooks': {'type': 'array', 'items': {
+    'collection.playbooks': {'type': 'array', 'items': {
         'type': 'object',
         'properties': {'collection': {'type': 'string'},
                        'target': {'type': 'string'},
                        'summary': {'type': 'string'}},
         'required': ['collection', 'target', 'summary']}},
-    'secret_paths': {'type': 'array', 'items': {'type': 'string'}},
-    'view_list': {'type': 'object', 'properties': {
+    'secret.paths': {'type': 'array', 'items': {'type': 'string'}},
+    'view.list': {'type': 'object', 'properties': {
         'active': {'type': ['string', 'null']},
         'locked': {'type': 'boolean'},
         'views': {'type': 'array', 'items': {
@@ -130,7 +130,7 @@ TOOL_OUTPUT_SCHEMAS = {
                 'present': {'type': 'boolean'}},
             'required': ['name', 'active', 'present']}}},
         'required': ['active', 'locked', 'views']},
-    'project_status': {'type': 'object', 'properties': {
+    'project.status': {'type': 'object', 'properties': {
         'name': {'type': 'string'}, 'path': {'type': 'string'},
         'type': {'type': 'string'}, 'view': {'type': ['string', 'null']},
         'views': {'type': 'array', 'items': {'type': 'string'}},
@@ -142,18 +142,18 @@ TOOL_OUTPUT_SCHEMAS = {
         'required': ['name', 'path', 'type', 'view', 'views',
                      'viewLocked', 'viewRoot', 'viewRootPresent',
                      'inventory', 'secrets', 'encryption']},
-    'project_files': {'type': 'array', 'items': {'type': 'string'}},
-    'config_get': {'type': 'object', 'properties': {
+    'project.files': {'type': 'array', 'items': {'type': 'string'}},
+    'config.get': {'type': 'object', 'properties': {
         'key': {'type': 'string'}, 'value': {}},
         'required': ['key', 'value']},
-    'environment_list': {'type': 'object', 'properties': {
+    'environment.list': {'type': 'object', 'properties': {
         'tracked': {'type': 'object',
                     'additionalProperties': {'type': 'string'}},
         'tokens': {'type': 'array', 'items': {'type': 'string'}},
         'project': {'type': 'array', 'items': {'type': 'string'}},
         'process': {'type': 'array', 'items': {'type': 'string'}}},
         'required': ['tracked', 'tokens', 'project', 'process']},
-    'playbook_info': {'type': 'object', 'properties': {
+    'playbook.info': {'type': 'object', 'properties': {
         'playbook': {'type': 'string'},
         'plays': {'type': 'array', 'items': {
             'type': 'object',
@@ -169,7 +169,7 @@ TOOL_OUTPUT_SCHEMAS = {
         'groups': {'type': 'array', 'items': {'type': 'string'}}},
         'required': ['playbook', 'plays', 'roles', 'imports',
                      'groups']},
-    'role_info': {'type': 'object', 'properties': {
+    'role.info': {'type': 'object', 'properties': {
         'name': {'type': 'string'}, 'path': {'type': 'string'},
         'description': {'type': 'string'}, 'author': {'type': 'string'},
         'license': {'type': 'string'},
@@ -189,20 +189,20 @@ TOOL_OUTPUT_SCHEMAS = {
         'readme': {'type': 'boolean'}, 'copyright': {'type': 'boolean'},
         'docsUrl': {'type': 'string'}},
         'required': ['name', 'counts']},
-    'inventory_spec': {'type': 'object', 'properties': dict(
+    'inventory.spec': {'type': 'object', 'properties': dict(
             [(key, {'type': 'array', 'items': {'type': 'string'}})
              for key in ('written', 'removed', 'skipped', 'kept',
                          'planned', 'planned_removed')]),
         'required': ['written', 'removed', 'skipped', 'kept',
                      'planned', 'planned_removed']},
-    'keyring_fetch': {'type': 'object', 'properties': {
+    'keyring.fetch': {'type': 'object', 'properties': {
         'fingerprint': {'type': 'string'},
         'fingerprintDisplay': {'type': 'string'},
         'userIds': {'type': 'array', 'items': {'type': 'string'}},
         'file': {'type': 'string'}, 'source': {'type': 'string'}},
         'required': ['fingerprint', 'fingerprintDisplay', 'userIds',
                      'file', 'source']},
-    'project_pull': {'type': 'object', 'properties': {
+    'project.pull': {'type': 'object', 'properties': {
         'action': {'type': 'string'},
         'changed': {'type': 'boolean'},
         'commits': {'type': 'array', 'items': {'type': 'string'}},
@@ -211,11 +211,11 @@ TOOL_OUTPUT_SCHEMAS = {
         'refreshed': {'type': 'boolean'},
         'refresh_error': {'type': 'string'}},
         'required': ['action']},
-    'project_push': {'type': 'object', 'properties': {
+    'project.push': {'type': 'object', 'properties': {
         'action': {'type': 'string'}, 'pushed': {'type': 'boolean'},
         'commits': {'type': 'array', 'items': {'type': 'string'}}},
         'required': ['action', 'pushed']},
-    'ansible_ping': {'type': 'object',
+    'ansible.ping': {'type': 'object',
                      'additionalProperties': {'type': 'string'}},
     'check': {'type': 'object', 'properties': {
         'mode': {'type': 'string'},
@@ -244,70 +244,70 @@ _READ_ONLY = {'readOnlyHint': True, 'openWorldHint': False}
 
 TOOL_ANNOTATIONS = {
     # Pure reads of project or package content
-    'project_status': _READ_ONLY,
-    'project_files': _READ_ONLY,
-    'environment_list': _READ_ONLY,
-    'project_read': _READ_ONLY,
-    'config_get': _READ_ONLY,
-    'inventory_query': _READ_ONLY,
-    'playbooks': _READ_ONLY,
-    'playbook_info': _READ_ONLY,
-    'collection_roles': _READ_ONLY,
-    'collection_playbooks': _READ_ONLY,
-    'role_info': _READ_ONLY,
-    'role_variables': _READ_ONLY,
-    'role_argspec': _READ_ONLY,
-    'role_defaults': _READ_ONLY,
-    'role_tasks': _READ_ONLY,
-    'role_handlers': _READ_ONLY,
-    'role_templates': _READ_ONLY,
-    'role_files': _READ_ONLY,
+    'project.status': _READ_ONLY,
+    'project.files': _READ_ONLY,
+    'environment.list': _READ_ONLY,
+    'project.read': _READ_ONLY,
+    'config.get': _READ_ONLY,
+    'inventory.query': _READ_ONLY,
+    'playbook.list': _READ_ONLY,
+    'playbook.info': _READ_ONLY,
+    'collection.roles': _READ_ONLY,
+    'collection.playbooks': _READ_ONLY,
+    'role.info': _READ_ONLY,
+    'role.variables': _READ_ONLY,
+    'role.argspec': _READ_ONLY,
+    'role.defaults': _READ_ONLY,
+    'role.tasks': _READ_ONLY,
+    'role.handlers': _READ_ONLY,
+    'role.templates': _READ_ONLY,
+    'role.files': _READ_ONLY,
     # Host queries reach out over SSH but change nothing
-    'ansible_ping': {'readOnlyHint': True},
-    'ansible_facts': {'readOnlyHint': True},
+    'ansible.ping': {'readOnlyHint': True},
+    'ansible.facts': {'readOnlyHint': True},
     # Secrets are mounted and unmounted; the project may be committed
-    'secret_paths': {'destructiveHint': False, 'idempotentHint': True,
+    'secret.paths': {'destructiveHint': False, 'idempotentHint': True,
                      'openWorldHint': False},
     # Writes change the project (recoverable via the auto-commit)
-    'file_write': {'destructiveHint': True, 'idempotentHint': True,
+    'file.write': {'destructiveHint': True, 'idempotentHint': True,
                    'openWorldHint': False},
     # Deleting an absent file is an error, so not idempotent
-    'file_delete': {'destructiveHint': True, 'idempotentHint': False,
+    'file.delete': {'destructiveHint': True, 'idempotentHint': False,
                     'openWorldHint': False},
     # A specification can remove inventory paths
-    'inventory_spec': {'destructiveHint': True, 'idempotentHint': True,
+    'inventory.spec': {'destructiveHint': True, 'idempotentHint': True,
                        'openWorldHint': False},
     # The view is server-global state; listing it changes nothing, and
     # a switch is visible to every connected client
-    'view_list': _READ_ONLY,
-    'view_switch': {'destructiveHint': False, 'idempotentHint': False,
+    'view.list': _READ_ONLY,
+    'view.switch': {'destructiveHint': False, 'idempotentHint': False,
                     'openWorldHint': False},
-    'view_create': {'destructiveHint': False, 'idempotentHint': False,
+    'view.create': {'destructiveHint': False, 'idempotentHint': False,
                     'openWorldHint': False},
     # Fetches over the network and adds a trust anchor
-    'keyring_fetch': {'destructiveHint': True, 'idempotentHint': True,
+    'keyring.fetch': {'destructiveHint': True, 'idempotentHint': True,
                       'openWorldHint': True},
     # Injects content into role executions on the managed hosts
-    'overrides_write': {'destructiveHint': True, 'idempotentHint': True,
+    'overrides.write': {'destructiveHint': True, 'idempotentHint': True,
                         'openWorldHint': False},
     # Environment writes land in files
-    'environment_set': {'destructiveHint': True, 'idempotentHint': True,
+    'environment.set': {'destructiveHint': True, 'idempotentHint': True,
                         'openWorldHint': False},
-    'environment_unset': {'destructiveHint': True, 'idempotentHint': True,
+    'environment.unset': {'destructiveHint': True, 'idempotentHint': True,
                           'openWorldHint': False},
     # Collection management fetches code over the network
-    'collection_require': {'destructiveHint': False,
+    'collection.require': {'destructiveHint': False,
                            'idempotentHint': True, 'openWorldHint': True},
-    'collection_remove': {'destructiveHint': True, 'idempotentHint': True,
+    'collection.remove': {'destructiveHint': True, 'idempotentHint': True,
                           'openWorldHint': False},
-    'collection_sync': {'destructiveHint': False, 'idempotentHint': True,
+    'collection.sync': {'destructiveHint': False, 'idempotentHint': True,
                         'openWorldHint': True},
     # A check run changes nothing on the managed hosts, but the local
     # auto-commit may commit the project
     'check': {'destructiveHint': False, 'idempotentHint': True},
     'run': {'destructiveHint': True, 'idempotentHint': True},
-    'project_pull': {'destructiveHint': False, 'idempotentHint': True},
-    'project_push': {'destructiveHint': True, 'idempotentHint': True},
+    'project.pull': {'destructiveHint': False, 'idempotentHint': True},
+    'project.push': {'destructiveHint': True, 'idempotentHint': True},
 }
 
 
@@ -339,7 +339,7 @@ def _documentation_entries(server, policy, project, roles_path,
     """
     bundled_content = policy is None or policy.bundled_content
     entries = [
-        ('playbooks',
+        ('playbook.list',
          'List the playbook targets which "run" and "check" can execute '
          'in this project: the project\'s own playbooks, the bundled '
          'DebOps collection playbooks, and playbook sets from the view '
@@ -352,7 +352,7 @@ def _documentation_entries(server, policy, project, roles_path,
          lambda arguments: tool_playbooks(
              project, policy,
              playbooks_path if bundled_content else None, arguments)),
-        ('playbook_info',
+        ('playbook.info',
          'Describe a project or bundled DebOps playbook: its plays, the '
          'inventory groups it targets, the roles it applies, and the '
          'playbooks it imports. Use this to learn what a playbook does '
@@ -372,7 +372,7 @@ def _documentation_entries(server, policy, project, roles_path,
              project, policy,
              playbooks_path if bundled_content else None, arguments,
              index_provider=collection_index_provider)),
-        ('collection_playbooks',
+        ('collection.playbooks',
          'List the playbooks of Ansible Collections visible to this '
          'project, grouped by collection; with "collection", only that '
          'one. Use this to find playbooks outside of the bundled '
@@ -390,7 +390,7 @@ def _documentation_entries(server, policy, project, roles_path,
           'required': []},
          lambda arguments: tool_collection_playbooks(
              collection_index_provider, arguments)),
-        ('collection_roles',
+        ('collection.roles',
          'List the Ansible Collections visible to this project and the '
          'roles they contain. Use this to find roles outside of the '
          'bundled DebOps collection.',
@@ -414,7 +414,7 @@ def _documentation_entries(server, policy, project, roles_path,
         roles_paths.append(roles_path)
     if roles_paths:
         entries.extend([
-            ('role_info',
+            ('role.info',
              'Describe a role of this project or the bundled DebOps '
              'collection: purpose, tags, dependencies, and which parts '
              '(defaults, tasks, templates) it provides.',
@@ -428,12 +428,12 @@ def _documentation_entries(server, policy, project, roles_path,
                  index_provider=collection_index_provider,
                  bundled_path=roles_path if bundled_content else None,
                  docs_version=server.version)),
-            ('role_variables',
+            ('role.variables',
              'List the variables of a role of this project or the '
              'bundled DebOps collection, from its vars/ directory — '
              'higher-precedence, internal state, not meant to be '
              'overridden from the inventory. For the overridable '
-             'defaults, use the role_defaults tool.' + FORMAT_NOTE,
+             'defaults, use the role.defaults tool.' + FORMAT_NOTE,
              {'type': 'object',
               'properties': {'name': {'type': 'string',
                                       'description': 'Role name, with or '
@@ -455,7 +455,7 @@ def _documentation_entries(server, policy, project, roles_path,
              lambda arguments: tool_role_variables(
                                roles_paths, arguments,
                                index_provider=collection_index_provider)),
-            ('role_argspec',
+            ('role.argspec',
              'Render the argument specification of a role '
              '(meta/argument_specs.yml): its options with types, '
              'required flags, choices and defaults. Use this for roles '
@@ -480,7 +480,7 @@ def _documentation_entries(server, policy, project, roles_path,
              lambda arguments: tool_role_argspec(
                                roles_paths, arguments,
                                index_provider=collection_index_provider)),
-            ('role_defaults',
+            ('role.defaults',
              'List the default inventory variables of a role of this '
              'project or the bundled DebOps collection, from its '
              'defaults/ directory, with their documentation. Use this to '
@@ -512,7 +512,7 @@ def _documentation_entries(server, policy, project, roles_path,
                  index_provider=collection_index_provider,
                  bundled_path=roles_path if bundled_content else None,
                  docs_version=server.version)),
-            ('role_tasks',
+            ('role.tasks',
              'Inspect the tasks of a role: its task files, and per file '
              'the tasks with their modules, conditions and tags. Use '
              'this to understand what a role does before applying it.'
@@ -539,7 +539,7 @@ def _documentation_entries(server, policy, project, roles_path,
              lambda arguments: tool_role_tasks(
                  roles_paths, arguments,
                  index_provider=collection_index_provider)),
-            ('role_handlers',
+            ('role.handlers',
              'Inspect the handlers of a role: its handler files, and '
              'per file the handlers with their modules, listen topics '
              'and conditions.' + FORMAT_NOTE,
@@ -566,7 +566,7 @@ def _documentation_entries(server, policy, project, roles_path,
              lambda arguments: tool_role_handlers(
                  roles_paths, arguments,
                  index_provider=collection_index_provider)),
-            ('role_templates',
+            ('role.templates',
              'List the Jinja2 templates of a role, or print one of '
              'them.',
              {'type': 'object',
@@ -581,7 +581,7 @@ def _documentation_entries(server, policy, project, roles_path,
              lambda arguments: tool_role_templates(
                  roles_paths, arguments,
                  index_provider=collection_index_provider)),
-            ('role_files',
+            ('role.files',
              'List the static files of a role, or print one of them.',
              {'type': 'object',
               'properties': {'name': {'type': 'string',
@@ -599,10 +599,26 @@ def _documentation_entries(server, policy, project, roles_path,
     return entries
 
 
+# Hidden aliases per canonical tool, answered quietly and never
+# listed: a model which guesses the namespace pattern ('playbook.run')
+# gets the verb ('run')
+TOOL_ALIASES = {
+    'run': ['playbook.run'],
+    'check': ['playbook.check'],
+}
+
+
+def _apply_aliases(server):
+    """Register the hidden tool aliases on the server."""
+    for canonical, aliases in TOOL_ALIASES.items():
+        for alias in aliases:
+            server.aliases[alias] = canonical
+
+
 # The tools which cannot work without an active infrastructure view
 VIEW_BOUND_TOOLS = frozenset((
-    'file_write', 'file_delete', 'inventory_query', 'inventory_spec',
-    'secret_paths', 'check', 'run', 'ansible_ping', 'ansible_facts',
+    'file.write', 'file.delete', 'inventory.query', 'inventory.spec',
+    'secret.paths', 'check', 'run', 'ansible.ping', 'ansible.facts',
 ))
 
 
@@ -675,13 +691,13 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
             collection_index_provider, project, policy)
 
     tools = [
-        ('project_status',
+        ('project.status',
          'Report the status of the DebOps project: type, current '
          'infrastructure view, inventory and secrets presence, encryption.',
          {'type': 'object', 'properties': {},
           'additionalProperties': False},
          lambda arguments: tool_project_status(project, policy, arguments)),
-        ('project_files',
+        ('project.files',
          'List the files of the DebOps project, minus denied paths '
          '(secrets, key material, virtual environments). Use this to '
          'see the project structure before reading specific files.',
@@ -694,7 +710,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                     'description': 'Only include paths '
                                     'containing this string'}}},
          lambda arguments: tool_project_files(project, policy, arguments)),
-        ('project_read',
+        ('project.read',
          'Read a file of the DebOps project (inventory, configuration, '
          'playbooks, ...), minus denied paths (secrets, key material, '
          'virtual environments). Text files only, size-limited.',
@@ -706,7 +722,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                   'nginx.yml"'}},
           'required': ['path']},
          lambda arguments: tool_project_read(project, policy, arguments)),
-        ('file_write',
+        ('file.write',
          'Write a file in the current infrastructure view, in allowed '
          'locations only ("resources/" and "playbooks/" by default; the '
          'project.mcp.write_allow policy). One file per call; the '
@@ -732,7 +748,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
           'required': ['path', 'content']},
          lambda arguments: tool_file_write(project, policy, arguments,
                                            server=server)),
-        ('file_delete',
+        ('file.delete',
          'Delete a file from the current infrastructure view, in '
          'allowed locations only (the project.mcp.write_allow policy). '
          'Regular files only, one per call; the deletion is committed '
@@ -747,7 +763,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
           'required': ['path']},
          lambda arguments: tool_file_delete(project, policy, arguments,
                                             server=server)),
-        ('inventory_spec',
+        ('inventory.spec',
          'Apply an inventory specification to the inventory of the '
          'current view: define groups, hosts and variables the DebOps '
          'way, instead of writing inventory files directly. Existing '
@@ -771,7 +787,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
           'required': ['spec']},
          lambda arguments: tool_inventory_spec(project, policy,
                                                arguments)),
-        ('keyring_fetch',
+        ('keyring.fetch',
          'Fetch a GPG key into the project keyring (ansible/keyring/), '
          'for debops.keyring to use with APT repositories and signed '
          'data. The server fetches and verifies the key itself; the key '
@@ -797,7 +813,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
          lambda arguments, context: tool_keyring_fetch(
              project, policy, arguments, context),
          True, True),
-        ('config_get',
+        ('config.get',
          'Return the value of a DebOps configuration option, like '
          '"debops config get" does; the key is a dot-separated path in '
          'the configuration tree.',
@@ -807,7 +823,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                  '"project.default_view"'}},
           'required': ['key']},
          lambda arguments: tool_config_get(project, arguments)),
-        ('environment_list',
+        ('environment.list',
          'List the environment variables the server\'s tool runs get, '
          'by origin: the project MCP environment file (with values), '
          'the tokens file (names only), the project environment and the '
@@ -819,7 +835,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                     'this string'}}},
          lambda arguments: tool_environment_list(project, policy,
                                                  arguments)),
-        ('environment_set',
+        ('environment.set',
          'Set an environment variable for the runs of this server, in '
          'the tracked environment file (.debops/mcp/environment, '
          'committed) or, with "secret": true, in the untracked tokens '
@@ -841,7 +857,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
           'required': ['name', 'value']},
          lambda arguments: tool_environment_set(project, policy,
                                                 arguments)),
-        ('environment_unset',
+        ('environment.unset',
          'Remove an environment variable from the MCP environment '
          'files. The change is complete when this call returns; a '
          'dependent call must wait for it (batched requests run '
@@ -856,7 +872,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
           'required': ['name']},
          lambda arguments: tool_environment_unset(project, policy,
                                                   arguments)),
-        ('inventory_query',
+        ('inventory.query',
          'Inspect the computed Ansible inventory with '
          '"ansible-inventory": "graph" shows the group tree, "list" '
          'dumps all host variables (can be large), "host" shows one '
@@ -871,7 +887,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                   'for the "host" action'}},
           'required': []},
          lambda arguments: tool_inventory_query(project, arguments)),
-        ('secret_paths',
+        ('secret.paths',
          'Find the paths of secrets in the project view\'s secret/ '
          'directory, without reading their contents. Use the paths to '
          'compose inventory lookups such as lookup("password", '
@@ -943,7 +959,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                        'it per call.'},
         }
         tools.extend([
-            ('ansible_ping',
+            ('ansible.ping',
              'Check SSH connectivity and Ansible reachability of hosts '
              '(ansible -m ping). Use this to verify a connection before '
              'querying or changing a host.',
@@ -954,7 +970,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                  enabled_check=enabled_check,
                  on_disabled=server.cancel_all),
              True),
-            ('ansible_facts',
+            ('ansible.facts',
              'Gather Ansible facts from hosts (ansible -m setup), '
              'for debugging and environment knowledge. The output is '
              'large; use "filter" to narrow it. The filter is a glob '
@@ -992,7 +1008,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
     # secrets mounts) is global, so the view is global, switchable
     # mid-session unless the policy locks it
     tools.extend([
-        ('view_list',
+        ('view.list',
          'List the infrastructure views of this project: which are '
          'registered, which is active, whether the view is locked.'
          + FORMAT_NOTE,
@@ -1000,12 +1016,12 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
           'properties': {'format': FORMAT_PROPERTY},
           'required': []},
          lambda arguments: tool_view_list(project, policy, arguments)),
-        ('view_switch',
+        ('view.switch',
          'Switch the active infrastructure view of the server to a '
          'registered one. The change is global — all connected clients '
          'then work in the new view, like sharing one checked-out git '
          'branch; every response carries the active view in its '
-         '"_meta" stamp. Use view_list to see what exists.',
+         '"_meta" stamp. Use view.list to see what exists.',
          {'type': 'object',
           'properties': {'view': {'type': 'string',
                                   'description': 'Name of the '
@@ -1013,10 +1029,10 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
           'required': ['view']},
          lambda arguments: tool_view_switch(project, policy, arguments,
                                             server)),
-        ('view_create',
+        ('view.create',
          'Create an infrastructure view (the way "debops project '
          'mkview" does): a registered inventory root of its own, '
-         'committed to git. Activate it afterwards with view_switch. '
+         'committed to git. Activate it afterwards with view.switch. '
          'Modern projects only; view names are lowercase letters, '
          'digits and underscores — no dashes (the serve --instance '
          'names split at the last dash).',
@@ -1035,7 +1051,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
     if sync_state is None:
         sync_state = server.sync_state = {'pull': 0.0, 'push': 0.0}
     tools.extend([
-        ('project_pull',
+        ('project.pull',
          'Pull the latest project state from its git origin '
          '(fast-forward only). Use this to pick up changes made '
          'elsewhere before reading or changing the project. The '
@@ -1045,7 +1061,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
           'additionalProperties': False},
          make_sync_tool(project, policy, sync_state, 'pull',
                         server=server)),
-        ('project_push',
+        ('project.push',
          'Push the project\'s committed state to its git origin. Only '
          'committed history is sent; the working tree must be clean. '
          'The change is complete when this call returns; a dependent '
@@ -1057,7 +1073,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
 
     # Ansible Collection management: requirements file plus install
     tools.extend([
-        ('collection_require',
+        ('collection.require',
          'Require an Ansible Collection in the project: add or update '
          'its entry in ansible/collections/requirements.yml (with '
          '"version", and "source"/"type" for a git repository) and '
@@ -1086,7 +1102,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
              enabled_check=enabled_check,
              on_disabled=server.cancel_all),
          True, False, True),
-        ('collection_remove',
+        ('collection.remove',
          'Remove an Ansible Collection from the project: drop its entry '
          'from the requirements and lock files, and delete its '
          'installed content from ansible/collections/ (ansible-galaxy '
@@ -1101,7 +1117,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
           'required': ['name']},
          lambda arguments: tool_collection_remove(project, policy,
                                                   arguments)),
-        ('collection_sync',
+        ('collection.sync',
          'Install the committed collection requirements of the '
          'project, for example after a pull brought new ones. The '
          'change is complete when this call returns; a dependent call '
@@ -1139,7 +1155,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
     # is not registered unless the project enables it
     if policy is not None and policy.overrides:
         tools.append((
-            'overrides_write',
+            'overrides.write',
             'Write a file into the project\'s overrides '
             '(ansible/overrides/): alternative files, templates and '
             'additional tasks for read-only roles, run on the managed '
@@ -1182,6 +1198,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
 
     _register_entries(target, tools, policy, confirm=confirm,
                       project=project)
+    _apply_aliases(server)
 
 
 def register_documentation_tools(server, roles_path=COLLECTION_ROLES,
@@ -1200,3 +1217,4 @@ def register_documentation_tools(server, roles_path=COLLECTION_ROLES,
                                      playbooks_path,
                                      collection_index_provider)
     _register_entries(server.tools, entries, policy)
+    _apply_aliases(server)

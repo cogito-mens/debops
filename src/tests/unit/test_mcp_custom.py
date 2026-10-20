@@ -316,7 +316,7 @@ class CustomToolWriteTestCase(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(os.stat(self.tool_path).st_mode),
                          0o755)
         self.assertEqual(self.commits,
-                         ['DebOps MCP: file_write '
+                         ['DebOps MCP: file.write '
                           '.debops/mcp/tools/hello-world'])
         # The new tool surface is picked up in place
         self.server.reload.assert_called_once()

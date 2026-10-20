@@ -31,8 +31,8 @@ VIEW_NAME_PATTERN = re.compile(r'^[a-z0-9][a-z0-9_]*$')
 
 # The answer the view-bound tools give while no view is active
 NO_ACTIVE_VIEW = ('no active infrastructure view: list the views with '
-                  '"view_list", activate one with "view_switch", or '
-                  'create one with "view_create"')
+                  '"view.list", activate one with "view.switch", or '
+                  'create one with "view.create"')
 
 
 def tool_view_list(project, policy, arguments):
@@ -137,7 +137,7 @@ def tool_view_switch(project, policy, arguments, server):
                            '{}\n'.format(name))
 
     previous = project.view if policy.view_root is not None else None
-    with exclusive_project(project, policy, note='view_switch ' + name):
+    with exclusive_project(project, policy, note='view.switch ' + name):
         server.switch_view(name)
     logger.notice('Infrastructure view switched: %s -> %s',
                   previous or '(none)', name)
@@ -163,11 +163,11 @@ def tool_view_create(project, policy, arguments):
     if name in project.config.raw.get('views', {}):
         return error_result('view already exists: {}'.format(name))
 
-    with exclusive_project(project, policy, note='view_create ' + name):
+    with exclusive_project(project, policy, note='view.create ' + name):
         try:
             project.mkview(name)
         except (ValueError, OSError) as errmsg:
             return error_result('cannot create the view: {}'
                                 .format(errmsg))
     return text_result('# View created: {}\n\nActivate it with '
-                       '"view_switch".\n'.format(name))
+                       '"view.switch".\n'.format(name))

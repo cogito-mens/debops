@@ -23,9 +23,9 @@ import unittest
 
 PING_OK = 'web1.example.com | SUCCESS => {"ping": "pong"}\n'
 
-# The real setup result wraps the facts in the 'ansible_facts'
+# The real setup result wraps the facts in the 'ansible.facts'
 # envelope key
-FACTS_OK = ('web1.example.com | SUCCESS => {"ansible_facts": '
+FACTS_OK = ('web1.example.com | SUCCESS => {"ansible.facts": '
             '{"ansible_distribution": "Debian", '
             '"ansible_distribution_version": "12"}, "changed": false}\n')
 
@@ -99,7 +99,7 @@ class HostsTestCase(unittest.TestCase):
             return popen, self.call_tool(name, arguments)
 
     def test_ping(self):
-        popen, response = self._run('ansible_ping', {'hosts': 'web1'})
+        popen, response = self._run('ansible.ping', {'hosts': 'web1'})
         command = popen.call_args[0][0]
         self.assertEqual(command[:4],
                          ['ansible', 'web1', '-m', 'ansible.builtin.ping'])
@@ -111,16 +111,16 @@ class HostsTestCase(unittest.TestCase):
     def test_ping_structured(self):
         from tests.unit._helpers import check_schema
         from debops.mcp.tools import TOOL_OUTPUT_SCHEMAS
-        _popen, response = self._run('ansible_ping',
+        _popen, response = self._run('ansible.ping',
                                      {'hosts': 'web1'})
         structured = response['result']['structuredContent']
         self.assertEqual(structured, {'web1.example.com': 'pong'})
         self.assertEqual(check_schema(structured,
                                       TOOL_OUTPUT_SCHEMAS
-                                      ['ansible_ping']), [])
+                                      ['ansible.ping']), [])
 
     def test_become_flag(self):
-        popen, _response = self._run('ansible_ping',
+        popen, _response = self._run('ansible.ping',
                                      {'hosts': 'web1', 'become': True})
         self.assertIn('--become', popen.call_args[0][0])
 
@@ -139,33 +139,33 @@ class HostsTestCase(unittest.TestCase):
         # The project may default the ad-hoc tools to escalate: the
         # DebOps local facts read package and file state as root
         self._become_policy_server()
-        popen, _response = self._run('ansible_facts', {'hosts': 'web1'})
+        popen, _response = self._run('ansible.facts', {'hosts': 'web1'})
         self.assertIn('--become', popen.call_args[0][0])
 
     def test_become_per_call_overrides_the_policy(self):
         self._become_policy_server()
-        popen, _response = self._run('ansible_facts',
+        popen, _response = self._run('ansible.facts',
                                      {'hosts': 'web1', 'become': False})
         self.assertNotIn('--become', popen.call_args[0][0])
 
     def test_facts_header_marks_the_privilege_level(self):
-        _popen, response = self._run('ansible_facts', {'hosts': 'web1'})
+        _popen, response = self._run('ansible.facts', {'hosts': 'web1'})
         text = response['result']['content'][0]['text']
         self.assertIn('(become: no)', text)
-        _popen, response = self._run('ansible_facts',
+        _popen, response = self._run('ansible.facts',
                                      {'hosts': 'web1', 'become': True})
         self.assertIn('(become: yes)',
                       response['result']['content'][0]['text'])
 
     def test_facts_are_rendered_as_yaml(self):
-        _popen, response = self._run('ansible_facts', {'hosts': 'web1'},
+        _popen, response = self._run('ansible.facts', {'hosts': 'web1'},
                                      module_output=FACTS_OK)
         text = response['result']['content'][0]['text']
         self.assertIn('## web1.example.com', text)
         self.assertIn('ansible_distribution: Debian', text)
 
     def test_facts_filter(self):
-        popen, _response = self._run('ansible_facts',
+        popen, _response = self._run('ansible.facts',
                                      {'hosts': 'web1',
                                       'filter': 'ansible_local*'})
         self.assertEqual(popen.call_args[0][0][-2:],
@@ -174,14 +174,14 @@ class HostsTestCase(unittest.TestCase):
     def test_facts_dotted_filter_narrows_into_the_branch(self):
         # Ansible's own filter stops at the top level; the dotted path
         # is walked server-side
-        local_facts = ('web1.example.com | SUCCESS => {"ansible_facts": '
+        local_facts = ('web1.example.com | SUCCESS => {"ansible.facts": '
                        '{"ansible_local": '
                        '{"postfix": {"installed": true}, '
                        '"telegraf": {"installed": false}, '
                        '"nginx": {"installed": true}}}, '
                        '"changed": false}\n')
         popen, response = self._run(
-                'ansible_facts',
+                'ansible.facts',
                 {'hosts': 'web1', 'filter': 'ansible_local.post*'},
                 module_output=local_facts)
         # Ansible gets the top-level prefix; the branch narrows after
@@ -195,7 +195,7 @@ class HostsTestCase(unittest.TestCase):
     def test_facts_dotted_filter_without_a_match_is_an_empty_branch(
             self):
         _popen, response = self._run(
-                'ansible_facts',
+                'ansible.facts',
                 {'hosts': 'web1', 'filter': 'ansible_local.nosuch*'},
                 module_output=FACTS_OK)
         text = response['result']['content'][0]['text']
@@ -206,7 +206,7 @@ class HostsTestCase(unittest.TestCase):
 
     def test_facts_format_json(self):
         _popen, response = self._run(
-                'ansible_facts',
+                'ansible.facts',
                 {'hosts': 'web1', 'format': 'json'},
                 module_output=FACTS_OK)
         document = json.loads(response['result']['content'][0]['text'])
@@ -216,24 +216,24 @@ class HostsTestCase(unittest.TestCase):
                                  'ansible_distribution_version': '12'}})
 
     def test_facts_invalid_format_rejected(self):
-        response = self.call_tool('ansible_facts',
+        response = self.call_tool('ansible.facts',
                                   {'hosts': 'web1', 'format': 'yaml'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('invalid format',
                       response['result']['content'][0]['text'])
 
     def test_invalid_host_pattern(self):
-        response = self.call_tool('ansible_ping', {'hosts': 'a b'})
+        response = self.call_tool('ansible.ping', {'hosts': 'a b'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('invalid host pattern',
                       response['result']['content'][0]['text'])
-        response = self.call_tool('ansible_ping', {'hosts': ''})
+        response = self.call_tool('ansible.ping', {'hosts': ''})
         self.assertTrue(response['result']['isError'])
         self.assertIn('invalid host pattern',
                       response['result']['content'][0]['text'])
 
     def test_invalid_facts_filter(self):
-        response = self.call_tool('ansible_facts',
+        response = self.call_tool('ansible.facts',
                                   {'hosts': 'web1',
                                    'filter': 'a b; rm -rf /'})
         self.assertTrue(response['result']['isError'])
@@ -241,7 +241,7 @@ class HostsTestCase(unittest.TestCase):
                       response['result']['content'][0]['text'])
 
     def test_non_boolean_become_rejected(self):
-        response = self.call_tool('ansible_ping',
+        response = self.call_tool('ansible.ping',
                                   {'hosts': 'web1', 'become': 'yes'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('must be a boolean',
@@ -249,14 +249,14 @@ class HostsTestCase(unittest.TestCase):
 
     def test_unreachable_host_is_an_error_result(self):
         _popen, response = self._run(
-                'ansible_ping', {'hosts': 'web1'}, module_rc=4,
+                'ansible.ping', {'hosts': 'web1'}, module_rc=4,
                 module_output='web1 | UNREACHABLE! => {...}\n')
         self.assertTrue(response['result']['isError'])
         self.assertIn('UNREACHABLE',
                       response['result']['content'][0]['text'])
 
     def test_pattern_matching_nothing_is_an_error(self):
-        _popen, response = self._run('ansible_ping', {'hosts': 'nosuch'},
+        _popen, response = self._run('ansible.ping', {'hosts': 'nosuch'},
                                      resolved=())
         self.assertTrue(response['result']['isError'])
         self.assertIn('matches no hosts',
@@ -279,7 +279,7 @@ class HostsTestCase(unittest.TestCase):
                 mock.patch('debops.mcp.tools.hosts.AnsibleInventory'):
             response = server.handle({
                 'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                'params': {'_meta': REQUEST_META, 'name': 'ansible_ping',
+                'params': {'_meta': REQUEST_META, 'name': 'ansible.ping',
                            'arguments': {'hosts': 'web1'}}})
         self.assertTrue(response['result']['isError'])
         self.assertIn('ansible_hosts',
@@ -326,8 +326,8 @@ class HostsTestCase(unittest.TestCase):
         popen.return_value.terminate.assert_called_once()
 
     def test_registered_when_execution_allowed(self):
-        self.assertIn('ansible_ping', self.server.tools)
-        self.assertIn('ansible_facts', self.server.tools)
+        self.assertIn('ansible.ping', self.server.tools)
+        self.assertIn('ansible.facts', self.server.tools)
 
     def test_not_registered_when_execute_none(self):
         self.project.config.raw['project'] = {'mcp': {'execute': 'none'}}
@@ -336,19 +336,19 @@ class HostsTestCase(unittest.TestCase):
         register_project_tools(server, roles_path=self.tmpdir,
                                playbooks_path=self.tmpdir,
                                collection_index_provider=lambda: {})
-        self.assertNotIn('ansible_ping', server.tools)
-        self.assertNotIn('ansible_facts', server.tools)
+        self.assertNotIn('ansible.ping', server.tools)
+        self.assertNotIn('ansible.facts', server.tools)
 
     def test_deny_list_removes_them(self):
         self.project.config.raw['project'] = {'mcp': {'deny':
-                                                      ['ansible_ping']}}
+                                                      ['ansible.ping']}}
         server = McpServer(project=self.project,
                            policy=McpPolicy(self.project))
         register_project_tools(server, roles_path=self.tmpdir,
                                playbooks_path=self.tmpdir,
                                collection_index_provider=lambda: {})
-        self.assertNotIn('ansible_ping', server.tools)
-        self.assertIn('ansible_facts', server.tools)
+        self.assertNotIn('ansible.ping', server.tools)
+        self.assertIn('ansible.facts', server.tools)
 
 
 if __name__ == '__main__':

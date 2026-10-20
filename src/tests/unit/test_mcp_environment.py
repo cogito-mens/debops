@@ -157,7 +157,7 @@ class EnvironmentWriteTestCase(unittest.TestCase):
         with open(self.env_path()) as fp:
             self.assertEqual(fp.read(), 'REGION=eu-central-1\n')
         self.assertEqual(self.commits,
-                         ['DebOps MCP: environment_set REGION'])
+                         ['DebOps MCP: environment.set REGION'])
 
     def test_code_path_variables_are_refused(self):
         # A variable which redirects code loading plus a planted file

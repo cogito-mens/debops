@@ -2,7 +2,7 @@
 # Copyright (C) 2026 DebOps <https://debops.org/>
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Tests for the keyring_fetch tool.
+"""Tests for the keyring.fetch tool.
 
 Written with 'unittest' so that the suite runs under pytest without extra
 dependencies. The fetch pipeline tests need gpg and are skipped without
@@ -121,13 +121,13 @@ class KeyringFetchTestCase(unittest.TestCase):
         from debops.mcp.tools import TOOL_OUTPUT_SCHEMAS
         self.assertEqual(check_schema(structured,
                                       TOOL_OUTPUT_SCHEMAS
-                                      ['keyring_fetch']), [])
+                                      ['keyring.fetch']), [])
         written = os.path.join(self.tmpdir, 'ansible', 'keyring',
                                '0x{}.asc'.format(self.fingerprint))
         with open(written) as fp:
             self.assertIn('BEGIN PGP PUBLIC KEY BLOCK', fp.read())
         self.assertEqual(self.commits,
-                         ['DebOps MCP: keyring_fetch 0x{}.asc'
+                         ['DebOps MCP: keyring.fetch 0x{}.asc'
                           .format(self.fingerprint)])
 
     def test_fingerprint_match(self):
@@ -225,8 +225,8 @@ class KeyringConfirmationTestCase(unittest.TestCase):
             'config': type('Config', (), {'raw': {}})(),
         })()
         self.policy = McpPolicy(self.project)
-        # The default confirm set includes keyring_fetch
-        self.assertIn('keyring_fetch', self.policy.confirm)
+        # The default confirm set includes keyring.fetch
+        self.assertIn('keyring.fetch', self.policy.confirm)
         self.eliciting = ToolContext(
                 1, __import__('threading').Event(),
                 client_capabilities={'elicitation': {'form': {}}})

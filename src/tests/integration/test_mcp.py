@@ -159,11 +159,11 @@ def test_serve_outside_a_project_serves_documentation(
     assert result.returncode == 0
     (response,) = read_json_lines(result.stdout)
     names = sorted(tool["name"] for tool in response["result"]["tools"])
-    assert names == ["collection_playbooks", "collection_roles",
-                     "playbook_info", "playbooks",
-                     "role_argspec", "role_defaults", "role_files",
-                     "role_handlers", "role_info", "role_tasks",
-                     "role_templates", "role_variables"]
+    assert names == ["collection.playbooks", "collection.roles",
+                     "playbook.info", "playbook.list",
+                     "role.argspec", "role.defaults", "role.files",
+                     "role.handlers", "role.info", "role.tasks",
+                     "role.templates", "role.variables"]
 
 
 def test_serve_explicit_nonproject_dir_fails(run_debops, mcp_env,
@@ -195,8 +195,8 @@ def test_serve_docs_flag_inside_a_project(run_debops, mcp_env,
     assert result.returncode == 0
     (response,) = read_json_lines(result.stdout)
     names = [tool["name"] for tool in response["result"]["tools"]]
-    assert "project_read" not in names
-    assert "role_info" in names
+    assert "project.read" not in names
+    assert "role.info" in names
 
 
 def test_serve_docs_rejects_view(run_debops, mcp_env, project_dir):
@@ -307,23 +307,23 @@ def test_no_view_startup_and_recovery_via_stdio(run_debops, mcp_env,
     server = _LiveServer(project_dir, mcp_env, debops_source_dir)
     try:
         # The view-bound tools answer with the recovery path
-        blocked = server.call("file_write",
+        blocked = server.call("file.write",
                               {"path": "playbooks/x.yml",
                                "content": "---\n"})
         assert blocked["result"]["isError"]
         assert "no active infrastructure view" in \
             blocked["result"]["content"][0]["text"]
-        assert "view_switch" in blocked["result"]["content"][0]["text"]
+        assert "view.switch" in blocked["result"]["content"][0]["text"]
 
         # The discovery anchor works and names the registered view
-        listing = server.call("view_list", {})
+        listing = server.call("view.list", {})
         assert "system" in listing["result"]["content"][0]["text"]
         assert "Active: none" in listing["result"]["content"][0]["text"]
 
         # Selecting the view unlocks the surface mid-session
-        switched = server.call("view_switch", {"view": "system"})
+        switched = server.call("view.switch", {"view": "system"})
         assert not switched["result"].get("isError", False)
-        written = server.call("file_write",
+        written = server.call("file.write",
                               {"path": "playbooks/x.yml",
                                "content": "---\n"})
         assert not written["result"].get("isError", False)
@@ -347,7 +347,7 @@ def test_view_create_and_switch_via_stdio(run_debops, mcp_env,
 
     server = _LiveServer(project_dir, mcp_env, debops_source_dir)
     try:
-        created = server.call("view_create", {"view": "webservers"})
+        created = server.call("view.create", {"view": "webservers"})
         assert not created["result"].get("isError", False)
         assert (project_dir / "ansible" / "views" / "webservers"
                 ).is_dir()
@@ -356,11 +356,11 @@ def test_view_create_and_switch_via_stdio(run_debops, mcp_env,
         log = subprocess.run(["git", "log", "--format=%s"],
                              cwd=str(project_dir), capture_output=True,
                              text=True, check=True)
-        assert "DebOps MCP: view_create webservers" in log.stdout
+        assert "DebOps MCP: view.create webservers" in log.stdout
 
-        switched = server.call("view_switch", {"view": "webservers"})
+        switched = server.call("view.switch", {"view": "webservers"})
         assert not switched["result"].get("isError", False)
-        status = server.call("project_status", {})
+        status = server.call("project.status", {})
         assert "View: webservers" in \
             status["result"]["content"][0]["text"]
     finally:
@@ -380,7 +380,7 @@ def test_view_switch_refused_with_view_lock(run_debops, mcp_env,
     server = _LiveServer(project_dir, mcp_env, debops_source_dir,
                          ("--view-lock",))
     try:
-        refused = server.call("view_switch", {"view": "system"})
+        refused = server.call("view.switch", {"view": "system"})
         assert refused["result"]["isError"]
         assert "locked" in refused["result"]["content"][0]["text"]
     finally:
@@ -391,7 +391,7 @@ def test_view_switch_refused_with_view_lock(run_debops, mcp_env,
             "---\nproject:\n  mcp:\n    view_lock: true\n")
     server = _LiveServer(project_dir, mcp_env, debops_source_dir)
     try:
-        refused = server.call("view_switch", {"view": "system"})
+        refused = server.call("view.switch", {"view": "system"})
         assert refused["result"]["isError"]
         assert "locked" in refused["result"]["content"][0]["text"]
     finally:
@@ -409,7 +409,7 @@ def test_view_switch_on_legacy_is_refused(run_debops, mcp_env,
 
     server = _LiveServer(project_dir, mcp_env, debops_source_dir)
     try:
-        refused = server.call("view_switch", {"view": "system"})
+        refused = server.call("view.switch", {"view": "system"})
         assert refused["result"]["isError"]
         assert "legacy" in refused["result"]["content"][0]["text"]
     finally:
@@ -429,14 +429,14 @@ def test_view_switch_refused_while_secrets_unlocked(
     server = _LiveServer(project_dir, gpg_env, debops_source_dir)
     try:
         # git-crypt starts locked; the switch works
-        switched = server.call("view_switch", {"view": "system"})
+        switched = server.call("view.switch", {"view": "system"})
         assert not switched["result"].get("isError", False)
-        created = server.call("view_create", {"view": "web"})
+        created = server.call("view.create", {"view": "web"})
         assert not created["result"].get("isError", False)
 
         run_debops("project", "unlock", cwd=str(project_dir),
                    env=gpg_env, check=True)
-        refused = server.call("view_switch", {"view": "web"})
+        refused = server.call("view.switch", {"view": "web"})
         assert refused["result"]["isError"]
         text = refused["result"]["content"][0]["text"]
         assert "git-crypt" in text
@@ -444,7 +444,7 @@ def test_view_switch_refused_while_secrets_unlocked(
 
         run_debops("project", "lock", cwd=str(project_dir),
                    env=gpg_env, check=True)
-        switched = server.call("view_switch", {"view": "web"})
+        switched = server.call("view.switch", {"view": "web"})
         assert not switched["result"].get("isError", False)
     finally:
         server.stop()
@@ -483,38 +483,38 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
     assert result.returncode == 0
     (response,) = read_json_lines(result.stdout)
     names = [tool["name"] for tool in response["result"]["tools"]]
-    assert sorted(names) == ["ansible_facts", "ansible_ping", "check",
-                             "collection_playbooks", "collection_remove",
-                             "collection_require", "collection_roles",
-                             "collection_sync", "config_get",
-                             "environment_list",
-                             "environment_set", "environment_unset",
-                             "file_delete", "file_write",
-                             "inventory_query",
-                             "inventory_spec", "keyring_fetch",
-                             "playbook_info",
-                             "playbooks", "project_files",
-                             "project_pull", "project_push", "project_read",
-                             "project_status", "role_argspec",
-                             "role_defaults", "role_files",
-                             "role_handlers", "role_info", "role_tasks",
-                             "role_templates", "role_variables",
-                             "secret_paths", "view_create", "view_list",
-                             "view_switch"]
+    assert sorted(names) == ["ansible.facts", "ansible.ping", "check",
+                             "collection.playbooks", "collection.remove",
+                             "collection.require", "collection.roles",
+                             "collection.sync", "config.get",
+                             "environment.list",
+                             "environment.set", "environment.unset",
+                             "file.delete", "file.write",
+                             "inventory.query",
+                             "inventory.spec", "keyring.fetch",
+                             "playbook.info",
+                             "playbook.list", "project.files",
+                             "project.pull", "project.push", "project.read",
+                             "project.status", "role.argspec",
+                             "role.defaults", "role.files",
+                             "role.handlers", "role.info", "role.tasks",
+                             "role.templates", "role.variables",
+                             "secret.paths", "view.create", "view.list",
+                             "view.switch"]
 
 
 def test_role_defaults_via_stdio(run_debops, mcp_env, project_dir):
     brief = json.dumps({
         "jsonrpc": "2.0", "id": 1,
         "method": "tools/call",
-        "params": {"_meta": REQUEST_META, "name": "role_defaults",
+        "params": {"_meta": REQUEST_META, "name": "role.defaults",
                    "arguments": {"name": "elasticsearch",
                                  "filter": "base_packages"}},
     })
     full = json.dumps({
         "jsonrpc": "2.0", "id": 2,
         "method": "tools/call",
-        "params": {"_meta": REQUEST_META, "name": "role_defaults",
+        "params": {"_meta": REQUEST_META, "name": "role.defaults",
                    "arguments": {"name": "elasticsearch",
                                  "filter": "base_packages",
                                  "detail": "full"}},
@@ -542,7 +542,7 @@ def test_project_read_via_stdio(run_debops, mcp_env, project_dir):
     request = json.dumps({
         "jsonrpc": "2.0", "id": 1,
         "method": "tools/call",
-        "params": {"_meta": REQUEST_META, "name": "project_read",
+        "params": {"_meta": REQUEST_META, "name": "project.read",
                    "arguments": {"path": "ansible/inventory/group_vars/"
                                  "all/nginx.yml"}},
     }) + "\n"
@@ -568,7 +568,7 @@ def test_inventory_query_via_stdio(run_debops, mcp_env, project_dir):
     request = json.dumps({
         "jsonrpc": "2.0", "id": 1,
         "method": "tools/call",
-        "params": {"_meta": REQUEST_META, "name": "inventory_query", "arguments": {}},
+        "params": {"_meta": REQUEST_META, "name": "inventory.query", "arguments": {}},
     }) + "\n"
     result = run_debops("mcp", "serve", cwd=str(project_dir),
                         env=mcp_env, input_text=request)
@@ -583,12 +583,12 @@ def test_role_inspection_via_stdio(run_debops, mcp_env, project_dir):
     requests = (
         json.dumps({"jsonrpc": "2.0", "id": 1,
                     "method": "tools/call",
-                    "params": {"_meta": REQUEST_META, "name": "role_tasks",
+                    "params": {"_meta": REQUEST_META, "name": "role.tasks",
                                "arguments": {"name": "nginx",
                                              "file": "main"}}}) + "\n"
         + json.dumps({"jsonrpc": "2.0", "id": 2,
                       "method": "tools/call",
-                      "params": {"_meta": REQUEST_META, "name": "role_templates",
+                      "params": {"_meta": REQUEST_META, "name": "role.templates",
                                  "arguments": {"name": "nginx"}}}) + "\n"
     )
     result = run_debops("mcp", "serve", cwd=str(project_dir),
@@ -611,7 +611,7 @@ def test_collection_roles_via_stdio(run_debops, mcp_env, project_dir):
     request = json.dumps({
         "jsonrpc": "2.0", "id": 1,
         "method": "tools/call",
-        "params": {"_meta": REQUEST_META, "name": "collection_roles", "arguments": {}},
+        "params": {"_meta": REQUEST_META, "name": "collection.roles", "arguments": {}},
     }) + "\n"
     result = run_debops("mcp", "serve", cwd=str(project_dir),
                         env=mcp_env, input_text=request)
@@ -629,7 +629,7 @@ def test_playbooks_via_stdio(run_debops, mcp_env, project_dir):
     request = json.dumps({
         "jsonrpc": "2.0", "id": 1,
         "method": "tools/call",
-        "params": {"_meta": REQUEST_META, "name": "playbooks",
+        "params": {"_meta": REQUEST_META, "name": "playbook.list",
                    "arguments": {"filter": "service/nginx"}},
     }) + "\n"
     result = run_debops("mcp", "serve", cwd=str(project_dir),
@@ -646,7 +646,7 @@ def test_playbook_info_via_stdio(run_debops, mcp_env, project_dir):
     request = json.dumps({
         "jsonrpc": "2.0", "id": 1,
         "method": "tools/call",
-        "params": {"_meta": REQUEST_META, "name": "playbook_info",
+        "params": {"_meta": REQUEST_META, "name": "playbook.info",
                    "arguments": {"playbook": "service/nginx"}},
     }) + "\n"
     result = run_debops("mcp", "serve", cwd=str(project_dir),
@@ -797,11 +797,11 @@ def test_write_check_run_loop_via_stdio(run_debops, mcp_env,
         (response,) = read_json_lines(result.stdout)
         return response["result"]
 
-    written = call("file_write",
+    written = call("file.write",
                    {"path": "playbooks/written.yml",
                     "content": playbook})
     assert "created: playbooks/written.yml" in written["content"][0]["text"]
-    listed = call("playbooks", {"filter": "written"})
+    listed = call("playbook.list", {"filter": "written"})
     assert "written" in listed["content"][0]["text"]
     checked = call("check", {"playbook": "written"})
     assert checked["isError"] is False
@@ -811,7 +811,7 @@ def test_write_check_run_loop_via_stdio(run_debops, mcp_env,
     log = subprocess.run(["git", "log", "--format=%s", "-1"],
                          cwd=str(project_dir), env=env,
                          capture_output=True, text=True)
-    assert "DebOps MCP: file_write playbooks/written.yml" in log.stdout
+    assert "DebOps MCP: file.write playbooks/written.yml" in log.stdout
 
 
 def test_inventory_spec_via_stdio(run_debops, mcp_env, project_dir):
@@ -848,25 +848,25 @@ def test_inventory_spec_via_stdio(run_debops, mcp_env, project_dir):
             "  hosts: |\n"
             "    [spec_group]\n"
             "    spec1.example.com\n")
-    preview = call("inventory_spec", {"spec": spec, "dry_run": True})
+    preview = call("inventory.spec", {"spec": spec, "dry_run": True})
     assert "dry run" in preview["content"][0]["text"]
     assert "Planned writes" in preview["content"][0]["text"]
     # Nothing was written
     assert not (project_dir / "ansible" / "inventory" / "hosts").exists()
 
-    applied = call("inventory_spec", {"spec": spec})
+    applied = call("inventory.spec", {"spec": spec})
     assert "## Written (1)" in applied["content"][0]["text"]
     assert (project_dir / "ansible" / "inventory"
             / "hosts").read_text() == "[spec_group]\nspec1.example.com\n"
 
-    graph = call("inventory_query", {"action": "graph"})
+    graph = call("inventory.query", {"action": "graph"})
     assert "spec_group" in graph["content"][0]["text"]
 
     # Committed with MCP provenance
     log = subprocess.run(["git", "log", "--format=%s", "-1"],
                          cwd=str(project_dir), env=env,
                          capture_output=True, text=True)
-    assert "DebOps MCP: inventory_spec" in log.stdout
+    assert "DebOps MCP: inventory.spec" in log.stdout
 
 
 def test_check_of_a_local_playbook_asks_via_stdio(run_debops, mcp_env,
@@ -1113,7 +1113,7 @@ def test_secret_paths_via_stdio(run_debops, mcp_env, project_dir):
     request = json.dumps({
         "jsonrpc": "2.0", "id": 1,
         "method": "tools/call",
-        "params": {"_meta": REQUEST_META, "name": "secret_paths",
+        "params": {"_meta": REQUEST_META, "name": "secret.paths",
                    "arguments": {"pattern": "**/password"}},
     }) + "\n"
     result = run_debops("mcp", "serve", cwd=str(project_dir),
@@ -1141,7 +1141,7 @@ def test_ansible_ping_via_stdio(run_debops, mcp_env, project_dir):
     request = json.dumps({
         "jsonrpc": "2.0", "id": 1,
         "method": "tools/call",
-        "params": {"_meta": REQUEST_META, "name": "ansible_ping",
+        "params": {"_meta": REQUEST_META, "name": "ansible.ping",
                    "arguments": {"hosts": "local"}},
     }) + "\n"
     result = run_debops("mcp", "serve", cwd=str(project_dir),
@@ -1600,11 +1600,11 @@ def test_project_sync_via_stdio(run_debops, mcp_env, tmp_path):
     requests = (
         json.dumps({"jsonrpc": "2.0", "id": 1,
                     "method": "tools/call",
-                    "params": {"_meta": REQUEST_META, "name": "project_pull",
+                    "params": {"_meta": REQUEST_META, "name": "project.pull",
                                "arguments": {}}}) + "\n"
         + json.dumps({"jsonrpc": "2.0", "id": 2,
                       "method": "tools/call",
-                      "params": {"_meta": REQUEST_META, "name": "project_pull",
+                      "params": {"_meta": REQUEST_META, "name": "project.pull",
                                  "arguments": {}}}) + "\n"
     )
     result = run_debops("mcp", "serve", cwd=str(project_dir),
@@ -1666,7 +1666,7 @@ def test_pull_refreshes_the_project_via_stdio(run_debops, mcp_env,
     request = json.dumps({
         "jsonrpc": "2.0", "id": 1,
         "method": "tools/call",
-        "params": {"_meta": REQUEST_META, "name": "project_pull",
+        "params": {"_meta": REQUEST_META, "name": "project.pull",
                    "arguments": {}}}) + "\n"
     result = run_debops("mcp", "serve", cwd=str(project_dir),
                         env=mcp_env, input_text=request)
@@ -1736,7 +1736,7 @@ def test_policy_deny_hides_a_tool(run_debops, mcp_env, project_dir):
     conf_d = project_dir / ".debops" / "conf.d"
     conf_d.mkdir(parents=True)
     (conf_d / "mcp.yml").write_text(
-            "---\nproject:\n  mcp:\n    deny: ['role_info']\n")
+            "---\nproject:\n  mcp:\n    deny: ['role.info']\n")
 
     request = (json.dumps({"jsonrpc": "2.0",
                            "id": 1, "method": "tools/list",
@@ -1747,8 +1747,8 @@ def test_policy_deny_hides_a_tool(run_debops, mcp_env, project_dir):
     assert result.returncode == 0
     (response,) = read_json_lines(result.stdout)
     names = [tool["name"] for tool in response["result"]["tools"]]
-    assert "role_info" not in names
-    assert "role_variables" in names
+    assert "role.info" not in names
+    assert "role.variables" in names
 
 
 def test_connect_exits_quietly_on_sigint(debops_source_dir, mcp_env,
