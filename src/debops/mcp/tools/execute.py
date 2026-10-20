@@ -178,10 +178,14 @@ def _playbook_targets(arguments):
     return targets
 
 
-def _build_ansible_args(arguments, check, allowed_options=EXECUTE_OPTIONS):
+def _build_ansible_args(arguments, check, allowed_options=EXECUTE_OPTIONS,
+                        diff=False):
     """Build the ansible-playbook arguments from the tool arguments.
 
-    Only options permitted by the project policy are accepted.
+    Only options permitted by the project policy are accepted. The diff
+    rides only when the project opts in (project.mcp.execute_diff): it
+    renders the files a template task would write, secrets included,
+    into the tool result.
     """
     args = _playbook_targets(arguments)
     for option, flag in ALLOWED_OPTIONS.items():
@@ -197,8 +201,11 @@ def _build_ansible_args(arguments, check, allowed_options=EXECUTE_OPTIONS):
                     option, value))
         args.extend([flag, value])
     if check:
-        # Mirror the 'debops check' section
-        args.extend(['--diff', '--check'])
+        # Mirror the 'debops check' section; the diff is gated on the
+        # project policy, since it can carry rendered secrets
+        if diff:
+            args.append('--diff')
+        args.append('--check')
     return args
 
 
@@ -336,7 +343,8 @@ def _execute_playbook(project, policy, arguments, context, check,
                            note='{} {}'.format(mode, ' '.join(targets))):
         try:
             args = _build_ansible_args(arguments, check,
-                                       policy.execute_options)
+                                       policy.execute_options,
+                                       diff=policy.execute_diff)
         except ValueError as errmsg:
             return error_result(str(errmsg))
 

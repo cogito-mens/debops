@@ -323,6 +323,19 @@ class McpPolicy(object):
             logger.notice('Privilege escalation by default for the '
                           'ad-hoc host tools (project.mcp.become)')
 
+        # Whether check-mode runs pass '--diff'. The diff renders the
+        # files a template task would write — with their secrets — into
+        # the tool result, which goes to the model; the per-host recap
+        # is the agent-usable answer without it
+        execute_diff = mcp_config.get('execute_diff', False)
+        if isinstance(execute_diff, str):
+            execute_diff = strtobool(execute_diff)
+        self.execute_diff = bool(execute_diff)
+        if self.execute_diff:
+            logger.notice('Check-mode diffs enabled by policy '
+                          '(rendered file content, with its secrets, '
+                          'reaches the model)')
+
         options = mcp_config.get('execute_options')
         if options is None:
             options = EXECUTE_OPTIONS

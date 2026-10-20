@@ -33,6 +33,12 @@ execute_timeout = 3600
 # The ansible-playbook options an execution may pass through.
 execute_options = ["limit", "tags", "skip-tags"]
 
+# Whether check-mode runs include '--diff'. The diff renders the files
+# a template task would write — secrets included — into the tool
+# result, which goes to the model. Off by default; the per-host recap
+# is the agent-usable answer without it.
+execute_diff = false
+
 # Glob allowlists of inventory host patterns the host-query and
 # the execution tools may touch; empty means every host is allowed.
 #ansible_hosts = []

@@ -67,8 +67,15 @@ def make_resolve_result(hosts=('web1',), returncode=0, stderr=''):
 
 class BuildArgsTestCase(unittest.TestCase):
 
-    def test_check_appends_check_and_diff(self):
+    def test_check_appends_check_only_by_default(self):
+        # The diff is gated on the project policy: it renders the files
+        # a template task would write, secrets included
         args = _build_ansible_args({'playbook': 'site'}, check=True)
+        self.assertEqual(args, ['site', '--check'])
+
+    def test_check_appends_diff_when_the_policy_opts_in(self):
+        args = _build_ansible_args({'playbook': 'site'}, check=True,
+                                   diff=True)
         self.assertEqual(args, ['site', '--diff', '--check'])
 
     def test_targets_reject_options(self):
@@ -457,7 +464,7 @@ class ExecuteTestCase(unittest.TestCase):
         # Both playbooks, in specification order, before the options
         runner.assert_called_once_with(
                 self.project,
-                ansible_args=['a.yml', 'b.yml', '--diff', '--check'])
+                ansible_args=['a.yml', 'b.yml', '--check'])
         text = result['content'][0]['text']
         self.assertIn('# debops check a.yml b.yml', text)
 
