@@ -64,6 +64,30 @@ class DiscoverTestCase(unittest.TestCase):
         self.assertEqual(meta['name'], 'debops')
         self.assertTrue(meta['version'])
 
+    def test_discover_result_shape_matches_the_spec(self):
+        # The exact key sets of the answer, per the 2026-07-28 schema
+        # (DiscoverResult extends CacheableResult): guards against both
+        # omitted and invented fields
+        server = McpServer()
+        result = server.handle(make_request('server/discover'))['result']
+        self.assertEqual(sorted(result),
+                         ['_meta', 'cacheScope', 'capabilities',
+                          'instructions', 'resultType',
+                          'supportedVersions', 'ttlMs'])
+        # The server identity rides _meta only; the draft layout's body
+        # fields never shipped
+        for invented in ('protocolVersion', 'serverInfo',
+                         'authorization'):
+            self.assertNotIn(invented, result)
+        self.assertEqual(sorted(result['capabilities']),
+                         ['extensions', 'tools'])
+        self.assertEqual(
+                sorted(result['capabilities']['extensions']),
+                ['io.modelcontextprotocol/tasks'])
+        self.assertEqual(sorted(result['_meta']),
+                         ['io.modelcontextprotocol/serverInfo',
+                          'org.debops/clacksOverhead'])
+
     def test_request_without_meta_is_rejected(self):
         server = McpServer()
         response = server.handle(make_request('server/discover',
