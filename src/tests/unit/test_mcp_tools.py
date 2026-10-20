@@ -1744,6 +1744,23 @@ class ToolsTestCase(unittest.TestCase):
         # The task-level include_role statement is found
         self.assertIn('- testrole', text)
 
+    def test_playbook_info_a_provider_failure_is_a_tool_error(self):
+        # A broken ansible-galaxy must not escape as an internal error
+        from debops.mcp.tools.playbooks import tool_playbook_info
+
+        def _broken_provider():
+            raise RuntimeError('ansible-galaxy collection list did not '
+                               'return JSON: garbage')
+
+        response = tool_playbook_info(
+                self.project, McpPolicy(self.project),
+                self.playbooks_path,
+                {'playbook': 'debops.debops.apache'},
+                index_provider=_broken_provider)
+        self.assertTrue(response['isError'])
+        self.assertIn('did not return JSON',
+                      response['content'][0]['text'])
+
     def test_playbook_info_rejects_traversal(self):
         for name in ('../defaults/main', '/etc/passwd', 'nosuch'):
             response = self.call_tool('playbook_info', {'playbook': name})

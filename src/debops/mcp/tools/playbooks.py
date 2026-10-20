@@ -368,8 +368,14 @@ def tool_playbooks(project, policy, playbooks_path, arguments):
 
 def tool_playbook_info(project, policy, playbooks_path, arguments,
                        index_provider=None):
-    resolved = resolve_playbook(project, policy, playbooks_path,
-                                arguments.get('playbook'), index_provider)
+    # A provider failure (a broken ansible-galaxy) is a tool error,
+    # not a 'not found' and not an internal error
+    try:
+        resolved = resolve_playbook(project, policy, playbooks_path,
+                                    arguments.get('playbook'),
+                                    index_provider)
+    except RuntimeError as errmsg:
+        return error_result(str(errmsg))
     if resolved is None:
         return error_result('playbook not found or invalid: {}'.format(
                 arguments.get('playbook')))
