@@ -217,7 +217,7 @@ class HostsTestCase(unittest.TestCase):
 
     def test_facts_invalid_format_rejected(self):
         response = self.call_tool('ansible.facts',
-                                  {'hosts': 'web1', 'format': 'yaml'})
+                                  {'hosts': 'web1', 'format': 'xml'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('invalid format',
                       response['result']['content'][0]['text'])

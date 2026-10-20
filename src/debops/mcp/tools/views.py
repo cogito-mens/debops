@@ -17,7 +17,7 @@ import os
 import re
 import subprocess
 
-from .common import (error_result, exclusive_project, json_document,
+from .common import (document_result, error_result, exclusive_project,
                      parse_output_format, text_result)
 
 logger = logging.getLogger(__name__)
@@ -53,10 +53,10 @@ def tool_view_list(project, policy, arguments):
         })
     active = project.view if policy.view_root is not None else None
 
-    if output_format == 'json':
-        return text_result(json_document({
+    if output_format != 'text':
+        return document_result({
             'active': active, 'locked': policy.view_lock,
-            'views': views}))
+            'views': views}, output_format)
 
     lines = ['# Infrastructure views']
     if active is None:

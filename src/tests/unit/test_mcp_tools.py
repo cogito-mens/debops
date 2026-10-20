@@ -1487,9 +1487,25 @@ class ToolsTestCase(unittest.TestCase):
 
     def test_role_defaults_invalid_format(self):
         response = self.call_tool('role.defaults',
-                                  {'name': 'testrole', 'format': 'yaml'})
+                                  {'name': 'testrole', 'format': 'xml'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('invalid format', self.result_text(response))
+
+    def test_role_defaults_serves_yaml_and_toml(self):
+        # The 'yaml'/'toml' formats and the spelling variants a model
+        # reaches for
+        response = self.call_tool('role.defaults',
+                                  {'name': 'testrole',
+                                   'format': 'application/yaml'})
+        text = self.result_text(response)
+        self.assertFalse(response['result']['isError'])
+        self.assertIn('testrole__enabled:', text)
+        self.assertNotIn('envvar', text)
+        response = self.call_tool('role.defaults',
+                                  {'name': 'testrole', 'format': 'toml'})
+        self.assertFalse(response['result']['isError'])
+        self.assertIn('testrole__enabled',
+                      self.result_text(response))
 
     def test_role_tasks_format_json(self):
         response = self.call_tool('role.tasks',
@@ -2164,6 +2180,61 @@ class DocumentationModeTestCase(unittest.TestCase):
         self.assertIn('error', response)
         self.assertIn('unknown tool: playbook.run',
                       response['error']['data']['details'])
+
+
+class OutputFormatTestCase(unittest.TestCase):
+    """The document tools' 'format' argument and renderers."""
+
+    def test_canonical_values(self):
+        from debops.mcp.tools.common import parse_output_format
+        for fmt in ('text', 'json', 'yaml', 'toml'):
+            self.assertEqual(
+                    parse_output_format({'format': fmt}), fmt)
+        self.assertEqual(parse_output_format({}), 'text')
+
+    def test_aliases_are_absorbed(self):
+        from debops.mcp.tools.common import parse_output_format
+        # The variants a model reaches for when it guesses
+        for alias, canonical in (
+                ('yml', 'yaml'), ('YAML', 'yaml'),
+                ('application/yaml', 'yaml'), ('text/yaml', 'yaml'),
+                ('application/toml', 'toml'),
+                ('application/json', 'json'), ('text/plain', 'text'),
+                ('txt', 'text')):
+            self.assertEqual(
+                    parse_output_format({'format': alias}), canonical,
+                    alias)
+
+    def test_invalid_names_the_valid_set(self):
+        from debops.mcp.tools.common import parse_output_format
+        with self.assertRaises(ValueError) as context:
+            parse_output_format({'format': 'xml'})
+        self.assertIn('text, json, yaml or toml',
+                      str(context.exception))
+
+    def test_yaml_and_toml_round_trip(self):
+        import toml
+        import yaml
+        from debops.mcp.tools.common import render_document
+        document = {'key': 'value', 'nested': {'list': [1, 2]}}
+        self.assertEqual(
+                yaml.safe_load(render_document(document, 'yaml')),
+                document)
+        self.assertEqual(
+                toml.loads(render_document(document, 'toml')),
+                document)
+
+    def test_toml_refuses_null_instead_of_dropping_it(self):
+        from debops.mcp.tools.common import document_result
+        # the toml library silently drops null keys; the refusal is
+        # honest instead
+        result = document_result({'key': None}, 'toml')
+        self.assertTrue(result['isError'])
+        self.assertIn('null', result['content'][0]['text'])
+        # yaml has a null and renders it
+        result = document_result({'key': None}, 'yaml')
+        self.assertFalse(result.get('isError', False))
+        self.assertIn('null', result['content'][0]['text'])
 
 
 if __name__ == '__main__':

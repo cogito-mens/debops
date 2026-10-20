@@ -11,8 +11,8 @@ import yaml
 
 from ...constants import DEBOPS_PACKAGE_DATA
 from ..policy import confine_under
-from .common import (FOLD_MARKER, dump_default, error_result,
-                     json_document, parse_output_format, render_task,
+from .common import (document_result, dump_default, error_result,
+                     FOLD_MARKER, parse_output_format, render_task,
                      task_module, text_result)
 
 logger = logging.getLogger(__name__)
@@ -479,8 +479,8 @@ def _tool_role_tasklist(roles_paths, arguments, subdir,
                     '' if count == 1 else 's'))
             total += count
         lines.insert(1, '({} {}s)'.format(total, kind))
-        if output_format == 'json':
-            return text_result(json_document(counts))
+        if output_format != 'text':
+            return document_result(counts, output_format)
         return text_result('\n'.join(lines) + '\n')
 
     if not task_file.endswith(('.yml', '.yaml')):
@@ -496,11 +496,12 @@ def _tool_role_tasklist(roles_paths, arguments, subdir,
     tasks = _load_tasks(target)
 
     name_filter = str(arguments.get('filter') or '').lower()
-    if output_format == 'json':
-        return text_result(json_document(
+    if output_format != 'text':
+        return document_result(
                 [task for task in tasks
                  if not name_filter
-                 or name_filter in str(task.get('name', '')).lower()]))
+                 or name_filter in str(task.get('name', '')).lower()],
+                output_format)
 
     detail = arguments.get('detail', 'brief')
 
@@ -741,10 +742,10 @@ def tool_role_variables(roles_paths, arguments, index_provider=None):
         entries = [entry for entry in entries
                    if name_filter in entry[0].lower()]
 
-    if output_format == 'json':
+    if output_format != 'text':
         document = {key: value for key, value in values.items()
                     if not name_filter or name_filter in key.lower()}
-        return text_result(json_document(document))
+        return document_result(document, output_format)
 
     if not entries:
         return text_result('no matching variables in debops.{} vars'
@@ -839,10 +840,10 @@ def tool_role_defaults(roles_paths, arguments, index_provider=None,
         entries = [entry for entry in entries
                    if name_filter in entry[0].lower()]
 
-    if output_format == 'json':
+    if output_format != 'text':
         document = {key: value for key, value in values.items()
                     if not name_filter or name_filter in key.lower()}
-        return text_result(json_document(document))
+        return document_result(document, output_format)
 
     if not entries:
         return text_result('no matching variables in debops.{} '

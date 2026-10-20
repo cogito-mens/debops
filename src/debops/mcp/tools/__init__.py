@@ -71,12 +71,13 @@ def execution_schema(policy):
 
 
 # The document tools serve rendered text for humans by default, or
-# one JSON document for machines ('format: json')
-FORMAT_NOTE = (' Returns text; pass "format": "json" for the '
-               'parsed document.')
-FORMAT_PROPERTY = {'type': 'string', 'enum': ['text', 'json'],
-                   'description': 'Render as text (default) or as '
-                                  'one JSON document'}
+# one machine document ('format': 'json', 'yaml' or 'toml')
+FORMAT_NOTE = (' Returns text; pass "format": "json" (or "yaml", '
+               '"toml") for the parsed document.')
+FORMAT_PROPERTY = {'type': 'string', 'enum': ['text', 'json', 'yaml',
+                                              'toml'],
+                   'description': 'Render as text (default) or as one '
+                                  'document (json, yaml, toml)'}
 
 
 # Tools which read the project directory; they run under the shared

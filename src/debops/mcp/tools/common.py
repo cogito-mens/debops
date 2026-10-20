@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import threading
+import toml
 import yaml
 
 logger = logging.getLogger(__name__)
@@ -169,16 +170,70 @@ def json_document(value):
         + '\n'
 
 
-def parse_output_format(arguments):
-    """The 'format' argument of a document tool: 'text' or 'json'.
+# The canonical values of the document tools' 'format' argument (the
+# schema enum); 'text' is the human rendering, the rest are one
+# serialized document
+OUTPUT_FORMATS = ('text', 'json', 'yaml', 'toml')
 
-    Raises ValueError for anything else.
+# The variants a model reaches for when it guesses the format value;
+# absorbed quietly at the boundary
+FORMAT_ALIASES = {
+    'txt': 'text',
+    'text/plain': 'text',
+    'application/json': 'json',
+    'yml': 'yaml',
+    'text/yaml': 'yaml',
+    'text/x-yaml': 'yaml',
+    'application/yaml': 'yaml',
+    'application/toml': 'toml',
+}
+
+
+def parse_output_format(arguments):
+    """The 'format' argument of a document tool, normalized.
+
+    Raises ValueError with the valid set for anything unrecognized.
     """
-    output_format = str(arguments.get('format') or 'text')
-    if output_format not in ('text', 'json'):
-        raise ValueError('invalid format: {!r} (text or json)'
-                         .format(output_format))
+    raw = arguments.get('format')
+    output_format = str(raw or 'text').strip().lower()
+    output_format = FORMAT_ALIASES.get(output_format, output_format)
+    if output_format not in OUTPUT_FORMATS:
+        raise ValueError('invalid format: {!r} (text, json, yaml or '
+                         'toml)'.format(raw))
     return output_format
+
+
+def _has_null(value):
+    """Whether the document tree contains a null (TOML has none, and
+    the toml library silently drops such keys)."""
+    if value is None:
+        return True
+    if isinstance(value, dict):
+        return any(_has_null(entry) for entry in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_has_null(entry) for entry in value)
+    return False
+
+
+def render_document(value, output_format):
+    """Serialize a document for the text channel per the format."""
+    if output_format == 'yaml':
+        # Sorted keys, so that the output is deterministic
+        return yaml.safe_dump(value, allow_unicode=True)
+    if output_format == 'toml':
+        if _has_null(value):
+            raise ValueError('cannot render this document as TOML: '
+                             'it contains a null value')
+        return toml.dumps(value)
+    return json_document(value)
+
+
+def document_result(value, output_format):
+    """The document in the requested format, as a tool result."""
+    try:
+        return text_result(render_document(value, output_format))
+    except ValueError as errmsg:
+        return error_result(str(errmsg))
 
 
 def commit_or_report(project, note, outcome):
