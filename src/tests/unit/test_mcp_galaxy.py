@@ -75,6 +75,34 @@ class GalaxyListTestCase(unittest.TestCase):
         self.assertIn('did not return JSON', str(context.exception))
 
 
+class KillSwitchTestCase(unittest.TestCase):
+    """A mid-run kill-switch flip terminates the galaxy install."""
+
+    def test_disabled_mid_run(self):
+        from debops.mcp.tools.galaxy import _galaxy_install
+        tmpdir = tempfile.mkdtemp(prefix='debops-mcp-galaxy-')
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        project = type('Project', (), {
+            'path': tmpdir,
+            'config': type('Config', (), {'_env_vars': {},
+                                          'raw': {}})(),
+        })()
+        on_disabled = mock.Mock()
+        with mock.patch('debops.mcp.tools.galaxy.shutil.which') \
+                as which, \
+                mock.patch('debops.mcp.tools.execute.run_cancellable') \
+                as run:
+            which.return_value = '/usr/bin/ansible-galaxy'
+            run.return_value = ('', 0, 'disabled')
+            with self.assertRaises(ChildProcessError) as context:
+                _galaxy_install(project, enabled_check=lambda: False,
+                                on_disabled=on_disabled)
+        self.assertIn('kill switch', str(context.exception))
+        kwargs = run.call_args[1]
+        self.assertIs(kwargs['on_disabled'], on_disabled)
+        self.assertIsNotNone(kwargs['enabled_check'])
+
+
 class SurgeryTestCase(unittest.TestCase):
 
     def test_upsert_appends(self):

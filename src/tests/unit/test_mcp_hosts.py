@@ -293,6 +293,28 @@ class HostsTestCase(unittest.TestCase):
                                   {'hosts': 'web1'}, self.context)
         popen.return_value.terminate.assert_called_once()
 
+    def test_kill_switch_mid_run(self):
+        from debops.mcp.tools.hosts import tool_ansible_ping
+        on_disabled = mock.Mock()
+        with mock.patch('debops.mcp.tools.execute.subprocess.Popen') \
+                as popen, \
+                mock.patch('debops.mcp.tools.execute.subprocess.run') \
+                as resolve, \
+                mock.patch('debops.mcp.tools.hosts.AnsibleInventory'):
+            resolve.return_value = mock.Mock(
+                    returncode=0, stdout='  hosts (1):\n    web1\n',
+                    stderr='')
+            popen.return_value = make_process(returncode=-15,
+                                              poll=[None, None])
+            result = tool_ansible_ping(
+                    self.project, self.policy, {'hosts': 'web1'},
+                    self.context, enabled_check=lambda: False,
+                    on_disabled=on_disabled)
+        self.assertTrue(result['isError'])
+        self.assertIn('kill switch', result['content'][0]['text'])
+        on_disabled.assert_called_once()
+        popen.return_value.terminate.assert_called_once()
+
     def test_registered_when_execution_allowed(self):
         self.assertIn('ansible_ping', self.server.tools)
         self.assertIn('ansible_facts', self.server.tools)

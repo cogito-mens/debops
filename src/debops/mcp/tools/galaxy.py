@@ -135,7 +135,8 @@ def _remove_requirement(text, name):
     return '\n'.join(out) + '\n', True
 
 
-def _galaxy_install(project, context=None):
+def _galaxy_install(project, context=None, enabled_check=None,
+                    on_disabled=None):
     """Install the project collections; returns the captured output.
 
     ansible-galaxy installs into the first writable directory of the
@@ -166,11 +167,16 @@ def _galaxy_install(project, context=None):
         out, returncode, status = run_cancellable(
                 [galaxy, 'collection', 'install', '-r', requirements,
                  '-p', target],
-                env=env, cwd=project.path, context=context, timeout=300)
+                env=env, cwd=project.path, context=context, timeout=300,
+                enabled_check=enabled_check, on_disabled=on_disabled)
         print(out, file=output, end='')
         if status == 'cancelled':
             from ..server import RequestCancelled
             raise RequestCancelled()
+        if status == 'disabled':
+            raise ChildProcessError('terminated: the MCP functionality '
+                                    'was disabled mid-run (the kill '
+                                    'switch)')
         if status == 'timeout':
             raise ChildProcessError('ansible-galaxy timed out')
         if returncode != 0:
@@ -193,7 +199,8 @@ def _read_text(path):
         return fp.read()
 
 
-def tool_collection_require(project, policy, arguments, context):
+def tool_collection_require(project, policy, arguments, context,
+                            enabled_check=None, on_disabled=None):
     try:
         name = _validate_name(arguments)
     except ValueError as errmsg:
@@ -228,7 +235,9 @@ def tool_collection_require(project, policy, arguments, context):
 
         install_error = None
         try:
-            output = _galaxy_install(project, context)
+            output = _galaxy_install(
+                    project, context, enabled_check=enabled_check,
+                    on_disabled=on_disabled)
         except (FileNotFoundError, ChildProcessError) as errmsg:
             output = ''
             install_error = str(errmsg)
@@ -307,11 +316,14 @@ def tool_collection_remove(project, policy, arguments):
                                                for entry in removed)))
 
 
-def tool_collection_sync(project, policy, arguments, context):
+def tool_collection_sync(project, policy, arguments, context,
+                         enabled_check=None, on_disabled=None):
     """Install the committed collection requirements."""
     with exclusive_project(project, policy, note='collection_sync'):
         try:
-            output = _galaxy_install(project, context)
+            output = _galaxy_install(
+                    project, context, enabled_check=enabled_check,
+                    on_disabled=on_disabled)
         except (FileNotFoundError, ChildProcessError) as errmsg:
             return error_result(str(errmsg))
     tail = output.strip()[-_OUTPUT_TAIL:]

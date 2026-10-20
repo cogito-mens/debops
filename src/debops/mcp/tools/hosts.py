@@ -159,7 +159,8 @@ def _render_facts_json(blocks):
     return json_document(document)
 
 
-def _exec(project, policy, arguments, context, module, module_filter):
+def _exec(project, policy, arguments, context, module, module_filter,
+          enabled_check=None, on_disabled=None):
     hosts = str(arguments.get('hosts') or '')
     if not _validate_host_pattern(hosts):
         return error_result('invalid host pattern (a single word '
@@ -228,7 +229,8 @@ def _exec(project, policy, arguments, context, module, module_filter):
                           else 3600, EXEC_TIMEOUT_LIMIT)
             output, returncode, status = run_cancellable(
                     command, env=env, cwd=project.path, context=context,
-                    timeout=timeout)
+                    timeout=timeout, enabled_check=enabled_check,
+                    on_disabled=on_disabled)
         finally:
             if unlocked:
                 inventory.lock()
@@ -278,12 +280,16 @@ def _exec(project, policy, arguments, context, module, module_filter):
     return text_result(text, structured=structured)
 
 
-def tool_ansible_ping(project, policy, arguments, context):
+def tool_ansible_ping(project, policy, arguments, context,
+                      enabled_check=None, on_disabled=None):
     return _exec(project, policy, arguments, context,
-                 'ansible.builtin.ping', None)
+                 'ansible.builtin.ping', None,
+                 enabled_check=enabled_check, on_disabled=on_disabled)
 
 
-def tool_ansible_facts(project, policy, arguments, context):
+def tool_ansible_facts(project, policy, arguments, context,
+                       enabled_check=None, on_disabled=None):
     return _exec(project, policy, arguments, context,
                  'ansible.builtin.setup',
-                 str(arguments.get('filter') or '') or None)
+                 str(arguments.get('filter') or '') or None,
+                 enabled_check=enabled_check, on_disabled=on_disabled)

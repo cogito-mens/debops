@@ -686,7 +686,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
              {'type': 'object', 'properties': exec_properties,
               'required': ['hosts']},
              lambda arguments, context: tool_ansible_ping(
-                 project, policy, arguments, context),
+                 project, policy, arguments, context,
+                 enabled_check=enabled_check,
+                 on_disabled=server.cancel_all),
              True),
             ('ansible_facts',
              'Gather Ansible facts from hosts (ansible -m setup), '
@@ -708,7 +710,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                   'format': format_property}),
               'required': ['hosts']},
              lambda arguments, context: tool_ansible_facts(
-                 project, policy, arguments, context),
+                 project, policy, arguments, context,
+                 enabled_check=enabled_check,
+                 on_disabled=server.cancel_all),
              True),
         ])
 
@@ -958,7 +962,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                   '"git"'}},
           'required': ['name']},
          lambda arguments, context: tool_collection_require(
-             project, policy, arguments, context),
+             project, policy, arguments, context,
+             enabled_check=enabled_check,
+             on_disabled=server.cancel_all),
          True, False, True),
         ('collection_remove',
          'Remove an Ansible Collection from the project: drop its entry '
@@ -983,7 +989,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
          {'type': 'object', 'properties': {},
           'additionalProperties': False},
          lambda arguments, context: tool_collection_sync(
-             project, policy, arguments, context),
+             project, policy, arguments, context,
+             enabled_check=enabled_check,
+             on_disabled=server.cancel_all),
          True, False, True),
     ])
 
