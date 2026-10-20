@@ -692,7 +692,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
              'over top-level fact names ("ansible_distribution*"); '
              'a dotted path narrows into a branch instead '
              '("ansible_local.postfix*" — the per-role applied state '
-             'lives in the ansible_local dict).' + format_note,
+             'lives in the ansible_local dict). The answer is the '
+             'facts namespace itself, without Ansible\'s result '
+             'envelope.' + format_note,
              {'type': 'object',
               'properties': dict(exec_properties, **{
                   'filter': {'type': 'string',

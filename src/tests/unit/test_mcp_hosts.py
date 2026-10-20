@@ -23,8 +23,11 @@ import unittest
 
 PING_OK = 'web1.example.com | SUCCESS => {"ping": "pong"}\n'
 
-FACTS_OK = ('web1.example.com | SUCCESS => {"ansible_distribution": '
-            '"Debian", "ansible_distribution_version": "12"}\n')
+# The real setup result wraps the facts in the 'ansible_facts'
+# envelope key
+FACTS_OK = ('web1.example.com | SUCCESS => {"ansible_facts": '
+            '{"ansible_distribution": "Debian", '
+            '"ansible_distribution_version": "12"}, "changed": false}\n')
 
 
 def make_process(returncode=0, output='', poll=None):
@@ -138,10 +141,12 @@ class HostsTestCase(unittest.TestCase):
     def test_facts_dotted_filter_narrows_into_the_branch(self):
         # Ansible's own filter stops at the top level; the dotted path
         # is walked server-side
-        local_facts = ('web1.example.com | SUCCESS => {"ansible_local": '
+        local_facts = ('web1.example.com | SUCCESS => {"ansible_facts": '
+                       '{"ansible_local": '
                        '{"postfix": {"installed": true}, '
                        '"telegraf": {"installed": false}, '
-                       '"nginx": {"installed": true}}}\n')
+                       '"nginx": {"installed": true}}}, '
+                       '"changed": false}\n')
         popen, response = self._run(
                 'ansible_facts',
                 {'hosts': 'web1', 'filter': 'ansible_local.post*'},
