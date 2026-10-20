@@ -1835,6 +1835,18 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('Configure the test service', text)
         self.assertNotIn('Install the test packages', text)
 
+    def test_resolve_role_or_error_contract(self):
+        # The shared preamble of every role tool
+        from debops.mcp.tools.roles import resolve_role_or_error
+        name, path = resolve_role_or_error([self.roles_path],
+                                           {'name': 'testrole'})
+        self.assertEqual(name, 'testrole')
+        self.assertTrue(path.endswith('testrole'))
+        with self.assertRaisesRegex(ValueError, 'not found or invalid'):
+            resolve_role_or_error([self.roles_path], {'name': 'nosuch'})
+        with self.assertRaisesRegex(ValueError, 'not found or invalid'):
+            resolve_role_or_error([self.roles_path], {'name': 'no../pe'})
+
     def test_role_tasks_unknown_file(self):
         response = self.call_tool('role_tasks',
                                   {'name': 'testrole', 'file': 'nosuch'})

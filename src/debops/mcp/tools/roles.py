@@ -128,6 +128,24 @@ def resolve_role(roles_paths, name, index_provider=None):
         path = os.path.join(roles_path, name)
         if os.path.isdir(path):
             return name, path
+
+
+def resolve_role_or_error(roles_paths, arguments, index_provider=None):
+    """Resolve the 'name' argument of a role tool to (name, path).
+
+    Raises ValueError with the user-facing reason when the role cannot
+    be resolved; the tools turn that into their error result. The one
+    preamble every role tool shares.
+    """
+    try:
+        resolved = resolve_role(roles_paths, arguments.get('name'),
+                                index_provider)
+    except RuntimeError as errmsg:
+        raise ValueError(str(errmsg))
+    if resolved is None:
+        raise ValueError('role not found or invalid: {}'.format(
+                arguments.get('name')))
+    return resolved
     return None
 
 
@@ -283,14 +301,10 @@ def _count_tasks(directory):
 def tool_role_info(roles_paths, arguments, index_provider=None,
                    bundled_path=None, docs_version=None):
     try:
-        resolved = resolve_role(roles_paths, arguments.get('name'),
-                                index_provider)
-    except RuntimeError as errmsg:
+        name, path = resolve_role_or_error(roles_paths, arguments,
+                                           index_provider)
+    except ValueError as errmsg:
         return error_result(str(errmsg))
-    if resolved is None:
-        return error_result('role not found or invalid: {}'
-                            .format(arguments.get('name')))
-    name, path = resolved
 
     description = ''
     tags = []
@@ -430,14 +444,10 @@ def _tool_role_tasklist(roles_paths, arguments, subdir,
     """Shared implementation of role_tasks and role_handlers."""
     kind = 'handler' if subdir == 'handlers' else 'task'
     try:
-        resolved = resolve_role(roles_paths, arguments.get('name'),
-                                index_provider)
-    except RuntimeError as errmsg:
+        name, path = resolve_role_or_error(roles_paths, arguments,
+                                           index_provider)
+    except ValueError as errmsg:
         return error_result(str(errmsg))
-    if resolved is None:
-        return error_result('role not found or invalid: {}'
-                            .format(arguments.get('name')))
-    name, path = resolved
     try:
         output_format = parse_output_format(arguments)
     except ValueError as errmsg:
@@ -523,14 +533,10 @@ def _tool_role_tree(roles_paths, arguments, subdir,
                     index_provider=None):
     """List or read files of a role's 'templates/' or 'files/' tree."""
     try:
-        resolved = resolve_role(roles_paths, arguments.get('name'),
-                                index_provider)
-    except RuntimeError as errmsg:
+        name, path = resolve_role_or_error(roles_paths, arguments,
+                                           index_provider)
+    except ValueError as errmsg:
         return error_result(str(errmsg))
-    if resolved is None:
-        return error_result('role not found or invalid: {}'
-                            .format(arguments.get('name')))
-    name, path = resolved
     tree_dir = os.path.join(path, subdir)
     if not os.path.isdir(tree_dir):
         return error_result('role {} has no {} directory'.format(name,
@@ -662,14 +668,10 @@ def render_spec_entries(label, entries, detail):
 
 def tool_role_argspec(roles_paths, arguments, index_provider=None):
     try:
-        resolved = resolve_role(roles_paths, arguments.get('name'),
-                                index_provider)
-    except RuntimeError as errmsg:
+        name, path = resolve_role_or_error(roles_paths, arguments,
+                                           index_provider)
+    except ValueError as errmsg:
         return error_result(str(errmsg))
-    if resolved is None:
-        return error_result('role not found or invalid: {}'
-                            .format(arguments.get('name')))
-    name, path = resolved
     # Display the requested name so external roles keep their prefix
     display = str(arguments.get('name') or '')
     if not display.count('.'):
@@ -706,14 +708,10 @@ def tool_role_variables(roles_paths, arguments, index_provider=None):
     """The role's own variables from vars/ (higher precedence than
     defaults, not meant to be overridden from the inventory)."""
     try:
-        resolved = resolve_role(roles_paths, arguments.get('name'),
-                                index_provider)
-    except RuntimeError as errmsg:
+        name, path = resolve_role_or_error(roles_paths, arguments,
+                                           index_provider)
+    except ValueError as errmsg:
         return error_result(str(errmsg))
-    if resolved is None:
-        return error_result('role not found or invalid: {}'
-                            .format(arguments.get('name')))
-    name, path = resolved
     try:
         output_format = parse_output_format(arguments)
     except ValueError as errmsg:
@@ -794,14 +792,10 @@ def tool_role_variables(roles_paths, arguments, index_provider=None):
 def tool_role_defaults(roles_paths, arguments, index_provider=None,
                        bundled_path=None, docs_version=None):
     try:
-        resolved = resolve_role(roles_paths, arguments.get('name'),
-                                index_provider)
-    except RuntimeError as errmsg:
+        name, path = resolve_role_or_error(roles_paths, arguments,
+                                           index_provider)
+    except ValueError as errmsg:
         return error_result(str(errmsg))
-    if resolved is None:
-        return error_result('role not found or invalid: {}'
-                            .format(arguments.get('name')))
-    name, path = resolved
     try:
         output_format = parse_output_format(arguments)
     except ValueError as errmsg:
