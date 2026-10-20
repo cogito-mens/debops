@@ -645,6 +645,11 @@ Commands:
                 usage='debops mcp skills [<args>] [<skill>]')
         parser.add_argument('skill', type=str, nargs='?',
                             help='print this skill instead of listing')
+        parser.add_argument('--filter', type=str, metavar='PATTERN',
+                            help='list only skills matching PATTERN: '
+                                 'a plain word matches anywhere in the '
+                                 'skill path, glob characters make it '
+                                 'an fnmatch ("roles/*", "apt*")')
         self.args = parser.parse_args(self.args[3:])
 
     def do_mcp_disable(self):

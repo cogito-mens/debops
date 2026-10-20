@@ -1914,6 +1914,69 @@ def test_configure_fires_no_hooks(run_debops, mcp_env, project_dir):
     assert not marker.exists()
 
 
+def test_skills_cli_filters(run_debops, mcp_env, tmp_path):
+    # The generated role briefs are listed, and --filter narrows them
+    result = run_debops("mcp", "skills", "--filter", "roles/nginx",
+                        cwd=str(tmp_path), env=mcp_env)
+    assert result.returncode == 0
+    assert "roles/nginx" in result.stdout
+    assert "nginx webserver" in result.stdout
+    assert "roles/postfix" not in result.stdout
+
+    result = run_debops("mcp", "skills", "--filter", "zzz-nothing",
+                        cwd=str(tmp_path), env=mcp_env)
+    assert result.returncode == 0
+    assert "roles/" not in result.stdout
+
+
+def test_docs_mode_serves_the_role_briefs(run_debops, mcp_env,
+                                          tmp_path):
+    # The generated corpus needs no project and no ansible
+    def call(method, params, request_id=1):
+        request = json.dumps({
+            "jsonrpc": "2.0", "id": request_id, "method": method,
+            "params": dict(params, _meta=REQUEST_META),
+        }) + "\n"
+        result = run_debops("mcp", "serve", cwd=str(tmp_path),
+                            env=mcp_env, input_text=request)
+        assert result.returncode == 0
+        (response,) = read_json_lines(result.stdout)
+        return response
+
+    # The extension is declared, and the corpus answers
+    response = call("server/discover", {})
+    extensions = response["result"]["capabilities"]["extensions"]
+    assert extensions["io.modelcontextprotocol/skills"] == {
+            "directoryRead": True}
+
+    response = call("skills/get",
+                    {"uri": "skill://roles/nginx/SKILL.md"})
+    skill = response["result"]["skill"]
+    assert skill["frontmatter"]["name"] == "nginx"
+    assert "nginx" in skill["frontmatter"]["description"]
+    assert skill["resources"] == "dynamic"
+
+    response = call("resources/read",
+                    {"uri": "skill://roles/nginx/SKILL.md"}, 2)
+    text = response["result"]["contents"][0]["text"]
+    assert "# debops.nginx" in text
+
+    # The corpus is browsable as a directory; it outgrows one page, so
+    # follow the cursor the way a client would
+    children = []
+    cursor = None
+    for _request in range(10):
+        params = {"uri": "skill://roles"}
+        if cursor is not None:
+            params["cursor"] = cursor
+        response = call("resources/directory/read", params, 3)
+        children.extend(response["result"]["resources"])
+        cursor = response["result"].get("nextCursor")
+        if cursor is None:
+            break
+    assert any(child["uri"] == "skill://roles/nginx" for child in children)
+
+
 def test_configure_agents_writes_the_guidance(run_debops, mcp_env,
                                               project_dir):
     # The harness-agnostic nudge, in the file every harness reads

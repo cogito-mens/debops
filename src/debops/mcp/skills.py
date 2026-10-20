@@ -14,13 +14,15 @@ directory tree; the server exposes them as resources and through the
 the MCP skills extension.
 
 Generated skill sources (the per-role briefs) plug in through the
-'sources' parameter: each provides entries(), files() and read(); an
-entry whose 'resources' is the string 'dynamic' publishes no digests.
+'sources' parameter: each provides entries() and read() and declares
+its reserved prefixes; an entry whose 'resources' is the string
+'dynamic' publishes no digests.
 A filesystem skill shadows a generated one at the same path, and a
 generated prefix ('roles/') is reserved outside of the project tree:
 an authored skill claiming one is refused.
 """
 
+import fnmatch
 import hashlib
 import logging
 import mimetypes
@@ -41,6 +43,21 @@ SKILLS_EXTENSION = 'io.modelcontextprotocol/skills'
 # Skill name segments are lowercase words separated by dashes; the last
 # segment is the skill's name and must match the frontmatter name
 SKILL_NAME_PATTERN = re.compile(r'^[a-z0-9-]+$')
+
+
+def match_skill(pattern, path):
+    """Whether a skill path matches a 'mcp skills --filter' pattern.
+
+    A plain word matches anywhere in the path, case-insensitively
+    ('proxy' finds 'roles/apt-proxy'); glob characters make it an
+    fnmatch against the full path or the skill's name ('roles/*',
+    'apt*').
+    """
+    if not any(char in pattern for char in '*?['):
+        return pattern.lower() in path.lower()
+    name = path.rsplit('/', 1)[-1]
+    return (fnmatch.fnmatchcase(path, pattern)
+            or fnmatch.fnmatchcase(name, pattern))
 
 
 def _parse_frontmatter_text(text):

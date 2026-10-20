@@ -434,5 +434,22 @@ class PaginationTestCase(unittest.TestCase):
         self.assertEqual(response['error']['code'], rpc.INVALID_PARAMS)
 
 
+class MatchSkillTestCase(unittest.TestCase):
+    """The 'mcp skills --filter' matcher."""
+
+    def test_plain_word_is_a_substring(self):
+        from debops.mcp.skills import match_skill
+        self.assertTrue(match_skill('proxy', 'roles/apt-proxy'))
+        self.assertTrue(match_skill('NGINX', 'roles/nginx'))
+        self.assertFalse(match_skill('nomatch', 'roles/nginx'))
+
+    def test_globs_match_the_path_or_the_name(self):
+        from debops.mcp.skills import match_skill
+        self.assertTrue(match_skill('roles/*', 'roles/nginx'))
+        self.assertTrue(match_skill('apt*', 'roles/apt-proxy'))
+        self.assertFalse(match_skill('bill*', 'roles/nginx'))
+        self.assertFalse(match_skill('roles/*', 'packaged'))
+
+
 if __name__ == '__main__':
     unittest.main()

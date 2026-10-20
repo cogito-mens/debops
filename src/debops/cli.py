@@ -14,10 +14,12 @@ from .envrunner import EnvRunner
 from .mcp.server import McpServer
 from .mcp.policy import McpPolicy, KillSwitch
 from .mcp.prompts import PromptLibrary
-from .mcp.skills import SkillLibrary
+from .mcp.skills import SkillLibrary, match_skill
 from .mcp.tools import (register_documentation_tools,
                         register_project_tools)
 from .mcp.tools.collections import BUNDLED_COLLECTIONS_ROOT
+from .mcp.tools.roles import COLLECTION_ROLES, project_role_paths
+from .mcp.role_skills import RoleSkillSource
 from .mcp import client as mcp_client
 from .mcp.client import UnixClient
 from .mcp.transport import StdioTransport, UnixSocketTransport
@@ -376,7 +378,10 @@ class Interpreter(object):
         if docs_mode:
             policy = McpPolicy.for_documentation()
             server = McpServer(
-                    project=None, policy=policy, skills=SkillLibrary(),
+                    project=None, policy=policy,
+                    skills=SkillLibrary(
+                            sources=[RoleSkillSource(
+                                    [COLLECTION_ROLES])]),
                     prompts=PromptLibrary(
                             package_path=os.path.join(
                                     DEBOPS_PACKAGE_DATA, 'prompts')),
@@ -430,11 +435,17 @@ class Interpreter(object):
                         os.path.join(project_content, 'prompts'),
                         package_path=os.path.join(DEBOPS_PACKAGE_DATA,
                                                   'prompts'))
+            # The same roles the tools resolve, so the briefs and the
+            # tools agree; the bundled collection follows the policy
+            roles_paths = project_role_paths(project)
+            if policy.bundled_content:
+                roles_paths.append(COLLECTION_ROLES)
             server = McpServer(project=project, policy=policy,
                                skills=SkillLibrary(
                                    project_path=(os.path.join(project_content,
                                                               'skills')
-                                                 if project_content else None)),
+                                                 if project_content else None),
+                                   sources=[RoleSkillSource(roles_paths)]),
                                prompts=prompts, killswitch=killswitch,
                                transport='unix' if args.socket
                                else 'stdio')
@@ -821,8 +832,10 @@ class Interpreter(object):
     def do_mcp_skills(self, args):
         self._mcp_refuse_if_disabled()
         # Skills are shipped with the package and do not depend on
-        # a project directory
-        library = SkillLibrary()
+        # a project directory; the generated role briefs cover the
+        # bundled collection, the same as in the documentation mode
+        library = SkillLibrary(sources=[RoleSkillSource(
+                [COLLECTION_ROLES])])
         if args.skill:
             target = args.skill
             if '.' not in target.rsplit('/', 1)[-1]:
@@ -842,11 +855,14 @@ class Interpreter(object):
         else:
             first = True
             for entry in library.entries():
+                path = entry['uri'][len('skill://'):-len('/SKILL.md')]
+                if args.filter and not match_skill(args.filter, path):
+                    continue
                 if not first:
                     print()
                 first = False
                 frontmatter = entry['frontmatter']
-                print(entry['uri'][len('skill://'):-len('/SKILL.md')])
+                print(path)
                 print(textwrap.fill(str(frontmatter.get('description',
                                                         '')),
                                     width=79, initial_indent='    ',
