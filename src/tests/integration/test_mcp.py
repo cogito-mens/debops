@@ -163,7 +163,7 @@ def test_serve_outside_a_project_serves_documentation(
                      "playbook.info", "playbook.list",
                      "role.argspec", "role.defaults", "role.files",
                      "role.handlers", "role.info", "role.tasks",
-                     "role.templates", "role.variables"]
+                     "role.templates", "role.vars"]
 
 
 def test_serve_explicit_nonproject_dir_fails(run_debops, mcp_env,
@@ -498,7 +498,7 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
                              "project.status", "role.argspec",
                              "role.defaults", "role.files",
                              "role.handlers", "role.info", "role.tasks",
-                             "role.templates", "role.variables",
+                             "role.templates", "role.vars",
                              "secret.paths", "view.create", "view.list",
                              "view.switch"]
 
@@ -1748,7 +1748,7 @@ def test_policy_deny_hides_a_tool(run_debops, mcp_env, project_dir):
     (response,) = read_json_lines(result.stdout)
     names = [tool["name"] for tool in response["result"]["tools"]]
     assert "role.info" not in names
-    assert "role.variables" in names
+    assert "role.vars" in names
 
 
 def test_connect_exits_quietly_on_sigint(debops_source_dir, mcp_env,

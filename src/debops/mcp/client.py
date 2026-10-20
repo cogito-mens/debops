@@ -185,7 +185,7 @@ TOOL_CALL_EXAMPLES = {
     'collection.remove': ['name=community.docker'],
     'collection.sync': [''],
     'role.info': ['name=nginx'],
-    'role.variables': ['name=nginx'],
+    'role.vars': ['name=nginx'],
     'role.argspec': ['name=nginx'],
     'role.defaults': ['name=nginx',
                       'name=nginx detail=full filter=nginx__www'],

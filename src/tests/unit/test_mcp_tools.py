@@ -1204,9 +1204,41 @@ class ToolsTestCase(unittest.TestCase):
     # -- registration --------------------------------------------------
 
     def test_aliases_registered_with_the_tools(self):
-        # The hidden namespace guess resolves to the bare verb
-        self.assertEqual(self.server.aliases,
-                         {'playbook.run': 'run', 'playbook.check': 'check'})
+        # The namespace guesses land on the verbs; the semantic
+        # redirect sends 'variables' to the settable ones
+        self.assertEqual(
+                self.server.aliases,
+                {'playbook.run': 'run', 'playbook.check': 'check',
+                 'role.variables': 'role.defaults',
+                 'variables': 'role.defaults',
+                 'tasks': 'role.tasks',
+                 'templates': 'role.templates'})
+
+    def test_the_variables_alias_answers_with_the_defaults(self):
+        # The observed dogfood failure: a model asking for the
+        # 'variables' of a role wants the settable inventory ones
+        response = self.call_tool('variables', {'name': 'testrole'})
+        self.assertFalse(response['result'].get('isError', False))
+        self.assertIn('testrole__enabled', self.result_text(response))
+        response = self.call_tool('role.variables', {'name': 'testrole'})
+        self.assertFalse(response['result'].get('isError', False))
+        self.assertIn('testrole__enabled', self.result_text(response))
+
+    def test_the_plain_task_and_template_words(self):
+        # The overview answers, the same as for role.tasks
+        response = self.call_tool('tasks', {'name': 'testrole'})
+        self.assertFalse(response['result'].get('isError', False))
+        self.assertIn('task files', self.result_text(response))
+        self.assertIn('main', self.result_text(response))
+        response = self.call_tool('templates', {'name': 'testrole'})
+        self.assertFalse(response['result'].get('isError', False))
+        self.assertIn('etc/testrole/config.j2', self.result_text(response))
+
+    def test_role_vars_answers_the_vars_tree(self):
+        # And only role.vars does: the redirect never reaches it
+        response = self.call_tool('role.vars', {'name': 'testrole'})
+        self.assertFalse(response['result'].get('isError', False))
+        self.assertIn('testrole__internal', self.result_text(response))
 
     def test_tools_are_listed(self):
         response = self.server.handle({
@@ -1228,7 +1260,7 @@ class ToolsTestCase(unittest.TestCase):
                           'project.push', 'project.read', 'project.status',
                           'role.argspec', 'role.defaults', 'role.files',
                           'role.handlers', 'role.info', 'role.tasks',
-                          'role.templates', 'role.variables',
+                          'role.templates', 'role.vars',
                           'secret.paths', 'view.create', 'view.list',
                           'view.switch'])
 
@@ -1523,7 +1555,7 @@ class ToolsTestCase(unittest.TestCase):
         self.assertEqual(document, {'extra': 1, 'main': 3})
 
     def test_role_variables_format_json(self):
-        response = self.call_tool('role.variables',
+        response = self.call_tool('role.vars',
                                   {'name': 'testrole', 'format': 'json'})
         document = json.loads(self.result_text(response))
         self.assertEqual(document['testrole__state_dir'],
@@ -1555,10 +1587,10 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('role not found or invalid',
                       self.result_text(response))
 
-    # -- role.variables (vars/) ----------------------------------------------
+    # -- role.vars (vars/) ----------------------------------------------
 
     def test_role_variables_reads_vars(self):
-        response = self.call_tool('role.variables', {'name': 'testrole'})
+        response = self.call_tool('role.vars', {'name': 'testrole'})
         text = self.result_text(response)
         self.assertIn('- **testrole__state_dir** — Internal state '
                       'directory of the test role. (default: '
@@ -1566,14 +1598,14 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('- **testrole__internal** (default: `true`)', text)
 
     def test_role_variables_full(self):
-        response = self.call_tool('role.variables',
+        response = self.call_tool('role.vars',
                                   {'name': 'testrole', 'detail': 'full'})
         text = self.result_text(response)
         self.assertIn('## testrole__state_dir', text)
         self.assertIn('```yaml\n/run/testrole\n```', text)
 
     def test_role_variables_no_vars(self):
-        response = self.call_tool('role.variables', {'name': 'splitrole'})
+        response = self.call_tool('role.vars', {'name': 'splitrole'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('no variables', self.result_text(response))
 
@@ -1671,7 +1703,7 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('no argument specs', self.result_text(response))
 
     def test_role_variables_with_fqcn(self):
-        response = self.call_tool('role.variables',
+        response = self.call_tool('role.vars',
                                   {'name': 'testns.testcoll.plainrole'})
         text = self.result_text(response)
         self.assertIn('- **plainrole__internal_state** — The internal '
@@ -1684,7 +1716,7 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('- **specrole__extra_default**', text)
 
     def test_role_variables_fqcn_unknown_collection(self):
-        response = self.call_tool('role.variables',
+        response = self.call_tool('role.vars',
                                   {'name': 'nosuch.collection.role'})
         self.assertTrue(response['result']['isError'])
         self.assertIn('role not found or invalid',
@@ -2059,7 +2091,7 @@ class ToolsTestCase(unittest.TestCase):
                                     'collections'))
         server = self._server_with_policy({'bundled_content': False})
         self.assertNotIn('role.info', server.tools)
-        self.assertNotIn('role.variables', server.tools)
+        self.assertNotIn('role.vars', server.tools)
 
     def test_bundled_content_off_removes_collection_playbooks(self):
         server = self._server_with_policy({'bundled_content': False})
@@ -2146,7 +2178,7 @@ class DocumentationModeTestCase(unittest.TestCase):
                           'playbook.info', 'playbook.list',
                           'role.argspec', 'role.defaults', 'role.files',
                           'role.handlers', 'role.info', 'role.tasks',
-                          'role.templates', 'role.variables'])
+                          'role.templates', 'role.vars'])
 
     def test_role_info_works_on_the_bundled_content(self):
         response = self.call_tool('role.info', {'name': 'testrole'})

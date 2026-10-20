@@ -94,14 +94,14 @@ class ToolAccessTestCase(unittest.TestCase):
                 '/srv/projects/example',
                 raw_config={'project': {'mcp': {'deny': ['role.info']}}}))
         self.assertFalse(policy.is_tool_allowed('role.info'))
-        self.assertTrue(policy.is_tool_allowed('role.variables'))
+        self.assertTrue(policy.is_tool_allowed('role.vars'))
 
     def test_allow_list_restricts(self):
         policy = McpPolicy(FakeProject(
                 '/srv/projects/example',
                 raw_config={'project': {'mcp': {'allow': ['role.info']}}}))
         self.assertTrue(policy.is_tool_allowed('role.info'))
-        self.assertFalse(policy.is_tool_allowed('role.variables'))
+        self.assertFalse(policy.is_tool_allowed('role.vars'))
 
     def test_deny_wins_over_allow(self):
         policy = McpPolicy(FakeProject(

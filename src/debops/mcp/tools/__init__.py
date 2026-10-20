@@ -86,7 +86,7 @@ READ_LOCKED_TOOLS = frozenset((
     'project.status', 'project.files', 'project.read', 'config.get',
     'environment.list', 'inventory.query', 'playbook.list', 'playbook.info',
     'view.list', 'role.info',
-    'role.defaults', 'role.variables', 'role.argspec', 'role.tasks',
+    'role.defaults', 'role.vars', 'role.argspec', 'role.tasks',
     'role.handlers', 'role.templates', 'role.files', 'collection.roles',
     'collection.playbooks',
 ))
@@ -256,7 +256,7 @@ TOOL_ANNOTATIONS = {
     'collection.roles': _READ_ONLY,
     'collection.playbooks': _READ_ONLY,
     'role.info': _READ_ONLY,
-    'role.variables': _READ_ONLY,
+    'role.vars': _READ_ONLY,
     'role.argspec': _READ_ONLY,
     'role.defaults': _READ_ONLY,
     'role.tasks': _READ_ONLY,
@@ -429,7 +429,7 @@ def _documentation_entries(server, policy, project, roles_path,
                  index_provider=collection_index_provider,
                  bundled_path=roles_path if bundled_content else None,
                  docs_version=server.version)),
-            ('role.variables',
+            ('role.vars',
              'List the variables of a role of this project or the '
              'bundled DebOps collection, from its vars/ directory — '
              'higher-precedence, internal state, not meant to be '
@@ -601,11 +601,16 @@ def _documentation_entries(server, policy, project, roles_path,
 
 
 # Hidden aliases per canonical tool, answered quietly and never
-# listed: a model which guesses the namespace pattern ('playbook.run')
-# gets the verb ('run')
+# listed: the namespace-pattern guesses ('playbook.run' lands on the
+# verb 'run'), and the semantic redirects — a model which asks for the
+# 'variables' of a role wants the settable ones, so it lands on
+# role.defaults; the vars/ tree answers to role.vars only
 TOOL_ALIASES = {
     'run': ['playbook.run'],
     'check': ['playbook.check'],
+    'role.defaults': ['role.variables', 'variables'],
+    'role.tasks': ['tasks'],
+    'role.templates': ['templates'],
 }
 
 
