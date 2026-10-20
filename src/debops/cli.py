@@ -15,7 +15,9 @@ from .mcp.server import McpServer
 from .mcp.policy import McpPolicy, KillSwitch
 from .mcp.prompts import PromptLibrary
 from .mcp.skills import SkillLibrary
-from .mcp.tools import register_project_tools
+from .mcp.tools import (register_documentation_tools,
+                        register_project_tools)
+from .mcp.tools.collections import BUNDLED_COLLECTIONS_ROOT
 from .mcp import client as mcp_client
 from .mcp.client import UnixClient
 from .mcp.transport import StdioTransport, UnixSocketTransport
@@ -29,6 +31,7 @@ import json
 import logging
 import platform
 import getpass
+import shutil
 import sys
 import os
 import textwrap
@@ -340,92 +343,140 @@ class Interpreter(object):
 
     def do_mcp_serve(self, args):
         self._mcp_refuse_if_disabled()
-        # The server is confined to a project directory; refuse to start
-        # outside of one
-        try:
-            project = ProjectDir(path=args.project_dir, config=self.config,
-                                 view=args.view)
-        except (IsADirectoryError, NotADirectoryError) as errmsg:
-            print('Error:', errmsg, file=sys.stderr)
-            sys.exit(1)
+
+        # The server is confined to a project directory; outside of
+        # one — or with --docs — it runs in the documentation mode
+        docs_mode = args.docs
+        project = None
+        if not docs_mode:
+            # ProjectDir chdirs into the directory it probes, even when
+            # it then fails; capture the invocation directory first
+            invoked_in = os.getcwd()
+            try:
+                project = ProjectDir(path=args.project_dir,
+                                     config=self.config, view=args.view)
+            except (IsADirectoryError, NotADirectoryError) as errmsg:
+                # An explicitly named directory must be a project; the
+                # ambient fallback is the documentation mode
+                if os.path.abspath(args.project_dir) != invoked_in:
+                    print('Error:', errmsg, file=sys.stderr)
+                    sys.exit(1)
+                docs_mode = True
 
         set_process_name('debops-mcp')
-        logger.notice('Serving project \'%s\' at %s, view \'%s\' '
-                      '(pid %s)', project.name, project.path,
-                      project.view, os.getpid())
         logger.notice('Interpreter: %s (%s %s)', sys.executable,
                       platform.python_implementation(),
                       platform.python_version())
         killswitch = KillSwitch()
-        policy = McpPolicy(project)
-        project_content = None
-        prompts = None
-        if policy.project_content:
-            project_content = os.path.join(project.path, '.debops', 'mcp')
-            prompts = PromptLibrary(
-                    os.path.join(project_content, 'prompts'),
-                    package_path=os.path.join(DEBOPS_PACKAGE_DATA,
-                                              'prompts'))
-        server = McpServer(project=project, policy=policy,
-                           skills=SkillLibrary(
-                               project_path=(os.path.join(project_content,
-                                                          'skills')
-                                             if project_content else None)),
-                           prompts=prompts, killswitch=killswitch)
-        register_project_tools(server,
-                               enabled_check=killswitch.is_enabled)
-
-        def _rebuild():
-            """Re-read the project configuration and rebuild the policy
-            and the tool surface (a pull may have changed them)."""
-            fresh = ProjectDir(path=project.path,
-                               config=Configuration(),
-                               view=project.view)
-            fresh_policy = McpPolicy(fresh)
-            # Registration reads the project and the policy from the
-            # server; the registry is built aside and swapped in
-            # whole, so that a concurrent tools/list never sees a
-            # partial table
-            server.project = fresh
-            server.policy = fresh_policy
-            registry = {}
-            register_project_tools(
-                    server, enabled_check=killswitch.is_enabled,
-                    registry=registry)
-            server.tools = registry
-
-        server._rebuild = _rebuild
-
-        # The lifecycle hooks: mcp-pre-start may abort the startup; the
-        # others only ever log a failure, so a hook cannot stall a
-        # running server or its shutdown
-        hook_env = {'DEBOPS_MCP_TRANSPORT':
-                    'unix' if args.socket else 'stdio'}
-        if args.socket:
-            hook_env['DEBOPS_MCP_SOCKET'] = os.path.abspath(
-                    os.path.expanduser(args.socket))
-        if not run_hooks(project.path, 'mcp-pre-start', extra_env=hook_env):
-            print('Error: the mcp-pre-start hook aborted the startup',
-                  file=sys.stderr)
-            sys.exit(1)
-
+        on_ready = None
+        on_stop = None
         started = False
 
-        def _on_ready():
-            nonlocal started
-            started = True
-            # Reload the policy when the project configuration changes
-            server.watch_config()
-            if not run_hooks(project.path, 'mcp-post-start',
-                             extra_env=hook_env):
-                logger.warning('The mcp-post-start hook failed')
+        if docs_mode:
+            policy = McpPolicy.for_documentation()
+            server = McpServer(
+                    project=None, policy=policy, skills=SkillLibrary(),
+                    prompts=PromptLibrary(
+                            package_path=os.path.join(
+                                    DEBOPS_PACKAGE_DATA, 'prompts')),
+                    killswitch=killswitch)
+            register_documentation_tools(server)
+            logger.notice('Serving DebOps documentation (no project '
+                          'directory, pid %s)', os.getpid())
+            # The provider's galaxy subprocess and its server-side
+            # filter must agree on the collections roots
+            if 'ANSIBLE_COLLECTIONS_PATH' in os.environ:
+                effective = os.environ['ANSIBLE_COLLECTIONS_PATH']
+                origin = 'from the environment'
+            else:
+                effective = BUNDLED_COLLECTIONS_ROOT
+                os.environ['ANSIBLE_COLLECTIONS_PATH'] = effective
+                origin = 'the bundled default'
+            roots = [entry for entry in effective.split(os.pathsep)
+                     if entry]
+            logger.notice('Collections: %s (%s)',
+                          os.pathsep.join(roots) or '(none)', origin)
+            for root in roots:
+                if not os.path.isdir(root):
+                    logger.warning('Collections root not found: %s',
+                                   root)
+            if shutil.which('ansible-galaxy') is None:
+                logger.warning('ansible-galaxy is not installed; the '
+                               'collection tools will not answer')
+        else:
+            logger.notice('Serving project \'%s\' at %s, view \'%s\' '
+                          '(pid %s)', project.name, project.path,
+                          project.view, os.getpid())
+            policy = McpPolicy(project)
+            project_content = None
+            prompts = None
+            if policy.project_content:
+                project_content = os.path.join(project.path, '.debops', 'mcp')
+                prompts = PromptLibrary(
+                        os.path.join(project_content, 'prompts'),
+                        package_path=os.path.join(DEBOPS_PACKAGE_DATA,
+                                                  'prompts'))
+            server = McpServer(project=project, policy=policy,
+                               skills=SkillLibrary(
+                                   project_path=(os.path.join(project_content,
+                                                              'skills')
+                                                 if project_content else None)),
+                               prompts=prompts, killswitch=killswitch)
+            register_project_tools(server,
+                                   enabled_check=killswitch.is_enabled)
 
-        def _on_stop():
-            server.stop_config_watch()
-            # A hung hook must not stall the shutdown
-            if not run_hooks(project.path, 'mcp-pre-stop', timeout=30,
-                             extra_env=hook_env):
-                logger.warning('The mcp-pre-stop hook failed')
+            def _rebuild():
+                """Re-read the project configuration and rebuild the policy
+                and the tool surface (a pull may have changed them)."""
+                fresh = ProjectDir(path=project.path,
+                                   config=Configuration(),
+                                   view=project.view)
+                fresh_policy = McpPolicy(fresh)
+                # Registration reads the project and the policy from the
+                # server; the registry is built aside and swapped in
+                # whole, so that a concurrent tools/list never sees a
+                # partial table
+                server.project = fresh
+                server.policy = fresh_policy
+                registry = {}
+                register_project_tools(
+                        server, enabled_check=killswitch.is_enabled,
+                        registry=registry)
+                server.tools = registry
+
+            server._rebuild = _rebuild
+
+            # The lifecycle hooks: mcp-pre-start may abort the startup; the
+            # others only ever log a failure, so a hook cannot stall a
+            # running server or its shutdown
+            hook_env = {'DEBOPS_MCP_TRANSPORT':
+                        'unix' if args.socket else 'stdio'}
+            if args.socket:
+                hook_env['DEBOPS_MCP_SOCKET'] = os.path.abspath(
+                        os.path.expanduser(args.socket))
+            if not run_hooks(project.path, 'mcp-pre-start', extra_env=hook_env):
+                print('Error: the mcp-pre-start hook aborted the startup',
+                      file=sys.stderr)
+                sys.exit(1)
+
+            def _on_ready():
+                nonlocal started
+                started = True
+                # Reload the policy when the project configuration changes
+                server.watch_config()
+                if not run_hooks(project.path, 'mcp-post-start',
+                                 extra_env=hook_env):
+                    logger.warning('The mcp-post-start hook failed')
+
+            def _on_stop():
+                server.stop_config_watch()
+                # A hung hook must not stall the shutdown
+                if not run_hooks(project.path, 'mcp-pre-stop', timeout=30,
+                                 extra_env=hook_env):
+                    logger.warning('The mcp-pre-stop hook failed')
+
+            on_ready = _on_ready
+            on_stop = _on_stop
 
         try:
             if args.socket:
@@ -434,8 +485,8 @@ class Interpreter(object):
                         max_connections=args.max_connections)
             else:
                 transport = StdioTransport()
-            transport.serve(server, on_ready=_on_ready,
-                            on_stop=_on_stop)
+            transport.serve(server, on_ready=on_ready,
+                            on_stop=on_stop)
         except (ValueError, FileExistsError, PermissionError,
                 OSError) as errmsg:
             # Errors go to stderr: in stdio mode stdout is reserved for

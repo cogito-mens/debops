@@ -473,6 +473,12 @@ Commands:
         parser.add_argument('-V', '--view', type=str,
                             help='select the infrastructure view '
                                  'to serve')
+        parser.add_argument('--docs', action='store_true',
+                            help='run in the documentation mode even '
+                                 'inside a project directory: only the '
+                                 'bundled DebOps content and the '
+                                 'collections of ANSIBLE_COLLECTIONS_PATH '
+                                 'are served, read-only')
         parser.add_argument('--instance', type=str, metavar='NAME',
                             help='serve the named instance from the '
                                  'instances root: NAME is '
@@ -497,6 +503,12 @@ Commands:
                             help='maximum number of concurrent connections '
                                  '(default: %(default)s)')
         self.args = parser.parse_args(self.args[3:])
+
+        if self.args.docs and self.args.view is not None:
+            parser.error('--docs serves no project view; '
+                         'do not combine it with --view')
+        if self.args.docs and self.args.instance is not None:
+            parser.error('--docs and --instance exclude each other')
 
         if self.args.instance is not None:
             if self.args.view is not None:

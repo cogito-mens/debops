@@ -141,14 +141,68 @@ def test_serve_verbose_logs_startup_notice(run_debops, mcp_env,
     assert "serving on stdio" in result.stderr
 
 
-def test_serve_outside_a_project_fails(run_debops, mcp_env, tmp_path):
+def test_serve_outside_a_project_serves_documentation(
+        run_debops, mcp_env, tmp_path):
+    """Outside of a project directory the server runs in the
+    documentation mode: the bundled content and the collections of the
+    effective ANSIBLE_COLLECTIONS_PATH, read-only."""
+    request = json.dumps({
+        "jsonrpc": "2.0", "id": 1,
+        "method": "tools/list",
+        "params": {"_meta": REQUEST_META},
+    }) + "\n"
     result = run_debops("mcp", "serve", cwd=str(tmp_path), env=mcp_env,
+                        input_text=request)
+
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    names = sorted(tool["name"] for tool in response["result"]["tools"])
+    assert names == ["collection_playbooks", "collection_roles",
+                     "playbook_info", "playbooks",
+                     "role_argspec", "role_defaults", "role_files",
+                     "role_handlers", "role_info", "role_tasks",
+                     "role_templates", "role_variables"]
+
+
+def test_serve_explicit_nonproject_dir_fails(run_debops, mcp_env,
+                                             tmp_path):
+    # An explicitly named directory must be a project; only the ambient
+    # detection falls back to the documentation mode
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    result = run_debops("mcp", "serve", "--project-dir",
+                        str(elsewhere), cwd=str(tmp_path), env=mcp_env,
                         input_text="")
 
     assert result.returncode == 1
     assert "project directory not found" in result.stderr
     # Nothing may be written to the protocol channel
     assert result.stdout == ""
+
+
+def test_serve_docs_flag_inside_a_project(run_debops, mcp_env,
+                                          project_dir):
+    request = json.dumps({
+        "jsonrpc": "2.0", "id": 1,
+        "method": "tools/list",
+        "params": {"_meta": REQUEST_META},
+    }) + "\n"
+    result = run_debops("mcp", "serve", "--docs", cwd=str(project_dir),
+                        env=mcp_env, input_text=request)
+
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    names = [tool["name"] for tool in response["result"]["tools"]]
+    assert "project_read" not in names
+    assert "role_info" in names
+
+
+def test_serve_docs_rejects_view(run_debops, mcp_env, project_dir):
+    result = run_debops("mcp", "serve", "--docs", "--view", "web",
+                        cwd=str(project_dir), env=mcp_env, input_text="")
+
+    assert result.returncode == 2
+    assert "--docs" in result.stderr
 
 
 def test_serve_exits_quietly_on_sigint(debops_source_dir, mcp_env,
