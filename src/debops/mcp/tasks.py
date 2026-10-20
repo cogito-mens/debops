@@ -8,8 +8,10 @@
 A task is a durable handle for a long-running tool call: the client
 gets the handle immediately and polls 'tasks/get' for the outcome, so
 a disconnect strands neither the work nor its result. The registry is
-in-memory with a TTL; a daemon restart loses the tasks, which the
-specification allows.
+in-memory with a TTL; it survives a dead worker thread and any client
+disconnect (the specification's durability bar), and a daemon restart
+loses the tasks, which the specification allows. The advertised TTL is
+honest: it clamps to the terminal retention when the task finishes.
 """
 
 import logging
@@ -143,24 +145,32 @@ class Task(object):
             event.set()
             return True
 
+    def _finish(self):
+        """Terminal transitions clamp the advertised TTL to the
+        terminal retention: the work may take its hour, but the answer
+        is kept for the client to collect, not for the hour. Call with
+        the lock held."""
+        self.ttl_ms = TERMINAL_RETENTION * 1000
+        self.last_updated_at = _now()
+
     def complete(self, result):
         with self._lock:
             self.status = 'completed'
             self.result = result
-            self.last_updated_at = _now()
+            self._finish()
         self._changed()
 
     def fail(self, error):
         with self._lock:
             self.status = 'failed'
             self.error = error
-            self.last_updated_at = _now()
+            self._finish()
         self._changed()
 
     def mark_cancelled(self):
         with self._lock:
             self.status = 'cancelled'
-            self.last_updated_at = _now()
+            self._finish()
         self._changed()
 
     def cancel(self):

@@ -9,6 +9,7 @@ dependencies.
 """
 
 from debops.mcp.server import McpServer, PROTOCOL_VERSION, TASKS_EXTENSION
+from debops.mcp.tasks import TERMINAL_RETENTION
 import threading
 import time
 import unittest
@@ -236,6 +237,22 @@ class TaskTestCase(unittest.TestCase):
                                     - timedelta(seconds=400))
         response = self.task_call('tasks/get', {'taskId': task_id})
         self.assertEqual(response['error']['code'], -32602)
+
+    def test_the_advertised_ttl_is_honest_at_completion(self):
+        # The creation TTL is the work budget; a finished task keeps
+        # its answer for the terminal retention, and says so
+        result = self.call('slow')['result']
+        self.assertGreaterEqual(result['ttlMs'], 3600000)
+        task_id = result['taskId']
+        self.task_call('tasks/cancel', {'taskId': task_id},
+                       request_id=2)
+        outcome = self.wait_task(task_id)
+        self.assertEqual(outcome['status'], 'cancelled')
+        self.assertEqual(outcome['ttlMs'], TERMINAL_RETENTION * 1000)
+        # ... and the answer is there to collect
+        again = self.task_call('tasks/get', {'taskId': task_id},
+                               request_id=3)['result']
+        self.assertEqual(again['status'], 'cancelled')
 
 
 if __name__ == '__main__':
