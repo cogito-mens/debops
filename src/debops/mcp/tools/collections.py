@@ -194,18 +194,6 @@ def _playbook_entries(fqcn, entry, name_filter, match_qualified):
     return entries
 
 
-def _playbook_lines(fqcn, entry, name_filter, match_qualified):
-    """The playbook listing lines of one collection."""
-    lines = []
-    for target, summary in _playbook_entries(fqcn, entry, name_filter,
-                                             match_qualified):
-        line = '- `{}`'.format(target)
-        if summary:
-            line += ' — {}'.format(summary)
-        lines.append(line)
-    return lines
-
-
 def tool_collection_playbooks(index_provider, arguments):
     try:
         index = index_provider()
