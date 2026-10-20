@@ -1535,3 +1535,39 @@ def test_configure_harness_refuses_a_non_project(run_debops, mcp_env,
                         cwd=str(tmp_path), env=mcp_env)
     assert result.returncode == 1
     assert "not found" in result.stderr
+
+
+def test_configure_harness_user_mode_needs_no_project(run_debops,
+                                                      mcp_env,
+                                                      tmp_path):
+    # The deployment shape: from any directory, the account-level file
+    # (XDG_CONFIG_HOME in the test environment) gets the bridge entry
+    result = run_debops("mcp", "configure", "-H", "opencode", "--user",
+                        "--socket", "/run/debops-mcp/x-system.sock",
+                        cwd=str(tmp_path), env=mcp_env)
+    assert result.returncode == 0
+    config_path = (tmp_path / "config" / "opencode" / "opencode.json")
+    config = json.loads(config_path.read_text())
+    entry = config["mcp"]["servers"]["debops"]
+    assert entry["command"] == ["debops", "mcp", "connect",
+                                "/run/debops-mcp/x-system.sock"]
+
+
+def test_configure_harness_socket_needs_user(run_debops, mcp_env,
+                                             project_dir):
+    result = run_debops("mcp", "configure", "-H", "opencode",
+                        "--socket", "/run/x.sock",
+                        cwd=str(project_dir), env=mcp_env)
+    assert result.returncode == 1
+    assert "--user" in result.stderr
+
+
+def test_configure_harness_user_without_socket_prints(run_debops,
+                                                      mcp_env,
+                                                      project_dir):
+    result = run_debops("mcp", "configure", "-H", "claude", "--user",
+                        cwd=str(project_dir), env=mcp_env)
+    assert result.returncode == 0
+    assert "not written" in result.stdout
+    assert "mcpServers" in result.stdout
+    assert not (project_dir / ".mcp.json").exists()

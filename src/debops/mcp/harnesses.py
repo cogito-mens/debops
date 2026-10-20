@@ -56,32 +56,57 @@ def _codex_entry(socket_path):
 
 
 class Harness(object):
-    """One supported harness: its file, format and entry shape."""
+    """One supported harness: its files, format and entry shape.
+
+    'default_filename' is project-relative, 'user_filename' account-
+    level ('$XDG_CONFIG_HOME/...' is resolved at call time; '~' too).
+    """
 
     def __init__(self, name, default_filename, config_format, path,
-                 entry_builder, note=None):
+                 entry_builder, note=None, user_filename=None,
+                 note_project=None):
         self.name = name
         self.default_filename = default_filename
         self.format = config_format
         self.path = path
         self.entry = entry_builder
         self.note = note
+        self.user_filename = user_filename
+        self.note_project = note_project
 
 
 HARNESSES = {
     'opencode': Harness(
             'opencode', os.path.join('.opencode', 'opencode.json'),
-            'json', ('mcp', 'servers', 'debops'), _opencode_entry),
+            'json', ('mcp', 'servers', 'debops'), _opencode_entry,
+            user_filename='$XDG_CONFIG_HOME/opencode/opencode.json'),
     'claude': Harness(
             'claude', '.mcp.json',
-            'json', ('mcpServers', 'debops'), _claude_entry),
+            'json', ('mcpServers', 'debops'), _claude_entry,
+            user_filename='~/.claude.json'),
     'codex': Harness(
             'codex', os.path.join('.codex', 'config.toml'),
             'toml', ('mcp_servers', 'debops'), _codex_entry,
-            note='Codex reads project configuration only in trusted '
-                 'projects; whether it negotiates the 2026-07-28 '
-                 'protocol revision is unverified'),
+            note='whether Codex negotiates the 2026-07-28 protocol '
+                 'revision is unverified',
+            note_project='Codex reads project configuration only in '
+                         'trusted projects',
+            user_filename='~/.codex/config.toml'),
 }
+
+
+def _user_config_path(harness):
+    """The user-level configuration file of the harness, resolved at
+    call time (XDG_CONFIG_HOME differs per process)."""
+    filename = harness.user_filename
+    if filename is None:
+        return None
+    if filename.startswith('$XDG_CONFIG_HOME/'):
+        xdg_config = os.environ.get('XDG_CONFIG_HOME') or os.path.join(
+                os.path.expanduser('~'), '.config')
+        return os.path.join(xdg_config,
+                            filename[len('$XDG_CONFIG_HOME/'):])
+    return os.path.expanduser(filename)
 
 
 def _harness_fragment(harness, socket_path):
@@ -150,33 +175,81 @@ def _write_atomic(path, content):
 
 
 def configure_harness(project_path, harness_name, filename=None,
-                      socket_path=None):
-    """Write the harness configuration for the project; return a
-    (status, lines) pair for the caller to present.
+                      socket_path=None, user=False, print_only=False):
+    """Write the harness configuration; return a (status, lines) pair
+    for the caller to present.
 
-    Raises ValueError with the refusal reason when the existing file
-    cannot be merged safely.
+    The default mode writes the project-local file of the harness (a
+    project directory is required). With 'user' the account-level file
+    of the harness is the target — the deployment shape, which bridges
+    to a daemon socket ('--socket') and needs no project. The safe
+    fallback for anything uncertain is printing the configuration
+    instead of writing it ('printed' status). Raises ValueError with
+    the refusal reason when an existing file cannot be merged safely.
     """
     harness = HARNESSES.get(harness_name)
     if harness is None:
         raise ValueError('unknown harness: {!r} (supported: {})'.format(
                 harness_name, ', '.join(sorted(HARNESSES))))
-    relative = filename if filename else harness.default_filename
-    path = relative if os.path.isabs(relative) \
-        else os.path.join(project_path, relative)
 
     notes = []
-    if (harness_name == 'opencode' and filename is None):
-        # The file at the project root is also read, but the
-        # '.opencode/' one wins for the same server name
-        for shadow in ('opencode.json', 'opencode.jsonc'):
-            shadow_path = os.path.join(project_path, shadow)
-            if os.path.isfile(shadow_path):
-                notes.append('note: {} also exists; the .opencode/ '
-                             'configuration takes precedence for the '
-                             'same server name'.format(shadow))
+    if user:
+        if socket_path is None:
+            # A spawned server from the account-level configuration
+            # would start in whatever directory the harness opens;
+            # print the entry instead of writing something misleading
+            notes.append('note: an account-level spawn would start the '
+                         'server in whatever directory the harness '
+                         'opens; the deployment shape is '
+                         '--user --socket PATH, bridging to a daemon')
+            print_only = True
+        if filename is not None:
+            path = (filename if os.path.isabs(filename)
+                    else os.path.abspath(filename))
+            relative = filename
+        else:
+            path = _user_config_path(harness)
+            if path is None:
+                notes.append('note: no known account-level '
+                             'configuration file for this harness')
+                print_only = True
+            relative = path
+    else:
+        if socket_path is not None:
+            raise ValueError('a daemon socket belongs to the '
+                             'account-level configuration of the '
+                             'machine: use --user --socket PATH')
+        if project_path is None:
+            raise ValueError('not a DebOps project directory (the '
+                             'project-local configuration needs one; '
+                             'the account level does not: --user)')
+        relative = filename if filename else harness.default_filename
+        path = relative if os.path.isabs(relative) \
+            else os.path.join(project_path, relative)
+        if (harness_name == 'opencode' and filename is None):
+            # The file at the project root is also read, but the
+            # '.opencode/' one wins for the same server name
+            for shadow in ('opencode.json', 'opencode.jsonc'):
+                shadow_path = os.path.join(project_path, shadow)
+                if os.path.isfile(shadow_path):
+                    notes.append('note: {} also exists; the .opencode/ '
+                                 'configuration takes precedence for '
+                                 'the same server name'.format(shadow))
     if harness.note is not None:
         notes.append('note: ' + harness.note)
+    if harness.note_project is not None and not user:
+        notes.append('note: ' + harness.note_project)
+
+    if print_only:
+        lines = ['Configuration for {} ({}), not written to {}:'.format(
+                harness_name, ' '.join(_socket_entry(socket_path)
+                                       if socket_path
+                                       else _serve_entry()),
+                relative)]
+        lines.extend(notes)
+        lines.append('')
+        lines.append(fragment_for_display(harness_name, socket_path))
+        return 'printed', lines
 
     data = _read_config(path, harness.format)
     if harness.format == 'toml' and data is not None:

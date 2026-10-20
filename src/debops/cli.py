@@ -707,16 +707,22 @@ class Interpreter(object):
 
     def do_mcp_configure(self, args):
         self._mcp_refuse_if_disabled()
-        # The configuration belongs to the project the harness starts in
-        try:
-            project = ProjectDir(path=args.project_dir, config=self.config)
-        except (IsADirectoryError, NotADirectoryError) as errmsg:
-            print('Error:', errmsg, file=sys.stderr)
-            sys.exit(1)
+        # The account level needs no project; the project-local
+        # configuration is written at the project root
+        project_path = None
+        if not args.user:
+            try:
+                project = ProjectDir(path=args.project_dir,
+                                     config=self.config)
+            except (IsADirectoryError, NotADirectoryError) as errmsg:
+                print('Error:', errmsg, file=sys.stderr)
+                sys.exit(1)
+            project_path = project.path
         try:
             status, lines = configure_harness(
-                    project.path, args.harness, filename=args.filename,
-                    socket_path=args.socket)
+                    project_path, args.harness, filename=args.filename,
+                    socket_path=args.socket, user=args.user,
+                    print_only=args.print_only)
         except ValueError as errmsg:
             print('Error:', errmsg, file=sys.stderr)
             print()

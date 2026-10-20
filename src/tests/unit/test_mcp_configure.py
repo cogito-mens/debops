@@ -16,6 +16,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 import toml
 
@@ -155,10 +156,18 @@ class ConfigureTestCase(unittest.TestCase):
         self.assertTrue(any('trusted' in line for line in lines), lines)
 
     def test_socket_mode_writes_the_bridge_command(self):
-        configure_harness(self.tmpdir, 'opencode',
-                          socket_path='/run/debops-mcp/x-system.sock')
-        config = self.read_json(os.path.join('.opencode',
-                                             'opencode.json'))
+        # The bridge command belongs to the account-level
+        # configuration; project mode refuses it
+        with self.assertRaises(ValueError):
+            configure_harness(self.tmpdir, 'opencode',
+                              socket_path='/run/debops-mcp/x-system.sock')
+        with mock.patch.dict(os.environ, {'HOME': self.tmpdir}):
+            os.environ.pop('XDG_CONFIG_HOME', None)
+            configure_harness(None, 'opencode', user=True,
+                              socket_path='/run/debops-mcp/'
+                              'x-system.sock')
+        config = self.read_json(os.path.join(
+                '.config', 'opencode', 'opencode.json'))
         self.assertEqual(
                 config['mcp']['servers']['debops']['command'],
                 ['debops', 'mcp', 'connect',
@@ -190,6 +199,120 @@ class ConfigureTestCase(unittest.TestCase):
                          '.mcp.json')
         self.assertEqual(HARNESSES['codex'].default_filename,
                          os.path.join('.codex', 'config.toml'))
+
+
+class UserModeTestCase(unittest.TestCase):
+    """The account-level configuration ('--user'), the deployment shape
+    together with '--socket'."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-cfguser-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        # The account-level paths resolve at call time from the
+        # environment
+        patcher = mock.patch.dict(os.environ, {'HOME': self.tmpdir})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # patch.dict restores the whole environment on exit
+        os.environ.pop('XDG_CONFIG_HOME', None)
+
+    def test_user_mode_writes_the_account_config(self):
+        status, _lines = configure_harness(
+                None, 'opencode', user=True,
+                socket_path='/run/debops-mcp/containers-system.sock')
+        self.assertEqual(status, 'created')
+        with open(os.path.join(
+                self.tmpdir, '.config', 'opencode', 'opencode.json')) \
+                as fp:
+            config = json.load(fp)
+        entry = config['mcp']['servers']['debops']
+        self.assertEqual(entry['command'],
+                         ['debops', 'mcp', 'connect',
+                          '/run/debops-mcp/containers-system.sock'])
+        self.assertEqual(entry['protocol'], '2026-07-28')
+
+    def test_user_mode_respects_xdg_config_home(self):
+        xdg = os.path.join(self.tmpdir, 'xdg')
+        with mock.patch.dict(os.environ, {'XDG_CONFIG_HOME': xdg}):
+            configure_harness(None, 'opencode', user=True,
+                              socket_path='/run/x.sock')
+        self.assertTrue(os.path.isfile(
+                os.path.join(xdg, 'opencode', 'opencode.json')))
+
+    def test_user_mode_claude(self):
+        configure_harness(None, 'claude', user=True,
+                          socket_path='/run/x.sock')
+        with open(os.path.join(self.tmpdir, '.claude.json')) as fp:
+            config = json.load(fp)
+        self.assertEqual(config['mcpServers']['debops']['args'],
+                         ['mcp', 'connect', '/run/x.sock'])
+
+    def test_user_mode_codex(self):
+        configure_harness(None, 'codex', user=True,
+                          socket_path='/run/x.sock')
+        with open(os.path.join(self.tmpdir, '.codex',
+                               'config.toml')) as fp:
+            config = toml.loads(fp.read())
+        self.assertEqual(config['mcp_servers']['debops']['args'],
+                         ['mcp', 'connect', '/run/x.sock'])
+
+    def test_user_mode_merges_a_busy_state_file(self):
+        # Claude Code's user file holds much more than MCP servers
+        with open(os.path.join(self.tmpdir, '.claude.json'), 'w') as fp:
+            json.dump({'projects': {'/old': {}}, 'oauth': {'x': 1},
+                       'mcpServers': {'other': {'command': 'x'}}}, fp)
+        configure_harness(None, 'claude', user=True,
+                          socket_path='/run/x.sock')
+        with open(os.path.join(self.tmpdir, '.claude.json')) as fp:
+            config = json.load(fp)
+        self.assertEqual(config['projects'], {'/old': {}})
+        self.assertEqual(config['oauth'], {'x': 1})
+        self.assertIn('other', config['mcpServers'])
+        self.assertIn('debops', config['mcpServers'])
+
+    def test_user_mode_without_a_socket_prints(self):
+        # A spawn entry at the account level would start the server in
+        # whatever directory the harness opens; print, don't write
+        status, lines = configure_harness(None, 'opencode', user=True)
+        self.assertEqual(status, 'printed')
+        self.assertTrue(any('--user --socket' in line for line in lines),
+                        lines)
+        self.assertIn('"debops"', '\n'.join(lines))
+        self.assertFalse(os.path.exists(
+                os.path.join(self.tmpdir, '.config')))
+
+    def test_socket_without_user_is_refused(self):
+        with self.assertRaises(ValueError) as context:
+            configure_harness(self.tmpdir, 'opencode',
+                              socket_path='/run/x.sock')
+        self.assertIn('account-level', str(context.exception))
+
+    def test_project_mode_needs_a_project(self):
+        with self.assertRaises(ValueError) as context:
+            configure_harness(None, 'opencode')
+        self.assertIn('not a DebOps project', str(context.exception))
+
+    def test_print_only_writes_nothing(self):
+        status, lines = configure_harness(self.tmpdir, 'claude',
+                                          print_only=True)
+        self.assertEqual(status, 'printed')
+        self.assertIn('"mcpServers"', '\n'.join(lines))
+        self.assertFalse(os.path.exists(
+                os.path.join(self.tmpdir, '.mcp.json')))
+
+    def test_user_mode_filename_override_may_be_relative(self):
+        # A relative override in account mode resolves against the
+        # current directory
+        old_cwd = os.getcwd()
+        os.chdir(self.tmpdir)
+        try:
+            configure_harness(None, 'opencode', user=True,
+                              filename='custom.json',
+                              socket_path='/run/x.sock')
+            self.assertTrue(os.path.isfile(
+                    os.path.join(self.tmpdir, 'custom.json')))
+        finally:
+            os.chdir(old_cwd)
 
 
 if __name__ == '__main__':
