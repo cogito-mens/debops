@@ -309,6 +309,19 @@ class McpPolicy(object):
         self.execute_hosts = [str(entry) for entry in
                               mcp_config.get('execute_hosts', []) or []]
 
+        # Whether the ad-hoc host tools escalate privileges by default.
+        # The DebOps local facts report package and file state, which
+        # reads as false negatives without root; the per-call 'become'
+        # argument still wins. Playbook runs are not affected: roles
+        # escalate in their own tasks
+        become = mcp_config.get('become', False)
+        if isinstance(become, str):
+            become = strtobool(become)
+        self.become = bool(become)
+        if self.become:
+            logger.notice('Privilege escalation by default for the '
+                          'ad-hoc host tools (project.mcp.become)')
+
         options = mcp_config.get('execute_options')
         if options is None:
             options = EXECUTE_OPTIONS

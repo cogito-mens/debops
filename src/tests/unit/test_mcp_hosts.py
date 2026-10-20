@@ -124,6 +124,39 @@ class HostsTestCase(unittest.TestCase):
                                      {'hosts': 'web1', 'become': True})
         self.assertIn('--become', popen.call_args[0][0])
 
+    def _become_policy_server(self):
+        # The tools close over the policy at registration, so a changed
+        # policy means a fresh server
+        self.project.config.raw['project'] = {'mcp': {'become': True}}
+        self.policy = McpPolicy(self.project)
+        self.server = McpServer(project=self.project, policy=self.policy)
+        register_project_tools(
+                self.server, roles_path=self.tmpdir,
+                playbooks_path=self.tmpdir,
+                collection_index_provider=lambda: {})
+
+    def test_become_policy_default(self):
+        # The project may default the ad-hoc tools to escalate: the
+        # DebOps local facts read package and file state as root
+        self._become_policy_server()
+        popen, _response = self._run('ansible_facts', {'hosts': 'web1'})
+        self.assertIn('--become', popen.call_args[0][0])
+
+    def test_become_per_call_overrides_the_policy(self):
+        self._become_policy_server()
+        popen, _response = self._run('ansible_facts',
+                                     {'hosts': 'web1', 'become': False})
+        self.assertNotIn('--become', popen.call_args[0][0])
+
+    def test_facts_header_marks_the_privilege_level(self):
+        _popen, response = self._run('ansible_facts', {'hosts': 'web1'})
+        text = response['result']['content'][0]['text']
+        self.assertIn('(become: no)', text)
+        _popen, response = self._run('ansible_facts',
+                                     {'hosts': 'web1', 'become': True})
+        self.assertIn('(become: yes)',
+                      response['result']['content'][0]['text'])
+
     def test_facts_are_rendered_as_yaml(self):
         _popen, response = self._run('ansible_facts', {'hosts': 'web1'},
                                      module_output=FACTS_OK)

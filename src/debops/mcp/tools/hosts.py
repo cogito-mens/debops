@@ -164,9 +164,14 @@ def _exec(project, policy, arguments, context, module, module_filter):
     if not _validate_host_pattern(hosts):
         return error_result('invalid host pattern (a single word '
                             'expected): {!r}'.format(hosts))
-    become = arguments.get('become', False)
-    if not isinstance(become, bool):
+    become = arguments.get('become')
+    if become is not None and not isinstance(become, bool):
         return error_result('the "become" argument must be a boolean')
+    if become is None:
+        # The policy supplies the default; the DebOps local facts read
+        # package and file state, which degrades to false negatives
+        # without root on the host
+        become = bool(policy.become) if policy is not None else False
 
     ansible = project.config.raw.get('binaries', {}).get('ansible',
                                                          'ansible')
@@ -260,8 +265,12 @@ def _exec(project, policy, arguments, context, module, module_filter):
             # Pure JSON, parseable as-is: the document is keyed by host
             text = _render_facts_json(blocks)
         else:
-            text = '# facts for {}\n\nHosts: {}\n\n{}'.format(
-                    hosts, ', '.join(resolved), _render_facts(blocks))
+            # The privilege level rides the header: an unprivileged
+            # read and a privileged one answer the same shape, and the
+            # local facts degrade silently without it
+            text = '# facts for {} (become: {})\n\nHosts: {}\n\n{}' \
+                .format(hosts, 'yes' if become else 'no',
+                        ', '.join(resolved), _render_facts(blocks))
         structured = None
     # ansible returns non-zero when any host failed
     if returncode != 0:

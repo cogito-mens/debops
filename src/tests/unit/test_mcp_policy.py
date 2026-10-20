@@ -175,6 +175,7 @@ class McpConfigTemplateTestCase(unittest.TestCase):
         self.assertEqual(values['custom_tools'], policy.custom_tools)
         self.assertEqual(values['confirm_required'],
                          policy.confirm_required)
+        self.assertEqual(values['become'], policy.become)
         self.assertEqual(values['local_playbooks'],
                          policy.local_playbooks)
 

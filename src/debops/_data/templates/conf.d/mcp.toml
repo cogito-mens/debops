@@ -38,6 +38,13 @@ execute_options = ["limit", "tags", "skip-tags"]
 #ansible_hosts = []
 #execute_hosts = []
 
+# Whether the ad-hoc host tools (ansible_facts, ansible_ping) escalate
+# privileges on the remote host by default. The DebOps local facts read
+# package and file state, which needs root; without it they degrade to
+# false negatives. Playbook runs are not affected (roles escalate in
+# their own tasks). The per-call 'become' argument overrides this.
+become = false
+
 # Tools which ask the user for confirmation before they run, on clients
 # which support it. The confirmation is a courtesy, not a security
 # boundary; the 'execute' option above is the boundary.

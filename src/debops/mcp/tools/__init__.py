@@ -673,7 +673,10 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                        'remote host (sudo to root) — useful because an '
                        'unprivileged account sees a different fact set '
                        'than root. Whether it works is governed by the '
-                       'remote sudo configuration, not by this server.'},
+                       'remote sudo configuration, not by this server. '
+                       'The project default is set with '
+                       '"project.mcp.become"; this argument overrides '
+                       'it per call.'},
         }
         tools.extend([
             ('ansible_ping',
