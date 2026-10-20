@@ -1856,34 +1856,59 @@ def test_configure_harness_refuses_a_non_project(run_debops, mcp_env,
 def test_configure_harness_user_mode_needs_no_project(run_debops,
                                                       mcp_env,
                                                       tmp_path):
-    # The deployment shape: from any directory, the account-level file
-    # (XDG_CONFIG_HOME in the test environment) gets the bridge entry
+    # From any directory, the account-level file (XDG_CONFIG_HOME in
+    # the test environment) gets the spawn entry: the server serves a
+    # project when the harness opens one, the documentation mode
+    # otherwise
     result = run_debops("mcp", "configure", "-H", "opencode", "--user",
-                        "--socket", "/run/debops-mcp/x-system.sock",
                         cwd=str(tmp_path), env=mcp_env)
     assert result.returncode == 0
     config_path = (tmp_path / "config" / "opencode" / "opencode.json")
     config = json.loads(config_path.read_text())
     entry = config["mcp"]["servers"]["debops"]
-    assert entry["command"] == ["debops", "mcp", "connect",
-                                "/run/debops-mcp/x-system.sock"]
+    assert entry["command"] == ["debops", "mcp", "serve"]
 
 
-def test_configure_harness_socket_needs_user(run_debops, mcp_env,
-                                             project_dir):
+def test_configure_harness_rejects_the_removed_socket_option(
+        run_debops, mcp_env, project_dir):
+    # The bridge shape is configured by hand; the writer offers only
+    # the spawn entry
     result = run_debops("mcp", "configure", "-H", "opencode",
                         "--socket", "/run/x.sock",
                         cwd=str(project_dir), env=mcp_env)
-    assert result.returncode == 1
-    assert "--user" in result.stderr
+    assert result.returncode == 2
+    assert "--socket" in result.stderr
 
 
-def test_configure_harness_user_without_socket_prints(run_debops,
-                                                      mcp_env,
-                                                      project_dir):
-    result = run_debops("mcp", "configure", "-H", "claude", "--user",
+def test_configure_print_needs_no_project(run_debops, mcp_env,
+                                          tmp_path):
+    # Printing asks for no directory at all
+    result = run_debops("mcp", "configure", "-H", "opencode", "--print",
+                        cwd=str(tmp_path), env=mcp_env)
+    assert result.returncode == 0
+    assert "not written to .opencode/opencode.json" in result.stdout
+    assert '"mcp"' in result.stdout
+    assert "serve" in result.stdout
+    # The removed advisory stays gone
+    assert "--socket" not in result.stdout
+
+
+def test_configure_fires_no_hooks(run_debops, mcp_env, project_dir):
+    # Configuration writes are not hook events — in a project or (for
+    # printing) outside of one
+    marker = project_dir / "hook-fired"
+    _hook_canary(project_dir / ".debops" / "hooks" / "mcp-pre-start",
+                 marker)
+    _hook_canary(Path(mcp_env["XDG_CONFIG_HOME"]) / "debops" / "hooks"
+                 / "mcp-pre-start", marker)
+
+    result = run_debops("mcp", "configure", "-H", "opencode",
                         cwd=str(project_dir), env=mcp_env)
     assert result.returncode == 0
-    assert "not written" in result.stdout
-    assert "mcpServers" in result.stdout
-    assert not (project_dir / ".mcp.json").exists()
+    result = run_debops("mcp", "configure", "-H", "opencode", "--print",
+                        cwd=str(project_dir), env=mcp_env)
+    assert result.returncode == 0
+    result = run_debops("mcp", "configure", "-H", "opencode", "--print",
+                        cwd=str(project_dir.parent), env=mcp_env)
+    assert result.returncode == 0
+    assert not marker.exists()

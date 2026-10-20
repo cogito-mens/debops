@@ -367,17 +367,19 @@ def test_mcp_configure_parses():
 
     assert args.harness == "opencode"
     assert args.filename is None
-    assert args.socket is None
+    assert args.user is False
+    assert args.print_only is False
 
 
 def test_mcp_configure_options():
     args = parse_cli("mcp", "configure", "--harness", "claude",
                      "-f", "custom.json",
-                     "--socket", "/run/debops-mcp/x-system.sock").args
+                     "--user", "--print").args
 
     assert args.harness == "claude"
     assert args.filename == "custom.json"
-    assert args.socket == "/run/debops-mcp/x-system.sock"
+    assert args.user is True
+    assert args.print_only is True
 
 
 def test_mcp_configure_requires_a_known_harness():

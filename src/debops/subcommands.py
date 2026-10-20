@@ -618,12 +618,9 @@ Commands:
         parser.add_argument('--user', action='store_true',
                             help='write the account-level configuration '
                                  'of the harness (no project needed); '
-                                 'the deployment shape, together with '
-                                 '--socket')
-        parser.add_argument('--socket', type=str, metavar='PATH',
-                            help='connect to a daemon socket at PATH '
-                                 'instead of spawning the server over '
-                                 'stdio (requires --user)')
+                                 'the spawned server serves a project '
+                                 'when launched inside one and the '
+                                 'documentation mode otherwise')
         parser.add_argument('--print', dest='print_only',
                             action='store_true',
                             help='print the configuration instead of '

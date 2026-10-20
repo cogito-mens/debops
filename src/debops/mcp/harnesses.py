@@ -31,27 +31,16 @@ def _serve_entry():
     return ['debops', 'mcp', 'serve']
 
 
-def _socket_entry(socket_path):
-    return ['debops', 'mcp', 'connect', socket_path]
-
-
-def _opencode_entry(socket_path):
-    command = _socket_entry(socket_path) if socket_path else _serve_entry()
-    return {'type': 'local', 'command': command,
+def _opencode_entry():
+    return {'type': 'local', 'command': _serve_entry(),
             'protocol': '2026-07-28'}
 
 
-def _claude_entry(socket_path):
-    if socket_path:
-        return {'type': 'stdio', 'command': 'debops',
-                'args': ['mcp', 'connect', socket_path]}
+def _claude_entry():
     return {'type': 'stdio', 'command': 'debops', 'args': ['mcp', 'serve']}
 
 
-def _codex_entry(socket_path):
-    if socket_path:
-        return {'command': 'debops',
-                'args': ['mcp', 'connect', socket_path]}
+def _codex_entry():
     return {'command': 'debops', 'args': ['mcp', 'serve']}
 
 
@@ -109,19 +98,19 @@ def _user_config_path(harness):
     return os.path.expanduser(filename)
 
 
-def _harness_fragment(harness, socket_path):
+def _harness_fragment(harness):
     """The entry as a nested dict along the harness' key path."""
-    fragment = harness.entry(socket_path)
+    fragment = harness.entry()
     for key in reversed(harness.path):
         fragment = {key: fragment}
     return fragment
 
 
-def fragment_for_display(harness_name, socket_path=None):
+def fragment_for_display(harness_name):
     """The harness configuration fragment as text, for hand-merging
     when a file cannot be rewritten safely."""
     harness = HARNESSES[harness_name]
-    fragment = _harness_fragment(harness, socket_path)
+    fragment = _harness_fragment(harness)
     if harness.format == 'toml':
         return toml.dumps(fragment)
     return json.dumps(fragment, indent=2)
@@ -175,17 +164,18 @@ def _write_atomic(path, content):
 
 
 def configure_harness(project_path, harness_name, filename=None,
-                      socket_path=None, user=False, print_only=False):
+                      user=False, print_only=False):
     """Write the harness configuration; return a (status, lines) pair
     for the caller to present.
 
     The default mode writes the project-local file of the harness (a
     project directory is required). With 'user' the account-level file
-    of the harness is the target — the deployment shape, which bridges
-    to a daemon socket ('--socket') and needs no project. The safe
-    fallback for anything uncertain is printing the configuration
-    instead of writing it ('printed' status). Raises ValueError with
-    the refusal reason when an existing file cannot be merged safely.
+    of the harness is the target and needs no project; the spawned
+    server serves a project when launched inside one and the
+    documentation mode otherwise. Printing instead of writing is the
+    safe fallback for anything uncertain ('printed' status), and asks
+    for no directory at all. Raises ValueError with the refusal reason
+    when an existing file cannot be merged safely.
     """
     harness = HARNESSES.get(harness_name)
     if harness is None:
@@ -194,15 +184,6 @@ def configure_harness(project_path, harness_name, filename=None,
 
     notes = []
     if user:
-        if socket_path is None:
-            # A spawned server from the account-level configuration
-            # would start in whatever directory the harness opens;
-            # print the entry instead of writing something misleading
-            notes.append('note: an account-level spawn would start the '
-                         'server in whatever directory the harness '
-                         'opens; the deployment shape is '
-                         '--user --socket PATH, bridging to a daemon')
-            print_only = True
         if filename is not None:
             path = (filename if os.path.isabs(filename)
                     else os.path.abspath(filename))
@@ -215,26 +196,27 @@ def configure_harness(project_path, harness_name, filename=None,
                 print_only = True
             relative = path
     else:
-        if socket_path is not None:
-            raise ValueError('a daemon socket belongs to the '
-                             'account-level configuration of the '
-                             'machine: use --user --socket PATH')
         if project_path is None:
-            raise ValueError('not a DebOps project directory (the '
-                             'project-local configuration needs one; '
-                             'the account level does not: --user)')
-        relative = filename if filename else harness.default_filename
-        path = relative if os.path.isabs(relative) \
-            else os.path.join(project_path, relative)
-        if (harness_name == 'opencode' and filename is None):
-            # The file at the project root is also read, but the
-            # '.opencode/' one wins for the same server name
-            for shadow in ('opencode.json', 'opencode.jsonc'):
-                shadow_path = os.path.join(project_path, shadow)
-                if os.path.isfile(shadow_path):
-                    notes.append('note: {} also exists; the .opencode/ '
-                                 'configuration takes precedence for '
-                                 'the same server name'.format(shadow))
+            if not print_only:
+                raise ValueError('not a DebOps project directory (the '
+                                 'project-local configuration needs one; '
+                                 'the account level does not: --user)')
+            relative = filename if filename else harness.default_filename
+            path = relative
+        else:
+            relative = filename if filename else harness.default_filename
+            path = relative if os.path.isabs(relative) \
+                else os.path.join(project_path, relative)
+            if (harness_name == 'opencode' and filename is None):
+                # The file at the project root is also read, but the
+                # '.opencode/' one wins for the same server name
+                for shadow in ('opencode.json', 'opencode.jsonc'):
+                    shadow_path = os.path.join(project_path, shadow)
+                    if os.path.isfile(shadow_path):
+                        notes.append(
+                                'note: {} also exists; the .opencode/ '
+                                'configuration takes precedence for '
+                                'the same server name'.format(shadow))
     if harness.note is not None:
         notes.append('note: ' + harness.note)
     if harness.note_project is not None and not user:
@@ -242,13 +224,10 @@ def configure_harness(project_path, harness_name, filename=None,
 
     if print_only:
         lines = ['Configuration for {} ({}), not written to {}:'.format(
-                harness_name, ' '.join(_socket_entry(socket_path)
-                                       if socket_path
-                                       else _serve_entry()),
-                relative)]
+                harness_name, ' '.join(_serve_entry()), relative)]
         lines.extend(notes)
         lines.append('')
-        lines.append(fragment_for_display(harness_name, socket_path))
+        lines.append(fragment_for_display(harness_name))
         return 'printed', lines
 
     data = _read_config(path, harness.format)
@@ -264,7 +243,7 @@ def configure_harness(project_path, harness_name, filename=None,
     if data is None:
         data = {}
 
-    _merge(data, _harness_fragment(harness, socket_path))
+    _merge(data, _harness_fragment(harness))
     if harness.format == 'toml':
         content = toml.dumps(data)
     else:
@@ -277,8 +256,7 @@ def configure_harness(project_path, harness_name, filename=None,
     if status != 'unchanged':
         _write_atomic(path, content)
 
-    command = ' '.join(_socket_entry(socket_path)
-                       if socket_path else _serve_entry())
+    command = ' '.join(_serve_entry())
     lines = ['{}: {} ({}: {})'.format(
             status.capitalize(), relative, harness_name, command)]
     lines.extend(notes)

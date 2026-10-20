@@ -775,28 +775,29 @@ class Interpreter(object):
 
     def do_mcp_configure(self, args):
         self._mcp_refuse_if_disabled()
-        # The account level needs no project; the project-local
-        # configuration is written at the project root
+        # The account level needs no project, and printing needs no
+        # directory at all; only writing the project-local file does
         project_path = None
         if not args.user:
             try:
                 project = ProjectDir(path=args.project_dir,
                                      config=self.config)
             except (IsADirectoryError, NotADirectoryError) as errmsg:
-                print('Error:', errmsg, file=sys.stderr)
-                sys.exit(1)
-            project_path = project.path
+                if not args.print_only:
+                    print('Error:', errmsg, file=sys.stderr)
+                    sys.exit(1)
+            else:
+                project_path = project.path
         try:
             status, lines = configure_harness(
                     project_path, args.harness, filename=args.filename,
-                    socket_path=args.socket, user=args.user,
-                    print_only=args.print_only)
+                    user=args.user, print_only=args.print_only)
         except ValueError as errmsg:
             print('Error:', errmsg, file=sys.stderr)
             print()
             print('The entry to add by hand:')
             print()
-            print(fragment_for_display(args.harness, args.socket))
+            print(fragment_for_display(args.harness))
             sys.exit(1)
         for line in lines:
             print(line)
