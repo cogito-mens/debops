@@ -75,6 +75,77 @@ class GalaxyListTestCase(unittest.TestCase):
         self.assertIn('did not return JSON', str(context.exception))
 
 
+class DocsProviderTestCase(unittest.TestCase):
+    """The documentation-mode collection index and its confinement."""
+
+    def test_effective_collections_path(self):
+        from debops.mcp.tools.collections import (BUNDLED_COLLECTIONS_ROOT,
+                                                  effective_collections_path)
+        self.assertEqual(effective_collections_path({}),
+                         BUNDLED_COLLECTIONS_ROOT)
+        self.assertEqual(effective_collections_path(
+                {'ANSIBLE_COLLECTIONS_PATH': '/srv/collections'}),
+                '/srv/collections')
+
+    def test_filter_collections_under(self):
+        from debops.mcp.tools.collections import filter_collections_under
+
+        def provider():
+            return {
+                'debops.debops': {'path': '/bundled/ansible_collections/'
+                                  'debops/debops', 'version': '1'},
+                'community.sops': {'path': '/ambient/ansible_collections/'
+                                   'community/sops', 'version': '2'},
+            }
+
+        filtered = filter_collections_under(provider, ['/bundled'])()
+        self.assertEqual(sorted(filtered), ['debops.debops'])
+        # No roots, no collections
+        self.assertEqual(filter_collections_under(provider, [])(), {})
+
+    def test_docs_provider_filters_and_sets_the_variable(self):
+        from debops.mcp.tools import collections
+        seen = {}
+
+        def fake_list(project=None, environ=None):
+            seen['environ'] = environ
+            return {
+                '/bundled/ansible_collections': {
+                    'debops.debops': {'version': '1'}},
+                '/ambient/ansible_collections': {
+                    'community.sops': {'version': '2'}},
+            }
+
+        with mock.patch.object(collections, 'galaxy_collection_list',
+                               fake_list):
+            provider = collections.docs_collection_provider(
+                    environ={'ANSIBLE_COLLECTIONS_PATH': '/bundled'})
+            index = provider()
+        # The ambient account's collections never leak in
+        self.assertEqual(sorted(index), ['debops.debops'])
+        # The subprocess environment agrees with the filter
+        self.assertEqual(seen['environ']['ANSIBLE_COLLECTIONS_PATH'],
+                         '/bundled')
+
+    def test_docs_provider_defaults_to_the_bundled_collection(self):
+        from debops.mcp.tools import collections
+        bundled = os.path.join(collections.BUNDLED_COLLECTIONS_ROOT,
+                               'ansible_collections')
+
+        def fake_list(project=None, environ=None):
+            return {
+                bundled: {'debops.debops': {'version': '1'}},
+                '/ambient/ansible_collections': {
+                    'community.sops': {'version': '2'}},
+            }
+
+        with mock.patch.object(collections, 'galaxy_collection_list',
+                               fake_list):
+            provider = collections.docs_collection_provider(environ={})
+            index = provider()
+        self.assertEqual(sorted(index), ['debops.debops'])
+
+
 class KillSwitchTestCase(unittest.TestCase):
     """A mid-run kill-switch flip terminates the galaxy install."""
 

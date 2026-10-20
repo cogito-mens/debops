@@ -46,17 +46,20 @@ class PromptLibrary(object):
 
     A project prompt ('.debops/mcp/prompts/<name>.md') shadows a package
     prompt of the same name, the way project skills shadow package
-    skills.
+    skills. Without a 'path' (the documentation mode) only the package
+    prompts are served.
     """
 
-    def __init__(self, path, package_path=None):
+    def __init__(self, path=None, package_path=None):
         self.path = path
         self.package_path = (package_path if package_path is not None
                              else None)
 
     @property
     def _roots(self):
-        roots = [self.path]
+        roots = []
+        if self.path is not None:
+            roots.append(self.path)
         if self.package_path is not None:
             roots.append(self.package_path)
         return roots

@@ -308,5 +308,26 @@ class KillSwitchTestCase(unittest.TestCase):
         self.assertTrue(switch.is_enabled())
 
 
+class DocumentationPolicyTestCase(unittest.TestCase):
+
+    def test_documentation_policy(self):
+        policy = McpPolicy.for_documentation()
+        self.assertIsNone(policy.project)
+        self.assertIsNone(policy.view_root)
+        # Bundled and environment-provided collections are served
+        self.assertTrue(policy.bundled_content)
+        self.assertTrue(policy.external_content)
+        # Everything project-bound is off
+        self.assertEqual(policy.execute, 'none')
+        self.assertEqual(policy.confirm, set())
+        self.assertEqual(policy.allow, [])
+        self.assertEqual(policy.deny, [])
+        self.assertEqual(policy.write_allow, [])
+        self.assertFalse(policy.custom_tools)
+        self.assertFalse(policy.project_content)
+        self.assertFalse(policy.local_playbooks)
+        self.assertFalse(policy.overrides)
+
+
 if __name__ == '__main__':
     unittest.main()

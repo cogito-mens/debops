@@ -241,10 +241,12 @@ def resolve_playbook(project, policy, playbooks_path, name,
     if not name.endswith(('.yml', '.yaml')):
         name += '.yml'
     try:
-        for _label, directory in project_playbook_dirs(project, policy):
-            candidate = confine_under(directory, name)
-            if os.path.isfile(candidate):
-                return candidate, target_form(name)
+        if project is not None:
+            for _label, directory in project_playbook_dirs(project,
+                                                           policy):
+                candidate = confine_under(directory, name)
+                if os.path.isfile(candidate):
+                    return candidate, target_form(name)
         if playbooks_path is not None:
             candidate = confine_under(playbooks_path, name)
             if os.path.isfile(candidate):
@@ -301,15 +303,18 @@ def tool_playbooks(project, policy, playbooks_path, arguments):
     # The entries, flattened: each is (target, section, summary)
     entries = []
 
-    # Project playbooks resolve first, mirroring the playbook runner
-    for label, directory in project_playbook_dirs(project, policy):
-        section = 'Project playbooks ({})'.format(label)
-        for relpath in list_playbooks(directory):
-            if name_filter and name_filter not in relpath.lower():
-                continue
-            entries.append((target_form(relpath), section,
-                            playbook_summary(
-                                os.path.join(directory, relpath))))
+    # Project playbooks resolve first, mirroring the playbook runner;
+    # the documentation mode has no project
+    if project is not None:
+        for label, directory in project_playbook_dirs(project, policy):
+            section = 'Project playbooks ({})'.format(label)
+            for relpath in list_playbooks(directory):
+                if name_filter and name_filter not in relpath.lower():
+                    continue
+                entries.append((target_form(relpath), section,
+                                playbook_summary(
+                                        os.path.join(directory,
+                                                     relpath))))
 
     # The bundled DebOps collection, grouped by subdirectory; absent
     # when the policy disables bundled content
@@ -330,13 +335,14 @@ def tool_playbooks(project, policy, playbooks_path, arguments):
                                                  relpath))))
 
     # Playbook sets from the view configuration are also valid targets
-    playbook_sets = (project.config.raw.get('views', {})
-                     .get(project.view, {}).get('playbook_sets', {}))
-    for name in sorted(playbook_sets):
-        members = playbook_sets[name]
-        entries.append((name, 'Playbook sets (view configuration)',
-                        'expands to: {}'.format(', '.join(
-                            str(member) for member in members))))
+    if project is not None:
+        playbook_sets = (project.config.raw.get('views', {})
+                         .get(project.view, {}).get('playbook_sets', {}))
+        for name in sorted(playbook_sets):
+            members = playbook_sets[name]
+            entries.append((name, 'Playbook sets (view configuration)',
+                            'expands to: {}'.format(', '.join(
+                                str(member) for member in members))))
 
     if not entries:
         return text_result('no playbooks found', structured=[])

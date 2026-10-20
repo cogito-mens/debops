@@ -2073,5 +2073,80 @@ class ToolsTestCase(unittest.TestCase):
         self.assertNotIn('grafana', text)
 
 
+class DocumentationModeTestCase(unittest.TestCase):
+    """The documentation mode: no project directory, read-only."""
+
+    def setUp(self):
+        from debops.mcp.tools import register_documentation_tools
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-docs-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+
+        # The bundled content of the mode, fixture-style
+        self.roles_path = os.path.join(self.tmpdir, 'roles')
+        role = os.path.join(self.roles_path, 'testrole')
+        os.makedirs(os.path.join(role, 'defaults'))
+        os.makedirs(os.path.join(role, 'meta'))
+        with open(os.path.join(role, 'defaults', 'main.yml'), 'w') as fp:
+            fp.write(ROLE_DEFAULTS)
+        with open(os.path.join(role, 'meta', 'main.yml'), 'w') as fp:
+            fp.write(ROLE_META)
+        self.playbooks_path = os.path.join(self.tmpdir, 'playbooks')
+        os.makedirs(os.path.join(self.playbooks_path, 'service'))
+        with open(os.path.join(self.playbooks_path, 'service',
+                               'testrole.yml'), 'w') as fp:
+            fp.write(SERVICE_PLAYBOOK)
+
+        self.server = McpServer(project=None,
+                                policy=McpPolicy.for_documentation())
+        register_documentation_tools(
+                self.server, roles_path=self.roles_path,
+                playbooks_path=self.playbooks_path,
+                collection_index_provider=lambda: {})
+
+    def call_tool(self, name, arguments=None):
+        return self.server.handle({
+            'jsonrpc': '2.0',
+            'id': 1, 'method': 'tools/call',
+            'params': {'_meta': REQUEST_META, 'name': name,
+                       'arguments': arguments or {}},
+        })
+
+    def test_only_the_documentation_tools(self):
+        response = self.server.handle({
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list',
+                'params': {'_meta': REQUEST_META, }})
+        names = [tool['name'] for tool in response['result']['tools']]
+        self.assertEqual(sorted(names),
+                         ['collection_playbooks', 'collection_roles',
+                          'playbook_info', 'playbooks',
+                          'role_argspec', 'role_defaults', 'role_files',
+                          'role_handlers', 'role_info', 'role_tasks',
+                          'role_templates', 'role_variables'])
+
+    def test_role_info_works_on_the_bundled_content(self):
+        response = self.call_tool('role_info', {'name': 'testrole'})
+        text = response['result']['content'][0]['text']
+        self.assertFalse(response['result'].get('isError', False))
+        self.assertIn('testrole', text)
+
+    def test_playbook_info_works_on_the_bundled_content(self):
+        response = self.call_tool('playbook_info',
+                                  {'playbook': 'service/testrole'})
+        text = response['result']['content'][0]['text']
+        self.assertIn('Execution target: `service/testrole`', text)
+
+    def test_no_project_playbooks_section(self):
+        response = self.call_tool('playbooks')
+        text = response['result']['content'][0]['text']
+        self.assertIn('service/testrole', text)
+        self.assertNotIn('Project playbooks', text)
+
+    def test_project_tools_are_not_registered(self):
+        response = self.call_tool('project_read', {'path': 'ansible.cfg'})
+        self.assertIn('error', response)
+        self.assertIn('unknown tool: project_read',
+                      response['error']['data']['details'])
+
+
 if __name__ == '__main__':
     unittest.main()

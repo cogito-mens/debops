@@ -120,6 +120,41 @@ def _canonical_execute_option(option):
 class McpPolicy(object):
     """Confinement and access policy for one project view."""
 
+    @classmethod
+    def for_documentation(cls):
+        """The policy of the documentation mode (no project directory).
+
+        Everything project-bound is off; the bundled DebOps content and
+        the collections the environment provides are served read-only.
+        """
+        policy = cls.__new__(cls)
+        policy.project = None
+        policy.view_root = None
+        policy.allow = []
+        policy.deny = []
+        policy.read_deny = []
+        policy.write_allow = []
+        policy.execute = 'none'
+        policy.execute_timeout = 3600
+        policy.sync_interval = 60
+        policy.confirm = set()
+        policy.keyring_sources = []
+        policy.overrides = False
+        policy.custom_tools = False
+        policy.environment_deny = []
+        policy.confirm_required = True
+        policy.min_free_bytes = 64 * 1024 * 1024
+        policy.bundled_content = True
+        policy.external_content = True
+        policy.project_content = False
+        policy.local_playbooks = False
+        policy.ansible_hosts = []
+        policy.execute_hosts = []
+        policy.become = False
+        policy.execute_diff = False
+        policy.execute_options = []
+        return policy
+
     def __init__(self, project):
         self.project = project
         # Mirror the view root computation in AnsibleInventory: in legacy

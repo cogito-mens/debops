@@ -9,10 +9,8 @@ the server at startup. Tool logic errors are reported in the result with
 'isError', not as JSON-RPC errors, per the MCP specification.
 """
 
-import time
-
-from .collections import (COLLECTION_INDEX_TTL, galaxy_collection_list,
-                          index_from_galaxy, restrict_content,
+from .collections import (docs_collection_provider,
+                          make_galaxy_index_provider, restrict_content,
                           tool_collection_playbooks,
                           tool_collection_roles)
 from .custom import discover_custom_tools, make_custom_tool
@@ -68,6 +66,15 @@ def execution_schema(policy):
                                   'description': description}
     return {'type': 'object', 'properties': properties,
             'required': ['playbook']}
+
+
+# The document tools serve rendered text for humans by default, or
+# one JSON document for machines ('format: json')
+FORMAT_NOTE = (' Returns text; pass "format": "json" for the '
+               'parsed document.')
+FORMAT_PROPERTY = {'type': 'string', 'enum': ['text', 'json'],
+                   'description': 'Render as text (default) or as '
+                                  'one JSON document'}
 
 
 # Tools which read the project directory; they run under the shared
@@ -301,6 +308,311 @@ def _wrap_resource_errors(handler):
     return wrapped
 
 
+def _documentation_entries(server, policy, project, roles_path,
+                           playbooks_path, collection_index_provider):
+    """The documentation tool entries: the bundled DebOps content and
+    the collections the index provides.
+
+    With a project its own roles and playbooks resolve first; without
+    one (the documentation mode) only the shipped content is served.
+    """
+    bundled_content = policy is None or policy.bundled_content
+    entries = [
+        ('playbooks',
+         'List the playbook targets which "run" and "check" can execute '
+         'in this project: the project\'s own playbooks, the bundled '
+         'DebOps collection playbooks, and playbook sets from the view '
+         'configuration.',
+         {'type': 'object',
+          'properties': {'filter': {'type': 'string',
+                                    'description': 'Only include '
+                                    'playbooks whose path contains '
+                                    'this string'}}},
+         lambda arguments: tool_playbooks(
+             project, policy,
+             playbooks_path if bundled_content else None, arguments)),
+        ('playbook_info',
+         'Describe a project or bundled DebOps playbook: its plays, the '
+         'inventory groups it targets, the roles it applies, and the '
+         'playbooks it imports. Use this to learn what a playbook does '
+         'before running it. With "detail: full", also shows the plays\' '
+         'variables and task listings.',
+         {'type': 'object',
+          'properties': {'playbook': {'type': 'string',
+                                      'description': 'Playbook target, '
+                                      'e.g. "service/nginx" or "site"'},
+                         'detail': {'type': 'string',
+                                    'enum': ['brief', 'full'],
+                                    'description': '"brief" (default) '
+                                    'summarizes the plays, "full" adds '
+                                    'their variables and task listings'}},
+          'required': ['playbook']},
+         lambda arguments: tool_playbook_info(
+             project, policy,
+             playbooks_path if bundled_content else None, arguments,
+             index_provider=collection_index_provider)),
+        ('collection_playbooks',
+         'List the playbooks of Ansible Collections visible to this '
+         'project, grouped by collection; with "collection", only that '
+         'one. Use this to find playbooks outside of the bundled '
+         'DebOps collection.',
+         {'type': 'object',
+          'properties': {'collection': {'type': 'string',
+                                        'description': 'Collection, e.g. '
+                                        '"community.sops" (default: all '
+                                        'collections)'},
+                         'filter': {'type': 'string',
+                                    'description': 'Only include '
+                                    'playbooks whose target '
+                                    '("namespace.collection/path") '
+                                    'contains this string'}},
+          'required': []},
+         lambda arguments: tool_collection_playbooks(
+             collection_index_provider, arguments)),
+        ('collection_roles',
+         'List the Ansible Collections visible to this project and the '
+         'roles they contain. Use this to find roles outside of the '
+         'bundled DebOps collection.',
+         {'type': 'object',
+          'properties': {'filter': {'type': 'string',
+                                    'description': 'Only include '
+                                    'collections whose name contains '
+                                    'this string'}}},
+         lambda arguments: tool_collection_roles(
+             collection_index_provider, arguments)),
+    ]
+
+    # Role tools search the project's own roles first; the bundled
+    # DebOps collection is included unless the policy disables it. With
+    # neither, there are no roles to serve and the tools are not
+    # registered at all
+    roles_paths = []
+    if project is not None:
+        roles_paths = project_role_paths(project)
+    if bundled_content:
+        roles_paths.append(roles_path)
+    if roles_paths:
+        entries.extend([
+            ('role_info',
+             'Describe a role of this project or the bundled DebOps '
+             'collection: purpose, tags, dependencies, and which parts '
+             '(defaults, tasks, templates) it provides.',
+             {'type': 'object',
+              'properties': {'name': {'type': 'string',
+                                      'description': 'Role name, with or '
+                                      'without the "debops." prefix'}},
+              'required': ['name']},
+             lambda arguments: tool_role_info(
+                 roles_paths, arguments,
+                 index_provider=collection_index_provider,
+                 bundled_path=roles_path if bundled_content else None,
+                 docs_version=server.version)),
+            ('role_variables',
+             'List the variables of a role of this project or the '
+             'bundled DebOps collection, from its vars/ directory — '
+             'higher-precedence, internal state, not meant to be '
+             'overridden from the inventory. For the overridable '
+             'defaults, use the role_defaults tool.' + FORMAT_NOTE,
+             {'type': 'object',
+              'properties': {'name': {'type': 'string',
+                                      'description': 'Role name, with or '
+                                      'without the "debops." prefix'},
+                             'filter': {'type': 'string',
+                                        'description': 'Only include '
+                                        'variables whose name contains '
+                                        'this string'},
+                             'detail': {'type': 'string',
+                                        'enum': ['names', 'brief', 'full'],
+                                        'description': 'Level of detail: '
+                                        '"names" lists variable names '
+                                        'only, "brief" (default) gives a '
+                                        'one-line summary and a truncated '
+                                        'default per variable, "full" '
+                                        'gives the complete documentation'},
+                             'format': FORMAT_PROPERTY},
+              'required': ['name']},
+             lambda arguments: tool_role_variables(
+                               roles_paths, arguments,
+                               index_provider=collection_index_provider)),
+            ('role_argspec',
+             'Render the argument specification of a role '
+             '(meta/argument_specs.yml): its options with types, '
+             'required flags, choices and defaults. Use this for roles '
+             'which document their interface that way.',
+             {'type': 'object',
+              'properties': {'name': {'type': 'string',
+                                      'description': 'Role name, short '
+                                      'or fully qualified '
+                                      '(namespace.collection.role)'},
+                             'filter': {'type': 'string',
+                                        'description': 'Only include '
+                                        'options whose name contains '
+                                        'this string'},
+                             'detail': {'type': 'string',
+                                        'enum': ['names', 'brief', 'full'],
+                                        'description': 'Level of detail: '
+                                        '"names" lists option names '
+                                        'only, "brief" (default) gives a '
+                                        'one-line summary, "full" the '
+                                        'complete specification'}},
+              'required': ['name']},
+             lambda arguments: tool_role_argspec(
+                               roles_paths, arguments,
+                               index_provider=collection_index_provider)),
+            ('role_defaults',
+             'List the default inventory variables of a role of this '
+             'project or the bundled DebOps collection, from its '
+             'defaults/ directory, with their documentation. Use this to '
+             'learn how to configure a role through the Ansible '
+             'inventory. Survey a role with the "brief" or "names" '
+             'detail level, then use "filter" with the "full" detail '
+             'level to read the complete documentation of specific '
+             'variables.' + FORMAT_NOTE,
+             {'type': 'object',
+              'properties': {'name': {'type': 'string',
+                                      'description': 'Role name, with or '
+                                      'without the "debops." prefix'},
+                             'filter': {'type': 'string',
+                                        'description': 'Only include '
+                                        'variables whose name contains '
+                                        'this string'},
+                             'detail': {'type': 'string',
+                                        'enum': ['names', 'brief', 'full'],
+                                        'description': 'Level of detail: '
+                                        '"names" lists variable names '
+                                        'only, "brief" (default) gives a '
+                                        'one-line summary and a truncated '
+                                        'default per variable, "full" '
+                                        'gives the complete documentation'},
+                             'format': FORMAT_PROPERTY},
+              'required': ['name']},
+             lambda arguments: tool_role_defaults(
+                 roles_paths, arguments,
+                 index_provider=collection_index_provider,
+                 bundled_path=roles_path if bundled_content else None,
+                 docs_version=server.version)),
+            ('role_tasks',
+             'Inspect the tasks of a role: its task files, and per file '
+             'the tasks with their modules, conditions and tags. Use '
+             'this to understand what a role does before applying it.'
+             + FORMAT_NOTE,
+             {'type': 'object',
+              'properties': {'name': {'type': 'string',
+                                      'description': 'Role name, with or '
+                                      'without the "debops." prefix'},
+                             'file': {'type': 'string',
+                                      'description': 'Task file to read, '
+                                      'e.g. "main" (default: overview of '
+                                      'all task files)'},
+                             'filter': {'type': 'string',
+                                        'description': 'Only include '
+                                        'tasks whose name contains this '
+                                        'string'},
+                             'detail': {'type': 'string',
+                                        'enum': ['brief', 'full'],
+                                        'description': '"brief" (default) '
+                                        'shows name and module, "full" '
+                                        'adds when/tags'},
+                             'format': FORMAT_PROPERTY},
+              'required': ['name']},
+             lambda arguments: tool_role_tasks(
+                 roles_paths, arguments,
+                 index_provider=collection_index_provider)),
+            ('role_handlers',
+             'Inspect the handlers of a role: its handler files, and '
+             'per file the handlers with their modules, listen topics '
+             'and conditions.' + FORMAT_NOTE,
+             {'type': 'object',
+              'properties': {'name': {'type': 'string',
+                                      'description': 'Role name, with or '
+                                      'without the "debops." prefix'},
+                             'file': {'type': 'string',
+                                      'description': 'Handler file to '
+                                      'read, e.g. "main" (default: '
+                                      'overview of all handler files)'},
+                             'filter': {'type': 'string',
+                                        'description': 'Only include '
+                                        'handlers whose name contains '
+                                        'this string'},
+                             'detail': {'type': 'string',
+                                        'enum': ['brief', 'full'],
+                                        'description': '"brief" '
+                                        '(default) shows name, module '
+                                        'and listen topic, "full" adds '
+                                        'when/tags'},
+                             'format': FORMAT_PROPERTY},
+              'required': ['name']},
+             lambda arguments: tool_role_handlers(
+                 roles_paths, arguments,
+                 index_provider=collection_index_provider)),
+            ('role_templates',
+             'List the Jinja2 templates of a role, or print one of '
+             'them.',
+             {'type': 'object',
+              'properties': {'name': {'type': 'string',
+                                      'description': 'Role name, with or '
+                                      'without the "debops." prefix'},
+                             'path': {'type': 'string',
+                                      'description': 'Template to print, '
+                                      'relative to the role\'s '
+                                      'templates/ directory'}},
+              'required': ['name']},
+             lambda arguments: tool_role_templates(
+                 roles_paths, arguments,
+                 index_provider=collection_index_provider)),
+            ('role_files',
+             'List the static files of a role, or print one of them.',
+             {'type': 'object',
+              'properties': {'name': {'type': 'string',
+                                      'description': 'Role name, with or '
+                                      'without the "debops." prefix'},
+                             'path': {'type': 'string',
+                                      'description': 'File to print, '
+                                      'relative to the role\'s files/ '
+                                      'directory'}},
+              'required': ['name']},
+             lambda arguments: tool_role_files(
+                 roles_paths, arguments,
+                 index_provider=collection_index_provider)),
+        ])
+    return entries
+
+
+def _register_tool(target, name, description, schema, handler,
+                   output_schema=None, needs_context=False,
+                   annotations=None, meta=None, self_confirms=False,
+                   task_eligible=False):
+    target[name] = Tool(name, description, schema, handler,
+                        output_schema, needs_context, annotations,
+                        meta, self_confirms, task_eligible)
+
+
+def _register_entries(target, entries, policy, confirm=(), project=None):
+    """Register the entries, honoring the policy and the safety wraps."""
+    for entry in entries:
+        name, description, schema, handler = entry[:4]
+        needs_context = entry[4] if len(entry) > 4 else False
+        self_confirms = entry[5] if len(entry) > 5 else False
+        task_eligible = entry[6] if len(entry) > 6 else False
+        annotations = (entry[7] if len(entry) > 7
+                       else TOOL_ANNOTATIONS.get(name))
+        handler = _wrap_resource_errors(handler)
+        if project is not None and name in READ_LOCKED_TOOLS:
+            handler = _wrap_shared_lock(project, policy, handler)
+        if policy is None or policy.is_tool_allowed(name):
+            meta = None
+            if name in confirm:
+                description += (' The server asks the user to confirm '
+                                'before this runs.')
+                meta = {'org.debops/confirm': True}
+            _register_tool(target, name, description, schema, handler,
+                           output_schema=TOOL_OUTPUT_SCHEMAS.get(name),
+                           needs_context=needs_context,
+                           annotations=annotations,
+                           meta=meta, self_confirms=self_confirms,
+                           task_eligible=task_eligible)
+
+
 def register_project_tools(server, roles_path=COLLECTION_ROLES,
                            playbooks_path=COLLECTION_PLAYBOOKS,
                            collection_index_provider=None,
@@ -315,38 +627,13 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
     policy = server.policy
     target = registry if registry is not None else server.tools
 
-    def _register(name, description, schema, handler,
-                  output_schema=None, needs_context=False,
-                  annotations=None, meta=None, self_confirms=False,
-                  task_eligible=False):
-        target[name] = Tool(name, description, schema, handler,
-                            output_schema, needs_context, annotations,
-                            meta, self_confirms, task_eligible)
-
     if collection_index_provider is None:
-        cache = {'timestamp': 0.0, 'index': None}
-
-        def collection_index_provider():
-            if (cache['index'] is None
-                    or time.time() - cache['timestamp']
-                    > COLLECTION_INDEX_TTL):
-                cache['index'] = index_from_galaxy(
-                        galaxy_collection_list(project))
-                cache['timestamp'] = time.time()
-            return cache['index']
+        collection_index_provider = make_galaxy_index_provider(project)
 
     # The content policy: which collection content the tools may serve
     bundled_content = policy is None or policy.bundled_content
     collection_index_provider = restrict_content(
             collection_index_provider, project, policy)
-
-    # The document tools serve rendered text for humans by default, or
-    # one JSON document for machines ('format: json')
-    format_note = (' Returns text; pass "format": "json" for the '
-                   'parsed document.')
-    format_property = {'type': 'string', 'enum': ['text', 'json'],
-                       'description': 'Render as text (default) or as '
-                                      'one JSON document'}
 
     tools = [
         ('project_status',
@@ -560,68 +847,6 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                      '(default: all secrets)'}},
           'required': []},
          lambda arguments: tool_secret_paths(project, policy, arguments)),
-        ('playbooks',
-         'List the playbook targets which "run" and "check" can execute '
-         'in this project: the project\'s own playbooks, the bundled '
-         'DebOps collection playbooks, and playbook sets from the view '
-         'configuration.',
-         {'type': 'object',
-          'properties': {'filter': {'type': 'string',
-                                    'description': 'Only include '
-                                    'playbooks whose path contains '
-                                    'this string'}}},
-         lambda arguments: tool_playbooks(
-             project, policy,
-             playbooks_path if bundled_content else None, arguments)),
-        ('playbook_info',
-         'Describe a project or bundled DebOps playbook: its plays, the '
-         'inventory groups it targets, the roles it applies, and the '
-         'playbooks it imports. Use this to learn what a playbook does '
-         'before running it. With "detail: full", also shows the plays\' '
-         'variables and task listings.',
-         {'type': 'object',
-          'properties': {'playbook': {'type': 'string',
-                                      'description': 'Playbook target, '
-                                      'e.g. "service/nginx" or "site"'},
-                         'detail': {'type': 'string',
-                                    'enum': ['brief', 'full'],
-                                    'description': '"brief" (default) '
-                                    'summarizes the plays, "full" adds '
-                                    'their variables and task listings'}},
-          'required': ['playbook']},
-         lambda arguments: tool_playbook_info(
-             project, policy,
-             playbooks_path if bundled_content else None, arguments,
-             index_provider=collection_index_provider)),
-        ('collection_playbooks',
-         'List the playbooks of Ansible Collections visible to this '
-         'project, grouped by collection; with "collection", only that '
-         'one. Use this to find playbooks outside of the bundled '
-         'DebOps collection.',
-         {'type': 'object',
-          'properties': {'collection': {'type': 'string',
-                                        'description': 'Collection, e.g. '
-                                        '"community.sops" (default: all '
-                                        'collections)'},
-                         'filter': {'type': 'string',
-                                    'description': 'Only include '
-                                    'playbooks whose target '
-                                    '("namespace.collection/path") '
-                                    'contains this string'}},
-          'required': []},
-         lambda arguments: tool_collection_playbooks(
-             collection_index_provider, arguments)),
-        ('collection_roles',
-         'List the Ansible Collections visible to this project and the '
-         'roles they contain. Use this to find roles outside of the '
-         'bundled DebOps collection.',
-         {'type': 'object',
-          'properties': {'filter': {'type': 'string',
-                                    'description': 'Only include '
-                                    'collections whose name contains '
-                                    'this string'}}},
-         lambda arguments: tool_collection_roles(
-             collection_index_provider, arguments)),
     ]
 
     # Playbook execution is gated: 'check' mode by default, changes only
@@ -699,7 +924,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
              '("ansible_local.postfix*" — the per-role applied state '
              'lives in the ansible_local dict). The answer is the '
              'facts namespace itself, without Ansible\'s result '
-             'envelope.' + format_note,
+             'envelope.' + FORMAT_NOTE,
              {'type': 'object',
               'properties': dict(exec_properties, **{
                   'filter': {'type': 'string',
@@ -707,7 +932,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                              'a glob over top-level fact names, or a '
                              'dotted path into a branch '
                              '("ansible_local.postfix*")'},
-                  'format': format_property}),
+                  'format': FORMAT_PROPERTY}),
               'required': ['hosts']},
              lambda arguments, context: tool_ansible_facts(
                  project, policy, arguments, context,
@@ -716,197 +941,12 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
              True),
         ])
 
-    # Role tools search the project's own roles first; the bundled
-    # DebOps collection is included unless the policy disables it. With
-    # neither, there are no roles to serve and the tools are not
-    # registered at all
-    roles_paths = project_role_paths(project)
-    if bundled_content:
-        roles_paths.append(roles_path)
-    if roles_paths:
-        tools.extend([
-            ('role_info',
-             'Describe a role of this project or the bundled DebOps '
-             'collection: purpose, tags, dependencies, and which parts '
-             '(defaults, tasks, templates) it provides.',
-             {'type': 'object',
-              'properties': {'name': {'type': 'string',
-                                      'description': 'Role name, with or '
-                                      'without the "debops." prefix'}},
-              'required': ['name']},
-             lambda arguments: tool_role_info(
-                 roles_paths, arguments,
-                 index_provider=collection_index_provider,
-                 bundled_path=roles_path if bundled_content else None,
-                 docs_version=server.version)),
-            ('role_variables',
-             'List the variables of a role of this project or the '
-             'bundled DebOps collection, from its vars/ directory — '
-             'higher-precedence, internal state, not meant to be '
-             'overridden from the inventory. For the overridable '
-             'defaults, use the role_defaults tool.' + format_note,
-             {'type': 'object',
-              'properties': {'name': {'type': 'string',
-                                      'description': 'Role name, with or '
-                                      'without the "debops." prefix'},
-                             'filter': {'type': 'string',
-                                        'description': 'Only include '
-                                        'variables whose name contains '
-                                        'this string'},
-                             'detail': {'type': 'string',
-                                        'enum': ['names', 'brief', 'full'],
-                                        'description': 'Level of detail: '
-                                        '"names" lists variable names '
-                                        'only, "brief" (default) gives a '
-                                        'one-line summary and a truncated '
-                                        'default per variable, "full" '
-                                        'gives the complete documentation'},
-                             'format': format_property},
-              'required': ['name']},
-             lambda arguments: tool_role_variables(
-                               roles_paths, arguments,
-                               index_provider=collection_index_provider)),
-            ('role_argspec',
-             'Render the argument specification of a role '
-             '(meta/argument_specs.yml): its options with types, '
-             'required flags, choices and defaults. Use this for roles '
-             'which document their interface that way.',
-             {'type': 'object',
-              'properties': {'name': {'type': 'string',
-                                      'description': 'Role name, short '
-                                      'or fully qualified '
-                                      '(namespace.collection.role)'},
-                             'filter': {'type': 'string',
-                                        'description': 'Only include '
-                                        'options whose name contains '
-                                        'this string'},
-                             'detail': {'type': 'string',
-                                        'enum': ['names', 'brief', 'full'],
-                                        'description': 'Level of detail: '
-                                        '"names" lists option names '
-                                        'only, "brief" (default) gives a '
-                                        'one-line summary, "full" the '
-                                        'complete specification'}},
-              'required': ['name']},
-             lambda arguments: tool_role_argspec(
-                               roles_paths, arguments,
-                               index_provider=collection_index_provider)),
-            ('role_defaults',
-             'List the default inventory variables of a role of this '
-             'project or the bundled DebOps collection, from its '
-             'defaults/ directory, with their documentation. Use this to '
-             'learn how to configure a role through the Ansible '
-             'inventory. Survey a role with the "brief" or "names" '
-             'detail level, then use "filter" with the "full" detail '
-             'level to read the complete documentation of specific '
-             'variables.' + format_note,
-             {'type': 'object',
-              'properties': {'name': {'type': 'string',
-                                      'description': 'Role name, with or '
-                                      'without the "debops." prefix'},
-                             'filter': {'type': 'string',
-                                        'description': 'Only include '
-                                        'variables whose name contains '
-                                        'this string'},
-                             'detail': {'type': 'string',
-                                        'enum': ['names', 'brief', 'full'],
-                                        'description': 'Level of detail: '
-                                        '"names" lists variable names '
-                                        'only, "brief" (default) gives a '
-                                        'one-line summary and a truncated '
-                                        'default per variable, "full" '
-                                        'gives the complete documentation'},
-                             'format': format_property},
-              'required': ['name']},
-             lambda arguments: tool_role_defaults(
-                 roles_paths, arguments,
-                 index_provider=collection_index_provider,
-                 bundled_path=roles_path if bundled_content else None,
-                 docs_version=server.version)),
-            ('role_tasks',
-             'Inspect the tasks of a role: its task files, and per file '
-             'the tasks with their modules, conditions and tags. Use '
-             'this to understand what a role does before applying it.'
-             + format_note,
-             {'type': 'object',
-              'properties': {'name': {'type': 'string',
-                                      'description': 'Role name, with or '
-                                      'without the "debops." prefix'},
-                             'file': {'type': 'string',
-                                      'description': 'Task file to read, '
-                                      'e.g. "main" (default: overview of '
-                                      'all task files)'},
-                             'filter': {'type': 'string',
-                                        'description': 'Only include '
-                                        'tasks whose name contains this '
-                                        'string'},
-                             'detail': {'type': 'string',
-                                        'enum': ['brief', 'full'],
-                                        'description': '"brief" (default) '
-                                        'shows name and module, "full" '
-                                        'adds when/tags'},
-                             'format': format_property},
-              'required': ['name']},
-             lambda arguments: tool_role_tasks(
-                 roles_paths, arguments,
-                 index_provider=collection_index_provider)),
-            ('role_handlers',
-             'Inspect the handlers of a role: its handler files, and '
-             'per file the handlers with their modules, listen topics '
-             'and conditions.' + format_note,
-             {'type': 'object',
-              'properties': {'name': {'type': 'string',
-                                      'description': 'Role name, with or '
-                                      'without the "debops." prefix'},
-                             'file': {'type': 'string',
-                                      'description': 'Handler file to '
-                                      'read, e.g. "main" (default: '
-                                      'overview of all handler files)'},
-                             'filter': {'type': 'string',
-                                        'description': 'Only include '
-                                        'handlers whose name contains '
-                                        'this string'},
-                             'detail': {'type': 'string',
-                                        'enum': ['brief', 'full'],
-                                        'description': '"brief" '
-                                        '(default) shows name, module '
-                                        'and listen topic, "full" adds '
-                                        'when/tags'},
-                             'format': format_property},
-              'required': ['name']},
-             lambda arguments: tool_role_handlers(
-                 roles_paths, arguments,
-                 index_provider=collection_index_provider)),
-            ('role_templates',
-             'List the Jinja2 templates of a role, or print one of '
-             'them.',
-             {'type': 'object',
-              'properties': {'name': {'type': 'string',
-                                      'description': 'Role name, with or '
-                                      'without the "debops." prefix'},
-                             'path': {'type': 'string',
-                                      'description': 'Template to print, '
-                                      'relative to the role\'s '
-                                      'templates/ directory'}},
-              'required': ['name']},
-             lambda arguments: tool_role_templates(
-                 roles_paths, arguments,
-                 index_provider=collection_index_provider)),
-            ('role_files',
-             'List the static files of a role, or print one of them.',
-             {'type': 'object',
-              'properties': {'name': {'type': 'string',
-                                      'description': 'Role name, with or '
-                                      'without the "debops." prefix'},
-                             'path': {'type': 'string',
-                                      'description': 'File to print, '
-                                      'relative to the role\'s files/ '
-                                      'directory'}},
-              'required': ['name']},
-             lambda arguments: tool_role_files(
-                 roles_paths, arguments,
-                 index_provider=collection_index_provider)),
-        ])
+    # The documentation tools: the bundled DebOps content, the
+    # collections the index provides, and the project's own roles and
+    # playbooks
+    tools.extend(_documentation_entries(
+            server, policy, project, roles_path, playbooks_path,
+            collection_index_provider))
 
     # Git synchronization with the project origin; throttled per
     # direction by 'project.mcp.sync_interval'. The state lives on the
@@ -1052,25 +1092,23 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
     confirm = set(policy.confirm) if policy is not None else set()
     confirm |= custom_names
 
-    for entry in tools:
-        name, description, schema, handler = entry[:4]
-        needs_context = entry[4] if len(entry) > 4 else False
-        self_confirms = entry[5] if len(entry) > 5 else False
-        task_eligible = entry[6] if len(entry) > 6 else False
-        annotations = (entry[7] if len(entry) > 7
-                       else TOOL_ANNOTATIONS.get(name))
-        handler = _wrap_resource_errors(handler)
-        if name in READ_LOCKED_TOOLS:
-            handler = _wrap_shared_lock(project, policy, handler)
-        if policy is None or policy.is_tool_allowed(name):
-            meta = None
-            if name in confirm:
-                description += (' The server asks the user to confirm '
-                                'before this runs.')
-                meta = {'org.debops/confirm': True}
-            _register(name, description, schema, handler,
-                      output_schema=TOOL_OUTPUT_SCHEMAS.get(name),
-                      needs_context=needs_context,
-                      annotations=annotations,
-                      meta=meta, self_confirms=self_confirms,
-                      task_eligible=task_eligible)
+    _register_entries(target, tools, policy, confirm=confirm,
+                      project=project)
+
+
+def register_documentation_tools(server, roles_path=COLLECTION_ROLES,
+                                 playbooks_path=COLLECTION_PLAYBOOKS,
+                                 collection_index_provider=None):
+    """Register the documentation tools, without a project directory.
+
+    The documentation mode serves the bundled DebOps content and the
+    collections the environment provides, read-only; nothing
+    project-bound is registered.
+    """
+    policy = server.policy
+    if collection_index_provider is None:
+        collection_index_provider = docs_collection_provider()
+    entries = _documentation_entries(server, policy, None, roles_path,
+                                     playbooks_path,
+                                     collection_index_provider)
+    _register_entries(server.tools, entries, policy)

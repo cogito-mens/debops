@@ -15,7 +15,9 @@ import logging
 import os
 import re
 import subprocess
+import time
 
+from ...constants import DEBOPS_PACKAGE_DATA
 from ..policy import confine_under
 from .common import error_result, mcp_environ, text_result
 from .playbooks import (list_playbooks, parse_playbook, playbook_summary,
@@ -33,16 +35,38 @@ COLLECTION_FQCN_PATTERN = re.compile(r'^[a-z0-9_]+\.[a-z0-9_]+$')
 # collections change only when the user installs or removes them
 COLLECTION_INDEX_TTL = 60  # seconds
 
+# The collections root of the bundled DebOps collection; the
+# documentation mode defaults to it when the environment does not
+# provide one
+BUNDLED_COLLECTIONS_ROOT = os.path.join(
+        DEBOPS_PACKAGE_DATA, 'ansible', 'collections')
 
-def galaxy_collection_list(project):
+
+def effective_collections_path(environ):
+    """The ANSIBLE_COLLECTIONS_PATH of the documentation mode.
+
+    The environment's value when set, the bundled DebOps collection
+    otherwise — the mode is useful with zero configuration, and the
+    ambient account defaults ('~/.ansible/collections', ...) never leak
+    into it.
+    """
+    return environ.get('ANSIBLE_COLLECTIONS_PATH') or BUNDLED_COLLECTIONS_ROOT
+
+
+def galaxy_collection_list(project=None, environ=None):
     """Run 'ansible-galaxy collection list' in the project environment.
 
     The environment computed by DebOps points PATH at the project's
     virtual environment when one is enabled, which is what makes the
     collections installed there visible. No hooks run and the inventory
-    stays locked: listing collections needs neither.
+    stays locked: listing collections needs neither. Without a project
+    (the documentation mode) the ambient environment is used as given.
     """
-    env = mcp_environ(project)
+    if environ is None:
+        env = mcp_environ(project) if project is not None \
+            else dict(os.environ)
+    else:
+        env = environ
     try:
         result = subprocess.run(
                 ['ansible-galaxy', 'collection', 'list', '--format', 'json'],
@@ -79,6 +103,60 @@ def index_from_galaxy(data):
                 'version': str(info.get('version', '')),
             })
     return index
+
+
+def make_galaxy_index_provider(project=None, environ=None):
+    """A collection index provider backed by ansible-galaxy, cached.
+
+    The index is rebuilt at most once per COLLECTION_INDEX_TTL;
+    collections change only when the user installs or removes them.
+    """
+    cache = {'timestamp': 0.0, 'index': None}
+
+    def collection_index_provider():
+        if (cache['index'] is None
+                or time.time() - cache['timestamp']
+                > COLLECTION_INDEX_TTL):
+            cache['index'] = index_from_galaxy(
+                    galaxy_collection_list(project, environ=environ))
+            cache['timestamp'] = time.time()
+        return cache['index']
+
+    return collection_index_provider
+
+
+def filter_collections_under(provider, roots):
+    """Keep only the collections installed under one of the roots."""
+    real_roots = [os.path.realpath(root) for root in roots]
+
+    def filtered_provider():
+        index = {}
+        for fqcn, entry in provider().items():
+            path = os.path.realpath(entry['path'])
+            if any(os.path.commonpath((root, path)) == root
+                   for root in real_roots):
+                index[fqcn] = entry
+        return index
+
+    return filtered_provider
+
+
+def docs_collection_provider(environ=None):
+    """The collection index of the documentation mode.
+
+    Only the collections under the effective ANSIBLE_COLLECTIONS_PATH
+    are served: the variable when the environment sets it, the bundled
+    DebOps collection otherwise. The variable is set for the galaxy
+    subprocess as well, so that the listing and the filter agree; the
+    ambient account defaults never leak into a server running outside
+    of a project.
+    """
+    environ = dict(os.environ if environ is None else environ)
+    effective = effective_collections_path(environ)
+    environ['ANSIBLE_COLLECTIONS_PATH'] = effective
+    roots = [entry for entry in effective.split(os.pathsep) if entry]
+    provider = make_galaxy_index_provider(environ=environ)
+    return filter_collections_under(provider, roots)
 
 
 def restrict_content(provider, project, policy):
