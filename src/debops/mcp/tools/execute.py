@@ -156,8 +156,17 @@ def _playbook_targets(arguments):
     targets = []
     for item in playbooks:
         name = str(item)
-        if not name or '\n' in name or '\r' in name:
+        # A target starting with a dash would be an option for
+        # ansible-playbook downstream, with the next target as its
+        # value; and the runner resolves an absolute path or a
+        # traversal directly, out of the playbook search space
+        if (not name or '\n' in name or '\r' in name
+                or name.startswith('-')):
             raise ValueError('invalid playbook target: {!r}'.format(item))
+        if os.path.isabs(name) or '..' in name.split('/'):
+            raise ValueError('a playbook target names a playbook in the '
+                             'project or a collection, not a path: {!r}'
+                             .format(item))
         targets.append(name)
     if not targets:
         raise ValueError('the "playbook" argument is required')

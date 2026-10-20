@@ -71,6 +71,29 @@ class BuildArgsTestCase(unittest.TestCase):
         args = _build_ansible_args({'playbook': 'site'}, check=True)
         self.assertEqual(args, ['site', '--diff', '--check'])
 
+    def test_targets_reject_options(self):
+        # A leading dash would make the target an ansible-playbook
+        # option downstream, with the next target as its value
+        for target in ('-c', '--playbook-dir=resources', '-e', '--'):
+            with self.assertRaises(ValueError, msg=target):
+                _build_ansible_args({'playbook': target}, check=True)
+        with self.assertRaises(ValueError):
+            _build_ansible_args({'playbook': ['-c', 'local']},
+                                check=True)
+
+    def test_targets_reject_paths_outside_the_search_space(self):
+        for target in ('/etc/cron.daily/x', '../outside.yml',
+                       'playbooks/../../x.yml', 'a//../b.yml'):
+            with self.assertRaises(ValueError, msg=target):
+                _build_ansible_args({'playbook': target}, check=True)
+
+    def test_valid_targets_pass(self):
+        args = _build_ansible_args(
+                {'playbook': ['site', 'service/postfix',
+                              'playbooks/custom.yml']}, check=False)
+        self.assertEqual(args, ['site', 'service/postfix',
+                                'playbooks/custom.yml'])
+
     def test_run_does_not(self):
         args = _build_ansible_args({'playbook': 'site'}, check=False)
         self.assertEqual(args, ['site'])
