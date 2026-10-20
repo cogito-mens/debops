@@ -43,6 +43,38 @@ collections:
 '''
 
 
+class GalaxyListTestCase(unittest.TestCase):
+    """The ansible-galaxy collection list parse."""
+
+    def _run(self, stdout, returncode=0):
+        from debops.mcp.tools.collections import galaxy_collection_list
+        project = type('Project', (), {
+            'path': '/srv/projects/example',
+            'config': type('Config', (), {'_env_vars': {},
+                                          'raw': {}})(),
+        })()
+        with mock.patch(
+                'debops.mcp.tools.collections.subprocess.run') as run:
+            run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=returncode, stdout=stdout,
+                    stderr='')
+            return galaxy_collection_list(project)
+
+    def test_parses_the_json(self):
+        index = self._run('{"ansible/collections": {"debops.debops": '
+                          '{"version": "3.2.0"}}}')
+        self.assertEqual(
+                index['ansible/collections']['debops.debops']
+                ['version'], '3.2.0')
+
+    def test_garbage_is_a_clean_tool_error(self):
+        # A warning-chatty or broken ansible-galaxy writes anything but
+        # JSON; that is a tool-logic failure, not an internal error
+        with self.assertRaises(RuntimeError) as context:
+            self._run('[WARNING]: something broke\nnot json at all\n')
+        self.assertIn('did not return JSON', str(context.exception))
+
+
 class SurgeryTestCase(unittest.TestCase):
 
     def test_upsert_appends(self):

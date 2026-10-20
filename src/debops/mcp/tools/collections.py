@@ -55,7 +55,14 @@ def galaxy_collection_list(project):
     if result.returncode != 0:
         raise RuntimeError('ansible-galaxy collection list failed: '
                            + result.stderr.strip())
-    return json.loads(result.stdout)
+    try:
+        return json.loads(result.stdout)
+    except ValueError:
+        # A broken or warning-chatty ansible-galaxy writes anything but
+        # JSON; that is a tool-logic failure, not an internal error
+        raise RuntimeError('ansible-galaxy collection list did not '
+                           'return JSON: {}'.format(
+                                   result.stdout.strip()[:200]))
 
 
 def index_from_galaxy(data):
