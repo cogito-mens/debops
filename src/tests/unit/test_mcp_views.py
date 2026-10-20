@@ -129,6 +129,35 @@ class ViewsTestCase(unittest.TestCase):
         self.assertTrue(result['isError'])
         self.assertIn('single', result['content'][0]['text'])
 
+    def test_switch_refused_while_encfs_mounted(self):
+        # A live plaintext mount on the view's secret directory; the
+        # lock-down would rearrange the workspace under the switch
+        with mock.patch('debops.mcp.tools.views.os.path.ismount',
+                        return_value=True):
+            result = self.switch('web')
+        self.assertTrue(result['isError'])
+        self.assertIn('encfs', result['content'][0]['text'])
+        self.assertIn('debops project lock',
+                      result['content'][0]['text'])
+        self.server.switch_view.assert_not_called()
+
+    def test_switch_refused_while_git_crypt_unlocked(self):
+        # The smudge filter configured is git-crypt's unlocked state
+        with mock.patch('debops.mcp.tools.views.subprocess.run') \
+                as run:
+            run.return_value = mock.Mock(
+                    returncode=0, stdout='!true\n')
+            result = self.switch('web')
+        self.assertTrue(result['isError'])
+        self.assertIn('git-crypt', result['content'][0]['text'])
+        self.server.switch_view.assert_not_called()
+
+    def test_switch_proceeds_with_locked_secrets(self):
+        # Not a git repository at all: git answers nothing
+        result = self.switch('web')
+        self.assertFalse(result.get('isError', False))
+        self.server.switch_view.assert_called_once_with('web')
+
     def test_create_makes_and_commits_the_view(self):
         result = tool_view_create(self.project, self.policy,
                                   {'view': 'staging'})

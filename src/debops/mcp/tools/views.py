@@ -15,6 +15,7 @@ serialized against executions through the exclusive project lock.
 import logging
 import os
 import re
+import subprocess
 
 from .common import (error_result, exclusive_project, json_document,
                      parse_output_format, text_result)
@@ -80,6 +81,38 @@ def tool_view_list(project, policy, arguments):
     return text_result('\n'.join(lines) + '\n')
 
 
+def _secrets_unlocked(project):
+    """The encryption method in an unlocked state, or None.
+
+    Unlocked secrets are plaintext state in the working tree and the
+    lock-down rearranges the workspace (locks commit pending changes,
+    git-crypt rewrites files); a view switch must not happen
+    underneath that. The checks mirror the inventory layer's own
+    detection: a live encfs mount on the view's secret directory, or
+    git-crypt's smudge filter configured (its unlocked state).
+    """
+    if project.project_type == 'legacy':
+        secret_dir = os.path.join(project.path, 'ansible', 'secret')
+    else:
+        secret_dir = os.path.join(project.path, 'ansible', 'views',
+                                  project.view, 'secret')
+    if os.path.ismount(secret_dir):
+        return 'encfs'
+    git = project.config.raw.get('binaries', {}).get('git', 'git')
+    try:
+        result = subprocess.run(
+                [git, 'config', '--local', '--get',
+                 'filter.git-crypt.smudge'],
+                cwd=project.path, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, universal_newlines=True,
+                timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.stdout.strip():
+        return 'git-crypt'
+    return None
+
+
 def tool_view_switch(project, policy, arguments, server):
     """Switch the active view, rebuilding the policy and the tools."""
     name = str(arguments.get('view') or '')
@@ -91,6 +124,12 @@ def tool_view_switch(project, policy, arguments, server):
     if project.project_type == 'legacy':
         return error_result('legacy projects have a single '
                             'infrastructure view')
+    unlocked = _secrets_unlocked(project)
+    if unlocked is not None:
+        return error_result('the project secrets are currently '
+                            'unlocked ({}); lock them before switching '
+                            'the view (debops project lock)'.format(
+                                unlocked))
     if name not in project.config.raw.get('views', {}):
         return error_result('view not found: {}'.format(name))
     if name == project.view and policy.view_root is not None:

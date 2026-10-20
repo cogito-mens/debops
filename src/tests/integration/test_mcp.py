@@ -416,6 +416,40 @@ def test_view_switch_on_legacy_is_refused(run_debops, mcp_env,
         server.stop()
 
 
+def test_view_switch_refused_while_secrets_unlocked(
+        run_debops, tmp_path, gpg_env, debops_source_dir):
+    if shutil.which("git-crypt") is None:
+        pytest.skip("git-crypt is not installed")
+    project_dir = tmp_path / "example"
+    run_debops("project", "init", "-t", "modern", "--encrypt",
+               "git-crypt", "--keys", "debops-tests@example.org",
+               "--no-requirements", str(project_dir), env=gpg_env,
+               check=True)
+
+    server = _LiveServer(project_dir, gpg_env, debops_source_dir)
+    try:
+        # git-crypt starts locked; the switch works
+        switched = server.call("view_switch", {"view": "system"})
+        assert not switched["result"].get("isError", False)
+        created = server.call("view_create", {"view": "web"})
+        assert not created["result"].get("isError", False)
+
+        run_debops("project", "unlock", cwd=str(project_dir),
+                   env=gpg_env, check=True)
+        refused = server.call("view_switch", {"view": "web"})
+        assert refused["result"]["isError"]
+        text = refused["result"]["content"][0]["text"]
+        assert "git-crypt" in text
+        assert "debops project lock" in text
+
+        run_debops("project", "lock", cwd=str(project_dir),
+                   env=gpg_env, check=True)
+        switched = server.call("view_switch", {"view": "web"})
+        assert not switched["result"].get("isError", False)
+    finally:
+        server.stop()
+
+
 def test_serve_exits_quietly_on_sigint(debops_source_dir, mcp_env,
                                        project_dir):
     env = os.environ.copy()
