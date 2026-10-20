@@ -31,7 +31,7 @@ from ...ansibleplaybookrunner import AnsiblePlaybookRunner
 from ...hooks import run_hooks
 from ..policy import EXECUTE_OPTIONS
 from ..server import RequestCancelled
-from .playbooks import project_playbook_dirs
+
 from .common import (confirmation_flow, error_result, exclusive_project,
                      mcp_environ, text_result)
 
@@ -59,26 +59,31 @@ def _execution_label(execution_id, context):
     return ', '.join(parts)
 
 
-def _local_playbooks(runner, project, policy):
-    """Which of the runner's playbooks live in the project's playbook
-    directories (not in a collection).
+def _local_playbooks(runner, project):
+    """Which of the runner's playbooks are project content.
 
-    A playbook from the project is agent-writable content: its tasks
-    can execute commands on the managed hosts even in check mode
+    A playbook which resolves under the project — anywhere, not just
+    the playbook directories — is agent-writable content: its tasks can
+    execute commands on the managed hosts even in check mode
     ('check_mode: no' on a task), so the execution tools treat it
-    separately.
+    separately. The exception is the installed collections: that
+    content arrives through the confirm-gated collection tools and is
+    the trusted kind.
     """
-    local_dirs = [os.path.realpath(directory)
-                  for _label, directory
-                  in project_playbook_dirs(project, policy)]
+    project_root = os.path.realpath(project.path)
+    collections_root = os.path.realpath(os.path.join(
+            project.path, 'ansible', 'collections'))
     local = []
     for playbook in runner._found_playbooks:
         if playbook.startswith('"') and playbook.endswith('"'):
             playbook = playbook[1:-1]
         path = os.path.realpath(os.path.join(project.path, playbook))
-        if any(os.path.commonpath((directory, path)) == directory
-               for directory in local_dirs):
-            local.append(playbook)
+        if os.path.commonpath((project_root, path)) != project_root:
+            continue  # a collection outside the project
+        if os.path.commonpath((collections_root, path)) == \
+                collections_root:
+            continue  # an installed collection's content
+        local.append(playbook)
     return local
 
 
@@ -356,7 +361,7 @@ def _execute_playbook(project, policy, arguments, context, check,
         # tasks can execute commands on the managed hosts even in
         # check mode. The policy may forbid local playbooks outright,
         # and a check run of one asks the user first
-        local = _local_playbooks(runner, project, policy)
+        local = _local_playbooks(runner, project)
         if local and not policy.local_playbooks:
             return error_result(
                     'project-local playbooks cannot run in this '

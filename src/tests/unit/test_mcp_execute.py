@@ -315,11 +315,31 @@ class ExecuteTestCase(unittest.TestCase):
         os.makedirs(os.path.join(self.tmpdir, 'ansible', 'playbooks'))
         runner = type('Runner', (), {
             '_found_playbooks': ['ansible/playbooks/local.yml',
-                                 'collections/debops/debops/playbooks/'
-                                 'site.yml'],
+                                 'ansible/collections/'
+                                 'ansible_collections/debops/debops/'
+                                 'playbooks/site.yml'],
         })()
-        local = _local_playbooks(runner, self.project, self.policy)
+        local = _local_playbooks(runner, self.project)
         self.assertEqual(local, ['ansible/playbooks/local.yml'])
+
+    def test_a_playbook_outside_the_playbook_dirs_is_local(self):
+        # The write tools may write under resources/; a playbook found
+        # there is agent-writable content like any other
+        from debops.mcp.tools.execute import _local_playbooks
+        runner = type('Runner', (), {
+            '_found_playbooks': ['resources/scripts/evil.yml'],
+        })()
+        local = _local_playbooks(runner, self.project)
+        self.assertEqual(local, ['resources/scripts/evil.yml'])
+
+    def test_a_collection_outside_the_project_is_not_local(self):
+        from debops.mcp.tools.execute import _local_playbooks
+        runner = type('Runner', (), {
+            '_found_playbooks': ['/usr/share/ansible/collections/'
+                                 'ansible_collections/debops/debops/'
+                                 'playbooks/site.yml'],
+        })()
+        self.assertEqual(_local_playbooks(runner, self.project), [])
 
     def test_check_of_a_local_playbook_asks_first(self):
         # A project playbook can execute commands even in check mode
