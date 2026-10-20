@@ -265,13 +265,18 @@ class McpServer(object):
     """Dispatch MCP requests to their handlers."""
 
     def __init__(self, name='debops', version=None, project=None,
-                 policy=None, skills=None, prompts=None, killswitch=None):
+                 policy=None, skills=None, prompts=None, killswitch=None,
+                 transport=None):
         self.name = name
         self.version = version or __version__
         # The project directory the server is confined to; tools resolve
         # all paths against it
         self.project = project
         self.policy = policy
+        # Which transport serves the clients; the discover instructions
+        # read it ('stdio' means the harness opened the project
+        # directory, 'unix' means the project may live elsewhere)
+        self.transport = transport
         # The skill library served as resources; None when absent
         self.skills = skills
         # The prompt library; None when absent
@@ -602,6 +607,60 @@ class McpServer(object):
                           'requested': version},
                     request_id=request_id)
 
+    def _instructions(self):
+        """The guidance of the discover result, per the server mode
+        and transport.
+
+        The harness decides whether the model ever sees this (the spec
+        suggests folding it into the system prompt); either way the
+        text must be true — a documentation server is not a project,
+        and a daemon's project is not necessarily readable from the
+        client's side.
+        """
+        batching = ('Calls in one batch run concurrently, without '
+                    'ordering; when a call depends on the effect of an '
+                    'earlier one (write, then list or check), wait for '
+                    'its response before sending the next.')
+        if self.project is None:
+            return (
+                'This server answers with the bundled DebOps '
+                'documentation, read-only; no project directory is '
+                'served. Explore roles with the role.* tools, playbook '
+                'targets with playbook.list and playbook.info, and the '
+                'visible collections with collection.roles and '
+                'collection.playbooks; ANSIBLE_COLLECTIONS_PATH decides '
+                'which external collections are visible. Reusable '
+                'DebOps workflows are available as skill:// resources. '
+                + batching)
+        if self.transport == 'unix':
+            return (
+                'This server is a DebOps MCP daemon for the project '
+                "'{}' (view '{}'), reached over a socket: the project "
+                'directory is not necessarily readable from here, so '
+                'the debops tools are the access path — browse with '
+                'project.files and project.read, inspect roles and '
+                'playbooks with the role.* and playbook.* tools, run '
+                'playbook.check before playbook.run. Writes are '
+                'confined and committed to git automatically; secrets '
+                'and key material are never served. Reusable DebOps '
+                'workflows are available as skill:// resources. '
+                .format(self.project.name, self.project.view)
+                + batching)
+        return (
+            'This server exposes the DebOps project '
+            "'{}' (view '{}', which a view.switch call may change "
+            'mid-session; the _meta stamp of every result carries the '
+            'current one). Prefer the debops tools over reading the '
+            'project files directly: they enforce the confinement '
+            'policy (secrets and key material are never served) and '
+            'commit writes to git automatically. Browse with '
+            'project.files and project.read, inspect roles and '
+            'playbooks with the role.* and playbook.* tools, run '
+            'playbook.check before playbook.run. Reusable DebOps '
+            'workflows are available as skill:// resources. '
+            .format(self.project.name, self.project.view)
+            + batching)
+
     def _discover(self, params, context):
         capabilities = {'tools': {}}
         if self.skills is not None:
@@ -615,17 +674,7 @@ class McpServer(object):
             'supportedVersions': [PROTOCOL_VERSION],
             'capabilities': dict(capabilities,
                                  extensions={TASKS_EXTENSION: {}}),
-            'instructions':
-                'This server exposes one DebOps project directory: '
-                'inspect its inventory, roles, playbooks and '
-                'configuration, run playbooks within the project '
-                'policy, and synchronize the project with its git '
-                'origin. Reusable DebOps workflows are available as '
-                'skill:// resources. Calls in one batch run '
-                'concurrently, without ordering; when a call depends '
-                'on the effect of an earlier one (write, then list or '
-                'check), wait for its response before sending the '
-                'next.',
+            'instructions': self._instructions(),
             'ttlMs': 60000, 'cacheScope': 'private',
         }
 

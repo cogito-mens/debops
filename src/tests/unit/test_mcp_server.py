@@ -64,6 +64,39 @@ class DiscoverTestCase(unittest.TestCase):
         self.assertEqual(meta['name'], 'debops')
         self.assertTrue(meta['version'])
 
+    def _discover_instructions(self, **server_kwargs):
+        server = McpServer(**server_kwargs)
+        response = server.handle(make_request('server/discover'))
+        return response['result']['instructions']
+
+    def test_instructions_for_a_project_over_stdio(self):
+        project = type('Project', (), {'name': 'containers',
+                                       'view': 'system'})()
+        text = self._discover_instructions(project=project)
+        # The nudge: the tools, not direct file reads
+        self.assertIn('Prefer the debops tools', text)
+        self.assertIn("'containers'", text)
+        self.assertIn("'system'", text)
+        self.assertIn('project.read', text)
+        self.assertIn('concurrently', text)
+
+    def test_instructions_for_a_daemon_over_a_socket(self):
+        project = type('Project', (), {'name': 'containers',
+                                       'view': 'system'})()
+        text = self._discover_instructions(project=project,
+                                           transport='unix')
+        # A bridged client may not have the project files at all
+        self.assertIn('daemon', text)
+        self.assertIn('the access path', text)
+        self.assertNotIn('Prefer the debops tools', text)
+
+    def test_instructions_for_the_documentation_mode(self):
+        # No project is claimed where there is none
+        text = self._discover_instructions(project=None)
+        self.assertIn('documentation', text)
+        self.assertIn('read-only', text)
+        self.assertNotIn('project.files', text)
+
     def test_discover_result_shape_matches_the_spec(self):
         # The exact key sets of the answer, per the 2026-07-28 schema
         # (DiscoverResult extends CacheableResult): guards against both

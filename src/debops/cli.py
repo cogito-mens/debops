@@ -379,7 +379,8 @@ class Interpreter(object):
                     prompts=PromptLibrary(
                             package_path=os.path.join(
                                     DEBOPS_PACKAGE_DATA, 'prompts')),
-                    killswitch=killswitch)
+                    killswitch=killswitch,
+                    transport='unix' if args.socket else 'stdio')
             register_documentation_tools(server)
             logger.notice('Serving DebOps documentation (no project '
                           'directory, pid %s)', os.getpid())
@@ -433,7 +434,9 @@ class Interpreter(object):
                                    project_path=(os.path.join(project_content,
                                                               'skills')
                                                  if project_content else None)),
-                               prompts=prompts, killswitch=killswitch)
+                               prompts=prompts, killswitch=killswitch,
+                               transport='unix' if args.socket
+                               else 'stdio')
             register_project_tools(server,
                                    enabled_check=killswitch.is_enabled)
 
