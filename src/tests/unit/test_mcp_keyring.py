@@ -319,5 +319,44 @@ class KeyringConfirmationTestCase(unittest.TestCase):
         self.assertIn('confirm_required', result['content'][0]['text'])
 
 
+class FetchSourceTestCase(unittest.TestCase):
+    """The fetch source validation, per initial URL and per redirect
+    hop (a redirect is where an allowed origin tries to send the fetch
+    elsewhere)."""
+
+    def _hop(self, sources, newurl):
+        import urllib.request
+        from debops.mcp.tools import keyring
+        handler = keyring._CheckedRedirectHandler(sources)
+        request = urllib.request.Request('https://keybase.io/key.asc')
+        return handler.redirect_request(request, None, 302, 'Found',
+                                        {}, newurl)
+
+    def test_https_only(self):
+        from debops.mcp.tools.keyring import _check_fetch_hop
+        with self.assertRaises(ValueError):
+            _check_fetch_hop('http://keyserver.ubuntu.com/key.asc', [])
+        _check_fetch_hop('https://keyserver.ubuntu.com/key.asc', [])
+
+    def test_the_source_allowlist(self):
+        from debops.mcp.tools.keyring import _check_fetch_hop
+        sources = ['keybase.io', 'keyserver.ubuntu.com']
+        _check_fetch_hop('https://keybase.io/key.asc', sources)
+        with self.assertRaises(ValueError):
+            _check_fetch_hop('https://169.254.169.254/latest', sources)
+
+    def test_a_redirect_hop_is_validated_like_the_initial_url(self):
+        # An allowed origin redirecting off-list or off-TLS is refused
+        sources = ['keybase.io']
+        with self.assertRaises(ValueError):
+            self._hop(sources, 'http://keybase.io/key.asc')
+        with self.assertRaises(ValueError):
+            self._hop(sources, 'https://169.254.169.254/latest')
+        # And an allowed hop is followed
+        followed = self._hop(sources, 'https://keybase.io/other.asc')
+        self.assertEqual(followed.full_url, 'https://keybase.io/'
+                                            'other.asc')
+
+
 if __name__ == '__main__':
     unittest.main()

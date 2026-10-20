@@ -57,17 +57,49 @@ def _gpg(project):
     return project.config.raw.get('binaries', {}).get('gpg', 'gpg')
 
 
-def _fetch_url(url):
-    """Fetch key material over HTTPS; the URL's scheme is enforced."""
-    if not str(url).lower().startswith('https://'):
+def _check_fetch_hop(url, sources):
+    """Validate one fetch URL or redirect hop: https only, and the host
+    against the source policy (an empty list allows any HTTPS host)."""
+    parts = urllib.parse.urlsplit(str(url))
+    if parts.scheme.lower() != 'https':
         raise ValueError('only https:// sources are allowed: '
                          + str(url))
+    if sources:
+        host = (parts.netloc or '').lower()
+        if not any(fnmatch.fnmatch(host, pattern)
+                   for pattern in sources):
+            raise ValueError('the source is not allowed by the project '
+                             'policy (project.mcp.keyring_sources): '
+                             + str(url))
+
+
+class _CheckedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-validate every redirect hop like the initial URL: an allowed
+    origin must not redirect the fetch elsewhere (SSRF by redirect)."""
+
+    def __init__(self, sources):
+        self._sources = sources
+        super().__init__()
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _check_fetch_hop(newurl, self._sources)
+        return super().redirect_request(req, fp, code, msg, headers,
+                                        newurl)
+
+
+def _fetch_url(url, sources):
+    """Fetch key material over HTTPS; every redirect hop is validated
+    like the initial URL."""
+    _check_fetch_hop(url, sources)
     request = urllib.request.Request(
             url, headers={'User-Agent': 'debops-mcp keyring_fetch'})
+    opener = urllib.request.build_opener(_CheckedRedirectHandler(sources))
     try:
-        with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT) as \
-                response:
+        with opener.open(request, timeout=FETCH_TIMEOUT) as response:
             data = response.read(KEY_SIZE_LIMIT + 1)
+    except ValueError:
+        # The policy refusal, as raised
+        raise
     except Exception as errmsg:
         raise ValueError('cannot fetch the key: {}'.format(errmsg))
     if len(data) > KEY_SIZE_LIMIT:
@@ -134,7 +166,7 @@ def _import_and_verify(project, homedir, keyserver, expected, content):
     return fingerprint, user_ids
 
 
-def _fetch_key(project, url, keyserver, expected):
+def _fetch_key(project, url, keyserver, expected, sources=()):
     """Fetch and verify the key; returns (fingerprint, uids, armored)."""
     if expected is not None:
         expected = normalize_fingerprint(expected)
@@ -152,7 +184,7 @@ def _fetch_key(project, url, keyserver, expected):
 
     with tempfile.TemporaryDirectory(prefix='debops-mcp-keyring-') as home:
         os.chmod(home, 0o700)
-        content = _fetch_url(url) if url is not None else None
+        content = _fetch_url(url, sources) if url is not None else None
         fingerprint, user_ids = _import_and_verify(
                 project, home, keyserver, expected, content)
         if expected is not None and fingerprint != expected:
@@ -200,7 +232,9 @@ def tool_keyring_fetch(project, policy, arguments, context):
 
     try:
         fingerprint, user_ids, armored = _fetch_key(
-                project, url, keyserver, arguments.get('fingerprint'))
+                project, url, keyserver, arguments.get('fingerprint'),
+                sources=(policy.keyring_sources
+                         if policy is not None else ()))
     except ValueError as errmsg:
         return error_result(str(errmsg))
 
