@@ -404,6 +404,27 @@ class ViewWriteTestCase(unittest.TestCase):
         self.assertIn('not a git repository',
                       response['content'][0]['text'])
 
+    def test_commit_or_report_contract(self):
+        # The write contract: a failed commit is reported as not
+        # recorded, with the caller's outcome in front
+        from debops.mcp.tools.common import commit_or_report
+
+        def _fail(self, message=None):
+            raise RuntimeError('disk ate it')
+
+        project = type('Project', (), {'commit': _fail})()
+        result = commit_or_report(project, 'view_write x',
+                                  'created: x')
+        self.assertTrue(result['isError'])
+        text = result['content'][0]['text']
+        self.assertIn('created: x', text)
+        self.assertIn('disk ate it', text)
+        self.assertIn('not recorded in git', text)
+
+        quiet = type('Project', (), {'commit': staticmethod(
+                lambda message=None: None)})()
+        self.assertIsNone(commit_or_report(quiet, 'noop', 'nothing'))
+
     def test_directory_is_not_a_file(self):
         os.makedirs(os.path.join(self.view_root, 'playbooks', 'sub'))
         response = self.write('playbooks/sub')

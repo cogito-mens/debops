@@ -22,8 +22,8 @@ import subprocess
 import yaml
 
 from ..policy import confine_under
-from .common import (error_result, exclusive_project, mcp_environ,
-                     require_git_tracked,
+from .common import (commit_or_report, error_result, exclusive_project,
+                     mcp_environ, require_git_tracked,
                      text_result)
 from .files import _atomic_write
 
@@ -234,13 +234,11 @@ def tool_collection_require(project, policy, arguments, context):
             install_error = str(errmsg)
         # The requirements entry is the intended state; it is committed
         # even when the install fails, and the failure is reported
-        try:
-            project.commit(message='DebOps MCP: collection_require '
-                           + name)
-        except Exception as errmsg:
-            return error_result('the requirement was written, but the '
-                                'commit failed: {} (the change is not '
-                                'recorded in git)'.format(errmsg))
+        commit_error = commit_or_report(
+                project, 'collection_require ' + name,
+                'the requirement was written')
+        if commit_error is not None:
+            return commit_error
 
     if install_error is not None:
         return error_result('the requirement was written and committed, '
@@ -298,13 +296,11 @@ def tool_collection_remove(project, policy, arguments):
         if not removed:
             return text_result('unchanged: {} is not required nor '
                                'installed\n'.format(name))
-        try:
-            project.commit(message='DebOps MCP: collection_remove '
-                           + name)
-        except Exception as errmsg:
-            return error_result('the collection was removed, but the '
-                                'commit failed: {} (the change is not '
-                                'recorded in git)'.format(errmsg))
+        commit_error = commit_or_report(
+                project, 'collection_remove ' + name,
+                'the collection was removed')
+        if commit_error is not None:
+            return commit_error
 
     return text_result('# Collection removed: {}\n\n## Removed\n\n{}\n'
                        .format(name, '\n'.join('- {}'.format(entry)

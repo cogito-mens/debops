@@ -181,6 +181,20 @@ def parse_output_format(arguments):
     return output_format
 
 
+def commit_or_report(project, note, outcome):
+    """Commit with MCP provenance; on failure, an error result saying
+    the change is not recorded. None on success. The commit is part of
+    the write contract: an explicit, attributable record of the change.
+    """
+    try:
+        project.commit(message='DebOps MCP: ' + note)
+    except Exception as errmsg:
+        return error_result('{}, but the commit failed: {} (the '
+                            'change is not recorded in git)'
+                            .format(outcome, errmsg))
+    return None
+
+
 def is_git_tracked_project(project):
     """Whether the project directory is git-tracked (work tree)."""
     return os.path.lexists(os.path.join(project.path, '.git'))

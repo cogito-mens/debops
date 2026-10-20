@@ -20,9 +20,9 @@ import subprocess
 import tempfile
 
 from ..policy import confine_under, is_denied_component
-from .common import (dump_default, error_result, exclusive_project,
-                     mcp_environ, require_git_tracked, shared_project,
-                     text_result)
+from .common import (commit_or_report, dump_default, error_result,
+                     exclusive_project, mcp_environ, require_git_tracked,
+                     shared_project, text_result)
 
 logger = logging.getLogger(__name__)
 
@@ -472,12 +472,10 @@ def _write_committed(project, policy, path, display, content, mode,
         # The commit is part of the contract: an explicit, attributable
         # record of the change. When it fails, the change has landed
         # but is NOT recorded — the result must say so
-        try:
-            project.commit(message='DebOps MCP: ' + note)
-        except Exception as errmsg:
-            return error_result('{}: {}, but the commit failed: {} '
-                                '(the change is not recorded in git)'
-                                .format(outcome, display, errmsg))
+        commit_error = commit_or_report(
+                project, note, '{}: {}'.format(outcome, display))
+        if commit_error is not None:
+            return commit_error
         if after is not None:
             after()
         return text_result('{}: {} ({} bytes, mode {:04o})'.format(
@@ -539,13 +537,11 @@ def tool_view_delete(project, policy, arguments, server=None):
         _announce_mcp_content_change(server, view_relative)
         # The commit is part of the tool's contract, as for view_write;
         # when it fails the file is gone but NOT recorded in git
-        try:
-            project.commit(message='DebOps MCP: view_delete '
-                           + view_relative)
-        except Exception as errmsg:
-            return error_result('deleted: {}, but the commit failed: {} '
-                                '(the removal is not recorded in git)'
-                                .format(view_relative, errmsg))
+        commit_error = commit_or_report(
+                project, 'view_delete ' + view_relative,
+                'deleted: {}'.format(view_relative))
+        if commit_error is not None:
+            return commit_error
         return text_result('deleted: {}'.format(view_relative))
 
 

@@ -15,7 +15,7 @@ import os
 import re
 import subprocess
 
-from .common import (error_result, exclusive_project,
+from .common import (commit_or_report, error_result, exclusive_project,
                      require_git_tracked, text_result)
 from .files import _atomic_write
 
@@ -233,13 +233,10 @@ def _write_environment(project, policy, arguments, secret):
                         display, errmsg))
             # The tracked file is committed with provenance, like any
             # write; the tokens file never is
-            try:
-                project.commit(message='DebOps MCP: ' + note)
-            except Exception as errmsg:
-                return error_result('the environment was written, but '
-                                    'the commit failed: {} (the change '
-                                    'is not recorded in git)'
-                                    .format(errmsg))
+            commit_error = commit_or_report(
+                    project, note, 'the environment was written')
+            if commit_error is not None:
+                return commit_error
 
     if value is None:
         return text_result('unset: {} ({})\n'.format(name, display))
