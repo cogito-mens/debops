@@ -96,6 +96,38 @@ class PromptLibraryTestCase(unittest.TestCase):
         self.assertEqual(rendered['text'],
                          'Deploy the nginx service, carefully.\n')
 
+    def _write_prompt(self, name, body):
+        with open(os.path.join(self.tmpdir, name + '.md'), 'w') as fp:
+            fp.write('---\ndescription: {}\n---\n\n{}\n'
+                     .format(name, body))
+
+    def test_a_prompt_cannot_walk_the_object_graph(self):
+        # A prompt is project content (a pull, the write tools); the
+        # sandboxed environment gets no Python object graph
+        self._write_prompt('evil', "{{ ''.__class__.__mro__ }}")
+        with self.assertRaises(ValueError) as context:
+            self.library.render('evil', {})
+        self.assertIn('not allowed', str(context.exception))
+
+    def test_the_fence_holds_both_ways(self):
+        # The same template leaks under the default environment and
+        # renders empty under ours — the test cannot pass vacuously.
+        # (A first-level unsafe attribute reads as undefined; the
+        # refusal fires when a template walks further, covered by the
+        # object-graph test above.)
+        import jinja2
+        self._write_prompt('probe', "{{ ''.__class__ }}")
+        leaked = jinja2.Template("{{ ''.__class__ }}").render()
+        self.assertIn("<class 'str'>", leaked)
+        rendered = self.library.render('probe', {})['text']
+        self.assertNotIn('class', rendered)
+
+    def test_a_broken_template_errors_cleanly(self):
+        self._write_prompt('broken', '{{ {% }}')
+        with self.assertRaises(ValueError) as context:
+            self.library.render('broken', {})
+        self.assertIn('does not render', str(context.exception))
+
     def test_render_unknown_prompt(self):
         with self.assertRaises(ValueError):
             self.library.render('nosuch', {})

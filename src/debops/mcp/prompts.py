@@ -27,8 +27,18 @@ from ..constants import DEBOPS_PACKAGE_DATA
 from ..utils import strtobool
 from .skills import SKILL_NAME_PATTERN, _parse_frontmatter
 import jinja2
+import jinja2.exceptions
+import jinja2.sandbox
 
 logger = logging.getLogger(__name__)
+
+# Prompt bodies are project content — they can arrive by git pull or
+# through the write tools — so they render with the sandboxed
+# environment: the template language gets no Python object graph. The
+# residual CPU bomb ('{{ 9**9**9 }}') needs Jinja2 3.2's
+# BoundedIntOperations, which the 3.1 floor does not have
+_PROMPT_ENV = jinja2.sandbox.SandboxedEnvironment(
+        keep_trailing_newline=True)
 
 
 class PromptLibrary(object):
@@ -149,6 +159,14 @@ class PromptLibrary(object):
                 if lines[index].strip() == '---':
                     text = '\n'.join(lines[index + 1:]).strip() + '\n'
                     break
+        try:
+            rendered_text = _PROMPT_ENV.from_string(text).render(
+                    **(arguments or {}))
+        except jinja2.exceptions.SecurityError as errmsg:
+            raise ValueError('the prompt template is not allowed to do '
+                             'that: {}'.format(errmsg))
+        except jinja2.exceptions.TemplateError as errmsg:
+            raise ValueError('the prompt template does not render: {}'
+                             .format(errmsg))
         return {'description': str(meta['description']),
-                'text': jinja2.Template(text, keep_trailing_newline=True)
-                .render(**(arguments or {}))}
+                'text': rendered_text}
