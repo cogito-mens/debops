@@ -22,7 +22,8 @@ from .mcp import client as mcp_client
 from .mcp.client import UnixClient
 from .mcp.transport import StdioTransport, UnixSocketTransport
 from .mcp.transport import bridge_stdio_to_unix, ping_unix
-from .mcp.harnesses import configure_harness, fragment_for_display
+from .mcp.harnesses import (configure_agents_md, configure_harness,
+                            fragment_for_display)
 from .hooks import run_hooks
 from .utils import set_process_name
 from xdg.BaseDirectory import xdg_config_home
@@ -791,19 +792,31 @@ class Interpreter(object):
                     sys.exit(1)
             else:
                 project_path = project.path
-        try:
-            status, lines = configure_harness(
-                    project_path, args.harness, filename=args.filename,
-                    user=args.user, print_only=args.print_only)
-        except ValueError as errmsg:
-            print('Error:', errmsg, file=sys.stderr)
-            print()
-            print('The entry to add by hand:')
-            print()
-            print(fragment_for_display(args.harness))
-            sys.exit(1)
-        for line in lines:
-            print(line)
+        if args.harness is not None:
+            try:
+                status, lines = configure_harness(
+                        project_path, args.harness,
+                        filename=args.filename, user=args.user,
+                        print_only=args.print_only)
+            except ValueError as errmsg:
+                print('Error:', errmsg, file=sys.stderr)
+                print()
+                print('The entry to add by hand:')
+                print()
+                print(fragment_for_display(args.harness))
+                sys.exit(1)
+            for line in lines:
+                print(line)
+        if args.agents:
+            try:
+                _status, lines = configure_agents_md(
+                        project_path, harness_name=args.harness,
+                        print_only=args.print_only)
+            except ValueError as errmsg:
+                print('Error:', errmsg, file=sys.stderr)
+                sys.exit(1)
+            for line in lines:
+                print(line)
 
     def do_mcp_skills(self, args):
         self._mcp_refuse_if_disabled()

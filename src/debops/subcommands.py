@@ -608,7 +608,7 @@ Commands:
                 epilog='Default files: ' + '; '.join(
                         '{}: {}'.format(name, harness.default_filename)
                         for name, harness in sorted(HARNESSES.items())))
-        parser.add_argument('-H', '--harness', required=True,
+        parser.add_argument('-H', '--harness',
                             choices=sorted(HARNESSES),
                             help='the harness to configure')
         parser.add_argument('-f', '--filename', type=str, metavar='PATH',
@@ -621,11 +621,21 @@ Commands:
                                  'the spawned server serves a project '
                                  'when launched inside one and the '
                                  'documentation mode otherwise')
+        parser.add_argument('--agents', action='store_true',
+                            help='write the MCP guidance section into '
+                                 'the project AGENTS.md (honored by '
+                                 'OpenCode, Codex and Claude Code)')
         parser.add_argument('--print', dest='print_only',
                             action='store_true',
                             help='print the configuration instead of '
                                  'writing it')
         self.args = parser.parse_args(self.args[3:])
+        if self.args.harness is None and not self.args.agents:
+            parser.error('nothing to do: name a harness with -H, '
+                         'or pass --agents (or both)')
+        if self.args.agents and self.args.user:
+            parser.error('--agents writes the project AGENTS.md; '
+                         'there is no account-level convention')
 
     def do_mcp_skills(self):
         parser = argparse.ArgumentParser(

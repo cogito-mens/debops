@@ -1912,3 +1912,31 @@ def test_configure_fires_no_hooks(run_debops, mcp_env, project_dir):
                         cwd=str(project_dir.parent), env=mcp_env)
     assert result.returncode == 0
     assert not marker.exists()
+
+
+def test_configure_agents_writes_the_guidance(run_debops, mcp_env,
+                                              project_dir):
+    # The harness-agnostic nudge, in the file every harness reads
+    result = run_debops("mcp", "configure", "--agents",
+                        cwd=str(project_dir), env=mcp_env)
+    assert result.returncode == 0
+    assert "Created: AGENTS.md" in result.stdout
+    content = (project_dir / "AGENTS.md").read_text()
+    assert "## MCP server" in content
+    assert "playbook.check" in content
+
+    result = run_debops("mcp", "configure", "--agents",
+                        cwd=str(project_dir), env=mcp_env)
+    assert "Unchanged: AGENTS.md" in result.stdout
+
+    # Without -H there is no harness file; with it, both
+    result = run_debops("mcp", "configure", "-H", "opencode",
+                        "--agents", cwd=str(project_dir), env=mcp_env)
+    assert result.returncode == 0
+    assert (project_dir / ".opencode" / "opencode.json").exists()
+
+    # And a projectless print shows the section
+    result = run_debops("mcp", "configure", "--agents", "--print",
+                        cwd=str(project_dir.parent), env=mcp_env)
+    assert result.returncode == 0
+    assert "## MCP server" in result.stdout

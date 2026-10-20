@@ -98,6 +98,74 @@ def _user_config_path(harness):
     return os.path.expanduser(filename)
 
 
+# The AGENTS.md section written by 'mcp configure --agents'; the
+# markers delimit it so a rerun updates in place
+AGENTS_BEGIN = '<!-- debops mcp: begin -->'
+AGENTS_END = '<!-- debops mcp: end -->'
+
+AGENTS_SECTION = AGENTS_BEGIN + '''
+## MCP server
+
+This project is served by the DebOps MCP server (the `debops` tools).
+Prefer them over reading the project files directly: they enforce the
+confinement policy (secrets and key material are never served) and
+commit writes to git automatically. Browse with `project.files` and
+`project.read`, inspect roles and playbooks with the `role.*` and
+`playbook.*` tools, and run `playbook.check` before `playbook.run`.
+''' + AGENTS_END
+
+
+def configure_agents_md(project_path, harness_name=None,
+                        print_only=False):
+    """Write the AGENTS.md MCP section of a project; (status, lines).
+
+    AGENTS.md is the instruction file the harnesses share (OpenCode,
+    Codex, and Claude Code when no CLAUDE.md exists). The marked
+    section is created, replaced in place, or appended; a project is
+    required unless printing.
+    """
+    if project_path is None and not print_only:
+        raise ValueError('not a DebOps project directory (the agents '
+                         'file is written at the project root)')
+    notes = []
+    if (harness_name == 'claude' and project_path is not None
+            and os.path.isfile(os.path.join(project_path,
+                                            'CLAUDE.md'))):
+        notes.append('note: Claude Code reads CLAUDE.md first; import '
+                     'the section there with @AGENTS.md')
+    if print_only:
+        lines = ['The AGENTS.md section, not written to {}:'.format(
+                os.path.join(project_path, 'AGENTS.md')
+                if project_path else 'AGENTS.md')]
+        lines.extend(notes)
+        lines.append('')
+        lines.append(AGENTS_SECTION)
+        return 'printed', lines
+
+    path = os.path.join(project_path, 'AGENTS.md')
+    content = None
+    if os.path.isfile(path):
+        with open(path) as fp:
+            content = fp.read()
+    if content is None:
+        new_content = AGENTS_SECTION + '\n'
+        status = 'created'
+    elif AGENTS_BEGIN in content and AGENTS_END in content:
+        before = content[:content.index(AGENTS_BEGIN)]
+        after = content[content.index(AGENTS_END) + len(AGENTS_END):]
+        new_content = before + AGENTS_SECTION + after
+        status = 'updated' if new_content != content else 'unchanged'
+    else:
+        new_content = (content.rstrip('\n') + '\n\n'
+                       + AGENTS_SECTION + '\n')
+        status = 'updated'
+    if status != 'unchanged':
+        _write_atomic(path, new_content)
+    lines = ['{}: AGENTS.md'.format(status.capitalize())]
+    lines.extend(notes)
+    return status, lines
+
+
 def _harness_fragment(harness):
     """The entry as a nested dict along the harness' key path."""
     fragment = harness.entry()

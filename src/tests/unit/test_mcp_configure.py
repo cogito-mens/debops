@@ -281,5 +281,70 @@ class UserModeTestCase(unittest.TestCase):
             os.chdir(old_cwd)
 
 
+class AgentsMdTestCase(unittest.TestCase):
+    """The AGENTS.md guidance section ('configure --agents')."""
+
+    def setUp(self):
+        from debops.mcp.harnesses import configure_agents_md
+        self.configure = configure_agents_md
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-agents-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        self.path = os.path.join(self.tmpdir, 'AGENTS.md')
+
+    def read(self):
+        with open(self.path) as fp:
+            return fp.read()
+
+    def test_creates_the_file(self):
+        status, _lines = self.configure(self.tmpdir)
+        self.assertEqual(status, 'created')
+        content = self.read()
+        self.assertIn('## MCP server', content)
+        self.assertIn('Prefer them over reading the project files',
+                      content)
+        self.assertIn('<!-- debops mcp: begin -->', content)
+
+    def test_rerun_is_unchanged(self):
+        self.configure(self.tmpdir)
+        status, _lines = self.configure(self.tmpdir)
+        self.assertEqual(status, 'unchanged')
+
+    def test_updates_between_the_markers_only(self):
+        with open(self.path, 'w') as fp:
+            fp.write('# My project\n\n<!-- debops mcp: begin -->\n'
+                     'stale\n<!-- debops mcp: end -->\n'
+                     '## My own section\n')
+        status, _lines = self.configure(self.tmpdir)
+        self.assertEqual(status, 'updated')
+        content = self.read()
+        self.assertIn('# My project', content)
+        self.assertIn('## My own section', content)
+        self.assertNotIn('stale', content)
+        self.assertIn('playbook.check', content)
+
+    def test_appends_to_an_unmarked_file(self):
+        with open(self.path, 'w') as fp:
+            fp.write('# My project\n')
+        status, _lines = self.configure(self.tmpdir)
+        self.assertEqual(status, 'updated')
+        content = self.read()
+        self.assertTrue(content.startswith('# My project\n'))
+        self.assertIn('## MCP server', content)
+
+    def test_needs_a_project_unless_printing(self):
+        with self.assertRaises(ValueError):
+            self.configure(None)
+        status, lines = self.configure(None, print_only=True)
+        self.assertEqual(status, 'printed')
+        self.assertIn('## MCP server', '\n'.join(lines))
+
+    def test_claude_with_a_claude_md_gets_the_import_note(self):
+        with open(os.path.join(self.tmpdir, 'CLAUDE.md'), 'w') as fp:
+            fp.write('# Claude notes\n')
+        _status, lines = self.configure(self.tmpdir,
+                                        harness_name='claude')
+        self.assertTrue(any('@AGENTS.md' in line for line in lines))
+
+
 if __name__ == '__main__':
     unittest.main()
