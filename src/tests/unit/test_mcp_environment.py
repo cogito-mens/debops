@@ -282,6 +282,8 @@ class EnvironmentWriteTestCase(unittest.TestCase):
                     self.project, self.policy,
                     {'name': name, 'value': 'x'})
             self.assertTrue(result['isError'], name)
+            self.assertIn('invalid variable name',
+                          result['content'][0]['text'])
 
     def test_multiline_values_rejected(self):
         from debops.mcp.tools.environment import tool_environment_set
@@ -289,6 +291,8 @@ class EnvironmentWriteTestCase(unittest.TestCase):
                 self.project, self.policy,
                 {'name': 'REGION', 'value': 'eu\nINJECT=1'})
         self.assertTrue(result['isError'])
+        self.assertIn('must be a single line',
+                      result['content'][0]['text'])
 
     def test_quoting_round_trip(self):
         from debops.mcp.tools.environment import tool_environment_set

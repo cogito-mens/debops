@@ -123,6 +123,8 @@ class FilesTestCase(unittest.TestCase):
     def test_project_files_rejects_traversal(self):
         response = self.call_tool('project_files', {'path': '../..'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('escapes its allowed directory',
+                      self.result_text(response))
 
     # -- project_read ------------------------------------------------------
 
@@ -135,6 +137,8 @@ class FilesTestCase(unittest.TestCase):
     def test_project_read_rejects_traversal(self):
         response = self.call_tool('project_read', {'path': '../../../etc'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('escapes its allowed directory',
+                      self.result_text(response))
 
     def test_project_read_denies_secrets(self):
         response = self.call_tool('project_read',
@@ -146,6 +150,7 @@ class FilesTestCase(unittest.TestCase):
         response = self.call_tool('project_read',
                                   {'path': '.git/git-crypt/keys/key.gpg'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('denied by policy', self.result_text(response))
 
     def test_project_read_rejects_binary_files(self):
         response = self.call_tool('project_read',
@@ -157,6 +162,7 @@ class FilesTestCase(unittest.TestCase):
         response = self.call_tool('project_read',
                                   {'path': 'nosuch.yml'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('file not found', self.result_text(response))
 
     def test_project_read_deny_list_from_configuration(self):
         self.project.config.raw['project']['mcp'] = {
@@ -189,6 +195,8 @@ class FilesTestCase(unittest.TestCase):
     def test_config_get_missing_key(self):
         response = self.call_tool('config_get', {'key': 'nosuch.key'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('configuration key not found',
+                      self.result_text(response))
 
     def test_config_get_refuses_secret_named_keys(self):
         # The configuration tree is not for secrets
@@ -232,11 +240,13 @@ class FilesTestCase(unittest.TestCase):
     def test_inventory_query_host_requires_a_host(self):
         response = self.call_tool('inventory_query', {'action': 'host'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('must be a host name', self.result_text(response))
 
     def test_inventory_query_host_rejects_option_injection(self):
         response = self.call_tool('inventory_query',
                                   {'action': 'host', 'host': '--list'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('must be a host name', self.result_text(response))
 
     def test_inventory_query_failure_reports_stderr(self):
         with mock.patch('debops.mcp.tools.files.subprocess.run') as run:

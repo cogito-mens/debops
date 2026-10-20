@@ -252,6 +252,8 @@ class CollectionToolsTestCase(unittest.TestCase):
                                          {'name': 'NoDots'},
                                          self.context)
         self.assertTrue(result['isError'])
+        self.assertIn('not a collection name',
+                      result['content'][0]['text'])
 
     def test_require_non_git_refused(self):
         shutil.rmtree(os.path.join(self.tmpdir, '.git'))

@@ -133,6 +133,7 @@ class SecretPathsTestCase(unittest.TestCase):
         for pattern in ('/etc/passwd', '../outside', 'pki/../../x'):
             response, _inventory = self.call_tool({'pattern': pattern})
             self.assertTrue(response['result']['isError'], pattern)
+            self.assertIn('invalid pattern', self.result_text(response))
 
     def test_no_match(self):
         response, _inventory = self.call_tool({'pattern': 'nosuch/**'})

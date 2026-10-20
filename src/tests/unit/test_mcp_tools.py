@@ -359,10 +359,16 @@ class ViewWriteTestCase(unittest.TestCase):
         self.assertEqual(self.written_mode('resources/hello.sh'), 0o700)
 
     def test_escape_is_rejected(self):
-        for path in ('../outside.yml', '/etc/passwd',
-                     'playbooks/../../outside.yml'):
+        # A leading slash re-anchors at the project root, where the
+        # allowlist — not the confinement — does the rejecting
+        for path, message in (
+                ('../outside.yml', 'escapes its allowed directory'),
+                ('/etc/passwd', 'not writable by the project policy'),
+                ('playbooks/../../outside.yml',
+                 'escapes its allowed directory')):
             response = self.write(path)
             self.assertTrue(response['isError'], path)
+            self.assertIn(message, response['content'][0]['text'], path)
 
     def test_secret_is_never_writable(self):
         self.project.config.raw['project'] = {
@@ -390,11 +396,15 @@ class ViewWriteTestCase(unittest.TestCase):
                                          'link'))
         response = self.write('playbooks/link/file.yml')
         self.assertTrue(response['isError'])
+        self.assertIn('escapes its allowed directory',
+                      response['content'][0]['text'])
 
     def test_mode_validation(self):
         for bad in ('755', '7777', '04755', 'abc', '01777'):
             response = self.write('playbooks/x.yml', mode=bad)
             self.assertTrue(response['isError'], bad)
+            self.assertIn('invalid mode',
+                          response['content'][0]['text'], bad)
 
     def test_non_git_project_is_refused(self):
         os.unlink(os.path.join(self.tmpdir, '.git', 'HEAD'))
@@ -429,6 +439,8 @@ class ViewWriteTestCase(unittest.TestCase):
         os.makedirs(os.path.join(self.view_root, 'playbooks', 'sub'))
         response = self.write('playbooks/sub')
         self.assertTrue(response['isError'])
+        self.assertIn('not a regular file',
+                      response['content'][0]['text'])
 
     def test_disk_full_is_a_clean_refusal(self):
         # Through the registered server, so the refusal is converted
@@ -494,10 +506,14 @@ class ViewWriteTestCase(unittest.TestCase):
         os.makedirs(os.path.join(self.view_root, 'playbooks', 'sub'))
         response = self.delete('playbooks/sub')
         self.assertTrue(response['isError'])
+        self.assertIn('not a regular file',
+                      response['content'][0]['text'])
 
     def test_delete_escape_is_rejected(self):
         response = self.delete('../outside.yml')
         self.assertTrue(response['isError'])
+        self.assertIn('escapes its allowed directory',
+                      response['content'][0]['text'])
 
     def test_delete_secret_is_never_allowed(self):
         response = self.delete('secret/password')
@@ -783,6 +799,8 @@ class OverridesWriteTestCase(unittest.TestCase):
                 self.assertFalse(response['isError'])
             else:
                 self.assertTrue(response['isError'], path)
+                self.assertIn('overrides are written under',
+                              response['content'][0]['text'], path)
 
     def test_deny_components_apply(self):
         response = self.write('files/secret/x')
@@ -898,6 +916,7 @@ class InventorySpecTestCase(unittest.TestCase):
     def test_parse_errors_are_reported(self):
         result = self.call_spec('version: 0\nbogus: true\n')
         self.assertTrue(result['isError'])
+        self.assertIn('Unknown key', result['content'][0]['text'])
 
     def test_structured_content_conforms(self):
         from tests.unit._helpers import check_schema
@@ -928,6 +947,8 @@ class InventorySpecTestCase(unittest.TestCase):
         from debops.mcp.tools.files import tool_inventory_spec
         result = tool_inventory_spec(self.project, self.policy, {})
         self.assertTrue(result['isError'])
+        self.assertIn('"spec" argument is required',
+                      result['content'][0]['text'])
 
     def test_non_git_project_is_refused(self):
         shutil.rmtree(os.path.join(self.tmpdir, '.git'))
@@ -1343,6 +1364,8 @@ class ToolsTestCase(unittest.TestCase):
     def test_role_info_rejects_path_traversal(self):
         response = self.call_tool('role_info', {'name': '../../etc'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('role not found or invalid',
+                      self.result_text(response))
 
     # -- documentation pointers ----------------------------------------------
 
@@ -1459,6 +1482,7 @@ class ToolsTestCase(unittest.TestCase):
         response = self.call_tool('role_defaults',
                                   {'name': 'testrole', 'format': 'yaml'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('invalid format', self.result_text(response))
 
     def test_role_tasks_format_json(self):
         response = self.call_tool('role_tasks',
@@ -1487,6 +1511,7 @@ class ToolsTestCase(unittest.TestCase):
         response = self.call_tool('role_defaults',
                                   {'name': 'testrole', 'detail': 'everything'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('invalid detail level', self.result_text(response))
 
     def test_role_defaults_filter(self):
         response = self.call_tool('role_defaults',
@@ -1504,6 +1529,8 @@ class ToolsTestCase(unittest.TestCase):
     def test_role_defaults_unknown_role(self):
         response = self.call_tool('role_defaults', {'name': 'nosuch'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('role not found or invalid',
+                      self.result_text(response))
 
     # -- role_variables (vars/) ----------------------------------------------
 
@@ -1594,6 +1621,8 @@ class ToolsTestCase(unittest.TestCase):
         for name in ('two.parts', 'a.b.c.d', '../..'):
             response = self.call_tool('role_info', {'name': name})
             self.assertTrue(response['result']['isError'], name)
+            self.assertIn('role not found or invalid',
+                          self.result_text(response), name)
 
     def test_role_argspec_with_fqcn(self):
         response = self.call_tool('role_argspec',
@@ -1635,6 +1664,8 @@ class ToolsTestCase(unittest.TestCase):
         response = self.call_tool('role_variables',
                                   {'name': 'nosuch.collection.role'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('role not found or invalid',
+                      self.result_text(response))
 
     # -- playbooks ----------------------------------------------------------
 
@@ -1765,6 +1796,8 @@ class ToolsTestCase(unittest.TestCase):
         for name in ('../defaults/main', '/etc/passwd', 'nosuch'):
             response = self.call_tool('playbook_info', {'playbook': name})
             self.assertTrue(response['result']['isError'], name)
+            self.assertIn('playbook not found or invalid',
+                          self.result_text(response), name)
 
     # -- collection playbooks ----------------------------------------------
 
@@ -1780,6 +1813,8 @@ class ToolsTestCase(unittest.TestCase):
         response = self.call_tool('collection_playbooks',
                                   {'collection': 'testns.nosuch'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('collection not found or invalid',
+                      self.result_text(response))
 
     def test_collection_playbooks_all_collections(self):
         response = self.call_tool('collection_playbooks')
@@ -1821,6 +1856,8 @@ class ToolsTestCase(unittest.TestCase):
                                   {'playbook':
                                    'testns.testcoll/../roles/plainrole'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('playbook not found or invalid',
+                      self.result_text(response))
 
     # -- content policy -----------------------------------------------------
     # -- role_tasks / role_templates / role_files ----------------------------
@@ -1889,12 +1926,14 @@ class ToolsTestCase(unittest.TestCase):
         response = self.call_tool('role_tasks',
                                   {'name': 'testrole', 'file': 'nosuch'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('file not found', self.result_text(response))
 
     def test_role_tasks_traversal_rejected(self):
         response = self.call_tool('role_tasks',
                                   {'name': 'testrole',
                                    'file': '../defaults/main'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('invalid task file', self.result_text(response))
 
     def test_role_tasks_no_tasks_dir(self):
         response = self.call_tool('role_tasks', {'name': 'splitrole'})
@@ -1916,6 +1955,7 @@ class ToolsTestCase(unittest.TestCase):
                                   {'name': 'testrole',
                                    'path': '../../defaults/main.yml'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('invalid path', self.result_text(response))
 
     def test_role_files(self):
         response = self.call_tool('role_files', {'name': 'testrole'})

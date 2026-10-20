@@ -313,6 +313,8 @@ class ExecuteTestCase(unittest.TestCase):
                                            {'playbook': 'nosuch'},
                                            self.context, check=True)
         self.assertTrue(result['isError'])
+        self.assertIn('cannot resolve the affected hosts',
+                      result['content'][0]['text'])
         self.assertTrue(any('aborted' in line
                             for line in recorded.output),
                         recorded.output)

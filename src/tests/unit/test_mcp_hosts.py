@@ -219,23 +219,33 @@ class HostsTestCase(unittest.TestCase):
         response = self.call_tool('ansible_facts',
                                   {'hosts': 'web1', 'format': 'yaml'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('invalid format',
+                      response['result']['content'][0]['text'])
 
     def test_invalid_host_pattern(self):
         response = self.call_tool('ansible_ping', {'hosts': 'a b'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('invalid host pattern',
+                      response['result']['content'][0]['text'])
         response = self.call_tool('ansible_ping', {'hosts': ''})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('invalid host pattern',
+                      response['result']['content'][0]['text'])
 
     def test_invalid_facts_filter(self):
         response = self.call_tool('ansible_facts',
                                   {'hosts': 'web1',
                                    'filter': 'a b; rm -rf /'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('invalid facts filter',
+                      response['result']['content'][0]['text'])
 
     def test_non_boolean_become_rejected(self):
         response = self.call_tool('ansible_ping',
                                   {'hosts': 'web1', 'become': 'yes'})
         self.assertTrue(response['result']['isError'])
+        self.assertIn('must be a boolean',
+                      response['result']['content'][0]['text'])
 
     def test_unreachable_host_is_an_error_result(self):
         _popen, response = self._run(
