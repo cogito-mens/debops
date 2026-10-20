@@ -1172,7 +1172,9 @@ class ProjectDir(object):
             raise IsADirectoryError('You are inside another '
                                     'DebOps project directory')
 
-        if not run_hooks(self.path, 'pre-init'):
+        # The one hook point which runs before the directory is a
+        # project — it is being initialized as one
+        if not run_hooks(self.path, 'pre-init', require_project=False):
             raise RuntimeError('Hook pre-init aborted, not creating project')
 
         config_templates = self.kwargs.get('config_templates') or []
