@@ -21,7 +21,8 @@ import tempfile
 
 from ..policy import confine_under, is_denied_component
 from .common import (dump_default, error_result, exclusive_project,
-                     mcp_environ, shared_project, text_result)
+                     mcp_environ, require_git_tracked, shared_project,
+                     text_result)
 
 logger = logging.getLogger(__name__)
 
@@ -337,11 +338,6 @@ def _validate_mcp_content(relative, content):
     return None
 
 
-def _is_git_tracked_project(project):
-    """Whether the project directory is git-tracked (work tree)."""
-    return os.path.lexists(os.path.join(project.path, '.git'))
-
-
 def _parse_write_mode(arguments):
     """The octal 'mode' argument as an int, or None; ValueError if bad."""
     if arguments.get('mode') is None:
@@ -370,10 +366,9 @@ def tool_view_write(project, policy, arguments, server=None):
         return error_result(str(errmsg))
 
     # Writes are recoverable and attributable only with git
-    if not _is_git_tracked_project(project):
-        return error_result('the project directory is not a git '
-                            'repository; initialize it ("debops project '
-                            'init") so that changes can be committed')
+    refused = require_git_tracked(project)
+    if refused is not None:
+        return refused
 
     try:
         path, view_relative = _authorized_write_path(project, policy,
@@ -515,10 +510,9 @@ def tool_view_delete(project, policy, arguments, server=None):
     relative = str(arguments.get('path') or '').rstrip('/')
 
     # Deletions are recoverable and attributable only with git
-    if not _is_git_tracked_project(project):
-        return error_result('the project directory is not a git '
-                            'repository; initialize it ("debops project '
-                            'init") so that changes can be committed')
+    refused = require_git_tracked(project)
+    if refused is not None:
+        return refused
 
     try:
         path, view_relative = _authorized_write_path(project, policy,
@@ -671,10 +665,9 @@ def tool_inventory_spec(project, policy, arguments):
         return text_result(report_text, structured=structured)
 
     # Writes are recoverable and attributable only with git
-    if not _is_git_tracked_project(project):
-        return error_result('the project directory is not a git '
-                            'repository; initialize it ("debops project '
-                            'init") so that changes can be committed')
+    refused = require_git_tracked(project)
+    if refused is not None:
+        return refused
 
     with exclusive_project(project, policy, note='inventory_spec'):
         # Everything present is user content: without 'overwrite' the

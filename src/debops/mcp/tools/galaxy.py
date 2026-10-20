@@ -23,8 +23,9 @@ import yaml
 
 from ..policy import confine_under
 from .common import (error_result, exclusive_project, mcp_environ,
+                     require_git_tracked,
                      text_result)
-from .files import _atomic_write, _is_git_tracked_project
+from .files import _atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -202,10 +203,9 @@ def tool_collection_require(project, policy, arguments, context):
         if arguments.get(key) is not None:
             entry[key] = str(arguments[key])
 
-    if not _is_git_tracked_project(project):
-        return error_result('the project directory is not a git '
-                            'repository; initialize it ("debops project '
-                            'init") so that changes can be committed')
+    refused = require_git_tracked(project)
+    if refused is not None:
+        return refused
 
     requirements = _requirements_path(project)
     with exclusive_project(project, policy,
@@ -260,10 +260,9 @@ def tool_collection_remove(project, policy, arguments):
     except ValueError as errmsg:
         return error_result(str(errmsg))
 
-    if not _is_git_tracked_project(project):
-        return error_result('the project directory is not a git '
-                            'repository; initialize it ("debops project '
-                            'init") so that changes can be committed')
+    refused = require_git_tracked(project)
+    if refused is not None:
+        return refused
 
     removed = []
     with exclusive_project(project, policy,

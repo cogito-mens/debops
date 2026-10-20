@@ -15,8 +15,9 @@ import os
 import re
 import subprocess
 
-from .common import error_result, exclusive_project, text_result
-from .files import _atomic_write, _is_git_tracked_project
+from .common import (error_result, exclusive_project,
+                     require_git_tracked, text_result)
+from .files import _atomic_write
 
 # The MCP environment files, in merge order (the last wins)
 MCP_ENV_FILES = ('environment', '.env')
@@ -203,10 +204,9 @@ def _write_environment(project, policy, arguments, secret):
 
     # Writes are recoverable and attributable only with git; the tokens
     # file is never committed, but it lives in a tracked project
-    if not _is_git_tracked_project(project):
-        return error_result('the project directory is not a git '
-                            'repository; initialize it ("debops project '
-                            'init") so that changes can be committed')
+    refused = require_git_tracked(project)
+    if refused is not None:
+        return refused
 
     note = '{} {}'.format('environment_set' if value is not None
                           else 'environment_unset', name)

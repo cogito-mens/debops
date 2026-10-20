@@ -181,6 +181,21 @@ def parse_output_format(arguments):
     return output_format
 
 
+def is_git_tracked_project(project):
+    """Whether the project directory is git-tracked (work tree)."""
+    return os.path.lexists(os.path.join(project.path, '.git'))
+
+
+def require_git_tracked(project):
+    """An error result when the project is not a git repository, else
+    None. Writes are recoverable and attributable only with git."""
+    if not is_git_tracked_project(project):
+        return error_result('the project directory is not a git '
+                            'repository; initialize it ("debops project '
+                            'init") so that changes can be committed')
+    return None
+
+
 def confirmation_flow(context, message, required=False):
     """The shared confirmation flow for self-confirming tools.
 

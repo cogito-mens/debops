@@ -14,9 +14,8 @@ tool is therefore not registered by default; a project enables it with
 import os
 
 from ..policy import confine_under, is_denied_component
-from .common import error_result
-from .files import (_is_git_tracked_project, _parse_write_mode,
-                    _write_committed)
+from .common import error_result, require_git_tracked
+from .files import (_parse_write_mode, _write_committed)
 
 # The only override subdirectories the '*_src' lookups read
 OVERRIDE_KINDS = ('files', 'tasks', 'templates')
@@ -52,10 +51,9 @@ def tool_overrides_write(project, policy, arguments):
             return error_result('path is denied by policy: ' + relative)
 
     # Writes are recoverable and attributable only with git
-    if not _is_git_tracked_project(project):
-        return error_result('the project directory is not a git '
-                            'repository; initialize it ("debops project '
-                            'init") so that changes can be committed')
+    refused = require_git_tracked(project)
+    if refused is not None:
+        return refused
 
     return _write_committed(
             project, policy, path, 'ansible/overrides/' + relative,
