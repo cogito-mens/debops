@@ -26,6 +26,27 @@ SOURCE_DIR = os.path.join(
     "src")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_process_state():
+    """Confine each test's process-global mutations to the test.
+
+    ``Configuration.set_env`` exports configuration into ``os.environ``
+    by design, so that the Ansible subprocesses inherit it, and
+    ``ProjectDir`` changes the process working directory; tests which
+    build either in-process would otherwise leak variables such as
+    ``ANSIBLE_CONFIG`` — or a working directory pointing into a removed
+    temporary tree — into every later test of the run.
+    """
+    environ = dict(os.environ)
+    cwd = os.getcwd()
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(environ)
+        os.chdir(cwd)
+
+
 @pytest.fixture
 def debops_source_dir():
     """Path to the ``src`` directory which holds the importable package."""

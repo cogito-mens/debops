@@ -38,10 +38,10 @@ def project_dir(tmp_path):
 def mcp_env(debops_env):
     """A hermetic environment for the debops subprocess.
 
-    Unit tests construct ProjectDir in-process, which leaks ANSIBLE_CONFIG
-    into os.environ; ProjectDir would then redirect the project path to
-    its parent directory. Neutralize the variable so the subprocess uses
-    the project directory it is given.
+    An ANSIBLE_CONFIG left in the ambient environment (for example by
+    the shell the tests were started from) makes ProjectDir redirect
+    the project path to its parent directory. Neutralize the variable
+    so the subprocess uses the project directory it is given.
     """
     return dict(debops_env, ANSIBLE_CONFIG="")
 
