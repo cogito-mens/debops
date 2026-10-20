@@ -448,10 +448,15 @@ class McpServer(object):
             # Error responses have no '_meta' slot; the clacks overhead
             # and the server identity ride results only
             return errmsg.to_response()
-        except Exception:
+        except Exception as errmsg:
             logger.exception('Internal error while handling a request')
+            # A single-user local server serves the same person who
+            # reads the journal; naming the exception makes a tool
+            # failure actionable for both
             return rpc.make_error(message.get('id'),
-                                  rpc.INTERNAL_ERROR, 'Internal error')
+                                  rpc.INTERNAL_ERROR,
+                                  'Internal error: {}: {}'.format(
+                                      type(errmsg).__name__, errmsg))
 
     def _dispatch(self, message, notify=None, peer_pid=None, dead=None):
         """Route one parsed message to its method handler.
@@ -848,11 +853,12 @@ class McpServer(object):
             task.mark_cancelled()
             logger.notice('Task %s cancelled: %s', task.task_id,
                           tool.name)
-        except Exception:
+        except Exception as errmsg:
             logger.exception('Task %s failed: %s', task.task_id,
                              tool.name)
             task.fail({'code': rpc.INTERNAL_ERROR,
-                       'message': 'Internal error'})
+                       'message': 'Internal error: {}: {}'.format(
+                               type(errmsg).__name__, errmsg)})
         finally:
             with self._active_lock:
                 self._active_requests.pop('task:' + task.task_id, None)

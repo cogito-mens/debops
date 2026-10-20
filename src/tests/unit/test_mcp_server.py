@@ -122,6 +122,23 @@ class EnvelopeTestCase(unittest.TestCase):
         self.assertEqual(error['data']['supported'],
                          [PROTOCOL_VERSION])
 
+    def test_internal_error_names_the_exception(self):
+        # The journal keeps the traceback; the message tells the caller
+        # what failed — both readers are the same person here
+        server = McpServer()
+
+        def broken(arguments):
+            raise RuntimeError('a storm of bees')
+
+        server.register_tool('broken', 'Broken', {'type': 'object'},
+                             broken)
+        response = server.handle(make_request(
+                'tools/call', params={'name': 'broken', 'arguments': {}}))
+        error = response['error']
+        self.assertEqual(error['code'], rpc.INTERNAL_ERROR)
+        self.assertIn('RuntimeError', error['message'])
+        self.assertIn('a storm of bees', error['message'])
+
     def test_list_rejects_a_cursor(self):
         # The lists are never paginated, so any cursor is invalid
         server = McpServer()
