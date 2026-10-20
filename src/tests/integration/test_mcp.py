@@ -17,6 +17,8 @@ import os
 import shutil
 import signal
 import subprocess
+
+from pathlib import Path
 import sys
 import threading
 import time
@@ -203,6 +205,48 @@ def test_serve_docs_rejects_view(run_debops, mcp_env, project_dir):
 
     assert result.returncode == 2
     assert "--docs" in result.stderr
+
+
+def _hook_canary(hook_dir, marker):
+    """An executable hook which leaves a marker file when it fires."""
+    hook_dir.mkdir(parents=True)
+    script = hook_dir / "00-canary"
+    script.write_text("#!/bin/sh\ntouch {}\n".format(marker))
+    script.chmod(0o755)
+
+
+def test_docs_mode_never_runs_hooks(run_debops, mcp_env, tmp_path):
+    # The documentation mode invokes no hooks — not even the
+    # user-global ones, which run from any directory they are handed
+    marker = tmp_path / "hook-fired"
+    _hook_canary(Path(mcp_env["XDG_CONFIG_HOME"]) / "debops" / "hooks"
+                 / "mcp-pre-start", marker)
+
+    result = run_debops("mcp", "serve", cwd=str(tmp_path), env=mcp_env,
+                        input_text=make_discover_request())
+    assert result.returncode == 0
+    assert "supportedVersions" in result.stdout
+    assert not marker.exists()
+
+
+def test_docs_flag_never_runs_hooks_inside_a_project(
+        run_debops, mcp_env, project_dir):
+    # Even inside a project, the documentation mode fires neither the
+    # project-local nor the user-global hooks (the lifecycle test is
+    # the control: in the project mode they all fire)
+    project_marker = project_dir / "project-hook-fired"
+    user_marker = project_dir / "user-hook-fired"
+    _hook_canary(project_dir / ".debops" / "hooks" / "mcp-pre-start",
+                 project_marker)
+    _hook_canary(Path(mcp_env["XDG_CONFIG_HOME"]) / "debops" / "hooks"
+                 / "mcp-pre-start", user_marker)
+
+    result = run_debops("mcp", "serve", "--docs", cwd=str(project_dir),
+                        env=mcp_env, input_text=make_discover_request())
+    assert result.returncode == 0
+    assert "supportedVersions" in result.stdout
+    assert not project_marker.exists()
+    assert not user_marker.exists()
 
 
 def test_serve_exits_quietly_on_sigint(debops_source_dir, mcp_env,
