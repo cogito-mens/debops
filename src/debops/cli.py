@@ -824,8 +824,13 @@ class Interpreter(object):
         # a project directory
         library = SkillLibrary()
         if args.skill:
+            target = args.skill
+            if '.' not in target.rsplit('/', 1)[-1]:
+                # A skill is named by its directory; the SKILL.md is
+                # explicit in the URI
+                target += '/SKILL.md'
             try:
-                content = library.read('skill://' + args.skill)
+                content = library.read('skill://' + target)
             except ValueError as errmsg:
                 print('Error:', errmsg, file=sys.stderr)
                 sys.exit(1)
@@ -836,13 +841,15 @@ class Interpreter(object):
             print(content, end='')
         else:
             first = True
-            for skill in library.list():
+            for entry in library.entries():
                 if not first:
                     print()
                 first = False
-                print(skill['name'])
-                print(textwrap.fill(skill['description'], width=79,
-                                    initial_indent='    ',
+                frontmatter = entry['frontmatter']
+                print(entry['uri'][len('skill://'):-len('/SKILL.md')])
+                print(textwrap.fill(str(frontmatter.get('description',
+                                                        '')),
+                                    width=79, initial_indent='    ',
                                     subsequent_indent='    '))
 
     def _killswitch_writable(self, path):

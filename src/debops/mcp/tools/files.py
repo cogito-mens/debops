@@ -493,7 +493,9 @@ def _announce_mcp_content_change(server, view_relative):
     if parts[2] == 'skills':
         server.emit_list_changed('resources')
         if len(parts) > 3:
-            server.emit_resource_updated('skill://' + parts[3])
+            # The resource URI of the changed file itself
+            server.emit_resource_updated(
+                    'skill://' + '/'.join(parts[3:]))
     elif parts[2] == 'prompts':
         server.emit_list_changed('prompts')
     elif parts[2] == 'tools':

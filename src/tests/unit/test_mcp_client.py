@@ -255,7 +255,7 @@ class FormatterTestCase(unittest.TestCase):
     def test_format_resources(self):
         lines = client.format_resources([
             {'name': 'debops-cli',
-             'uri': 'skill://debops-cli',
+             'uri': 'skill://debops-cli/SKILL.md',
              'description': 'The CLI skill.'},
         ])
         self.assertEqual(lines[0], 'resources (1):')

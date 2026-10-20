@@ -10,13 +10,15 @@ there is no 'initialize' handshake and no session state, so a transport
 can hand any message to handle_bytes() independently of any other.
 """
 
+import base64
+import json
 import logging
 import os
 import queue
 import threading
 
 from . import rpc
-from .skills import SKILL_URI_PREFIX
+from .skills import SKILL_URI_PREFIX, SKILLS_EXTENSION
 from .tasks import TaskRegistry
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,32 @@ def _reject_cursor(params):
                 rpc.INVALID_PARAMS, 'Invalid params',
                 data={'details': 'invalid cursor: the list is not '
                       'paginated; repeat the request without it'})
+
+
+# The page size of the unbounded catalogs (the skills and the directory
+# listings); the bounded lists stay complete and cursor-free
+LIST_PAGE_SIZE = 100
+
+
+def _encode_cursor(offset):
+    """The opaque cursor for a catalog page: an offset, wrapped."""
+    return base64.urlsafe_b64encode(
+            json.dumps({'offset': offset}).encode('utf-8')
+            ).decode('ascii')
+
+
+def _decode_cursor(cursor):
+    """The offset of a cursor; ValueError for anything we never wrote."""
+    try:
+        data = json.loads(base64.urlsafe_b64decode(
+                cursor.encode('ascii')).decode('utf-8'))
+        offset = data['offset']
+    except (ValueError, UnicodeDecodeError, AttributeError, KeyError,
+            TypeError, UnicodeEncodeError):
+        raise ValueError('invalid cursor')
+    if not isinstance(offset, int) or offset < 0:
+        raise ValueError('invalid cursor')
+    return offset
 
 
 def _supports_form_elicitation(capabilities):
@@ -317,6 +345,10 @@ class McpServer(object):
         if self.skills is not None:
             self._methods['resources/list'] = self._resources_list
             self._methods['resources/read'] = self._resources_read
+            self._methods['skills/list'] = self._skills_list
+            self._methods['skills/get'] = self._skills_get
+            self._methods['resources/directory/read'] = \
+                self._resources_directory_read
         if self.prompts is not None:
             self._methods['prompts/list'] = self._prompts_list
             self._methods['prompts/get'] = self._prompts_get
@@ -663,8 +695,12 @@ class McpServer(object):
 
     def _discover(self, params, context):
         capabilities = {'tools': {}}
+        extensions = {TASKS_EXTENSION: {}}
         if self.skills is not None:
             capabilities['resources'] = {'listChanged': True}
+            # The skills extension (SEP-2640): skills/list, skills/get
+            # and the directory listing
+            extensions[SKILLS_EXTENSION] = {'directoryRead': True}
         # The prompts are project content, so the capability follows the
         # directory at call time
         if (self.prompts is not None and self.prompts.available()
@@ -672,8 +708,7 @@ class McpServer(object):
             capabilities['prompts'] = {'listChanged': True}
         return {
             'supportedVersions': [PROTOCOL_VERSION],
-            'capabilities': dict(capabilities,
-                                 extensions={TASKS_EXTENSION: {}}),
+            'capabilities': dict(capabilities, extensions=extensions),
             'instructions': self._instructions(),
             'ttlMs': 60000, 'cacheScope': 'private',
         }
@@ -850,6 +885,70 @@ class McpServer(object):
         # a package upgrade
         return {'resources': self.skills.list(),
                 'ttlMs': 3600000, 'cacheScope': 'public'}
+
+    def _paginate(self, items, key, params):
+        """One page of a catalog result, per the pagination utility.
+
+        The catalogs (the skills, the directory listings) outgrow a
+        page with the generated corpora; the cursor is an offset over
+        the sorted order. A cursor we never issued is invalid.
+        """
+        offset = 0
+        if params.get('cursor') is not None:
+            try:
+                offset = _decode_cursor(params['cursor'])
+            except ValueError:
+                raise rpc.JsonRpcError(
+                        rpc.INVALID_PARAMS, 'Invalid params',
+                        data={'details': 'invalid cursor'})
+            if offset >= max(len(items), 1):
+                raise rpc.JsonRpcError(
+                        rpc.INVALID_PARAMS, 'Invalid params',
+                        data={'details': 'invalid cursor'})
+        page = items[offset:offset + LIST_PAGE_SIZE]
+        result = {key: page, 'ttlMs': 60000, 'cacheScope': 'private'}
+        if offset + LIST_PAGE_SIZE < len(items):
+            result['nextCursor'] = _encode_cursor(
+                    offset + LIST_PAGE_SIZE)
+        return result
+
+    def _skills_list(self, params, context):
+        return self._paginate(self.skills.entries(), 'skills', params)
+
+    def _skills_get(self, params, context):
+        uri = params.get('uri')
+        if not isinstance(uri, str):
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_PARAMS, 'Invalid params',
+                    data={'details': "'uri' must be a string"})
+        try:
+            entry = self.skills.entry_for(uri)
+        except ValueError as errmsg:
+            raise rpc.JsonRpcError(rpc.INVALID_PARAMS, 'Invalid params',
+                                   data={'details': str(errmsg)})
+        if entry is None:
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_PARAMS, 'Invalid params',
+                    data={'details': 'unknown skill: {}'.format(uri)})
+        return {'skill': entry, 'ttlMs': 60000, 'cacheScope': 'private'}
+
+    def _resources_directory_read(self, params, context):
+        uri = params.get('uri')
+        if not isinstance(uri, str):
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_PARAMS, 'Invalid params',
+                    data={'details': "'uri' must be a string"})
+        try:
+            children = self.skills.directory(uri)
+        except ValueError as errmsg:
+            raise rpc.JsonRpcError(rpc.INVALID_PARAMS, 'Invalid params',
+                                   data={'details': str(errmsg)})
+        if children is None:
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_PARAMS, 'Invalid params',
+                    data={'details': 'not a directory resource: {}'
+                          .format(uri)})
+        return self._paginate(children, 'resources', params)
 
     def _resources_read(self, params, context):
         uri = params.get('uri')
@@ -1037,9 +1136,10 @@ class McpServer(object):
         after = self.content_fingerprint()
         if before['skills'] != after['skills']:
             self.emit_list_changed('resources')
-            for name, mtime in after['skills'].items():
-                if before['skills'].get(name) != mtime:
-                    self.emit_resource_updated(SKILL_URI_PREFIX + name)
+            for path, mtime in after['skills'].items():
+                if before['skills'].get(path) != mtime:
+                    self.emit_resource_updated(
+                            SKILL_URI_PREFIX + path + '/SKILL.md')
         if before['prompts'] != after['prompts']:
             self.emit_list_changed('prompts')
 

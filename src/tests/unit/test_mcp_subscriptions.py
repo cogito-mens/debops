@@ -119,15 +119,15 @@ class SubscriptionStreamTestCase(unittest.TestCase):
         connection = self._open()
         reader = connection.makefile('rb')
         self._listen(connection, {
-                'resourceSubscriptions': ['skill://debops-cli']})
+                'resourceSubscriptions': ['skill://debops-cli/SKILL.md']})
         json.loads(rpc.read_message(reader))  # the ack
 
-        self.server.emit_resource_updated('skill://debops-cli')
+        self.server.emit_resource_updated('skill://debops-cli/SKILL.md')
         notification = json.loads(rpc.read_message(reader))
         self.assertEqual(notification['method'],
                          'notifications/resources/updated')
         self.assertEqual(notification['params']['uri'],
-                         'skill://debops-cli')
+                         'skill://debops-cli/SKILL.md')
 
         # A URI we did not subscribe to is not delivered
         self.server.emit_resource_updated('skill://other')

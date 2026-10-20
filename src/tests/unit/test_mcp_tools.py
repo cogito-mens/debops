@@ -723,7 +723,7 @@ class ViewWriteTestCase(unittest.TestCase):
                         {'path': '.debops/mcp/skills/demo/SKILL.md',
                          'content': self.GOOD_SKILL}, server=server)
         self.assertEqual(events, [('list', 'resources'),
-                                  ('updated', 'skill://demo')])
+                                  ('updated', 'skill://demo/SKILL.md')])
 
 
 class OverridesWriteTestCase(unittest.TestCase):
