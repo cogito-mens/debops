@@ -131,15 +131,51 @@ def tool_project_read(project, policy, arguments):
     return text_result('# {}\n\n```\n{}```'.format(relative, content))
 
 
+# Configuration keys whose segments name a secret value are never
+# served: the configuration tree is not for secrets (the secret/
+# directories and the MCP .env files exist for those), and a value
+# referencing an environment variable inlines it at load time. The
+# pattern is anchored so that paths ('vault_password_file') and
+# toggles ('become_ask_pass') still serve
+_SECRET_KEY_SEGMENT = re.compile(
+        r'(?:^|_)(?:passwords?|passwd|passphrases?|secrets?|tokens?|'
+        r'credentials?|api[_-]?keys?|private[_-]?keys?)$', re.IGNORECASE)
+
+
+def _secret_named_key(key):
+    """Whether a dotted configuration key names a secret value."""
+    return any(_SECRET_KEY_SEGMENT.search(segment)
+               for segment in key.split('.'))
+
+
+def _withhold_secret_values(node):
+    """Copy a configuration subtree, withholding the values of keys
+    which name secrets (a subtree query would carry them otherwise)."""
+    if isinstance(node, dict):
+        return {key: ('<withheld>' if _SECRET_KEY_SEGMENT.search(
+                        str(key))
+                      else _withhold_secret_values(value))
+                for key, value in node.items()}
+    if isinstance(node, list):
+        return [_withhold_secret_values(value) for value in node]
+    return node
+
+
 def tool_config_get(project, arguments):
     key = str(arguments.get('key') or '').strip('.')
     if not key:
         return error_result('the "key" argument is required')
+    if _secret_named_key(key):
+        return error_result('the key names a secret value; the '
+                            'configuration tree is not served for '
+                            'those (the secret/ directory and the MCP '
+                            '.env files are the places for secrets)')
     node = project.config.raw
     for part in key.split('.'):
         if not isinstance(node, dict) or part not in node:
             return error_result('configuration key not found: ' + key)
         node = node[part]
+    node = _withhold_secret_values(node)
     return text_result('{}:\n\n```yaml\n{}\n```'.format(
             key, dump_default(node)),
             structured={'key': key, 'value': node})

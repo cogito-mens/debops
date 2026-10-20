@@ -75,6 +75,11 @@ class FilesTestCase(unittest.TestCase):
                 'raw': {
                     'syslog': {'level': 'warning'},
                     'project': {'name': 'project'},
+                    'myapp': {'api_token': 's3cr3t',
+                              'endpoint': 'https://x.example.org'},
+                    'ansible': {'defaults': {
+                            'become_ask_pass': False,
+                            'vault_password_file': '/run/x.pass'}},
                 },
             })(),
         })()
@@ -184,6 +189,31 @@ class FilesTestCase(unittest.TestCase):
     def test_config_get_missing_key(self):
         response = self.call_tool('config_get', {'key': 'nosuch.key'})
         self.assertTrue(response['result']['isError'])
+
+    def test_config_get_refuses_secret_named_keys(self):
+        # The configuration tree is not for secrets
+        response = self.call_tool('config_get', {'key': 'myapp.api_token'})
+        self.assertTrue(response['result']['isError'])
+        self.assertIn('secret', response['result']['content'][0]['text'])
+
+    def test_config_get_withholds_them_in_a_subtree(self):
+        response = self.call_tool('config_get', {'key': 'myapp'})
+        self.assertFalse(response['result']['isError'], response)
+        text = response['result']['content'][0]['text']
+        self.assertNotIn('s3cr3t', text)
+        self.assertIn('<withheld>', text)
+        self.assertIn('https://x.example.org', text)
+        # The structured channel is withheld too
+        structured = response['result']['structuredContent']
+        self.assertEqual(structured['value']['api_token'], '<withheld>')
+
+    def test_config_get_serves_paths_and_toggles(self):
+        # 'vault_password_file' is a path, 'become_ask_pass' a toggle;
+        # neither holds a secret
+        for key in ('ansible.defaults.vault_password_file',
+                    'ansible.defaults.become_ask_pass'):
+            response = self.call_tool('config_get', {'key': key})
+            self.assertFalse(response['result']['isError'], key)
 
     # -- inventory_query ----------------------------------------------------
 
