@@ -2200,7 +2200,7 @@ class OutputFormatTestCase(unittest.TestCase):
                 ('application/yaml', 'yaml'), ('text/yaml', 'yaml'),
                 ('application/toml', 'toml'),
                 ('application/json', 'json'), ('text/plain', 'text'),
-                ('txt', 'text')):
+                ('raw', 'text'), ('txt', 'text')):
             self.assertEqual(
                     parse_output_format({'format': alias}), canonical,
                     alias)

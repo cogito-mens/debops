@@ -178,6 +178,7 @@ OUTPUT_FORMATS = ('text', 'json', 'yaml', 'toml')
 # The variants a model reaches for when it guesses the format value;
 # absorbed quietly at the boundary
 FORMAT_ALIASES = {
+    'raw': 'text',
     'txt': 'text',
     'text/plain': 'text',
     'application/json': 'json',
