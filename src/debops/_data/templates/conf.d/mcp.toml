@@ -86,7 +86,7 @@ local_playbooks = true
 # tool above.
 keyring_sources = ["keyserver.ubuntu.com", "keybase.io"]
 
-# The paths the write tools ('view_write', 'view_delete',
+# The paths the write tools ('file_write', 'file_delete',
 # 'inventory_spec') may touch, as fnmatch globs. The default covers
 # every location the playbook runner resolves: the view's playbooks
 # and resources, the shared 'ansible/playbooks/' (including the loose

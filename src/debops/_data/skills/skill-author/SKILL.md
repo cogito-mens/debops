@@ -47,7 +47,7 @@ Procedural knowledge, in Markdown.
 
 ## Writing skills with the write tools
 
-Skills live outside the infrastructure view, so `view_write` must be allowed
+Skills live outside the infrastructure view, so `file_write` must be allowed
 to reach them — by default it is not. The project administrator opts in:
 
 ```toml
@@ -60,7 +60,7 @@ write_allow = ["resources/**", "playbooks/**",
 Then, per skill file:
 
 ```
-view_write path=.debops/mcp/skills/my-skill/SKILL.md content="..."
+file_write path=.debops/mcp/skills/my-skill/SKILL.md content="..."
 ```
 
 Paths under `.debops/` are anchored at the project directory, in legacy and

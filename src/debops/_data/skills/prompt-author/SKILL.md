@@ -52,7 +52,7 @@ arguments are ignored.
 
 ## Writing prompts with the write tools
 
-Prompts live outside the infrastructure view, so `view_write` must be allowed
+Prompts live outside the infrastructure view, so `file_write` must be allowed
 to reach them — by default it is not. The project administrator opts in:
 
 ```toml
@@ -65,7 +65,7 @@ write_allow = ["resources/**", "playbooks/**",
 Then:
 
 ```
-view_write path=.debops/mcp/prompts/my-prompt.md content="..."
+file_write path=.debops/mcp/prompts/my-prompt.md content="..."
 ```
 
 Paths under `.debops/` are anchored at the project directory, in legacy and

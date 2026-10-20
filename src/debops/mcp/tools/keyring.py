@@ -298,7 +298,7 @@ def tool_keyring_fetch(project, policy, arguments, context):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w') as fp:
             fp.write(armored)
-        # The commit is part of the tool's contract, as for view_write
+        # The commit is part of the tool's contract, as for file_write
         project.commit(message='DebOps MCP: keyring_fetch ' + filename)
 
     lines = ['# Key fetched into the keyring', '',

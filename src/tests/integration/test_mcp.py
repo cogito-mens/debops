@@ -288,6 +288,7 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
                              "collection_sync", "config_get",
                              "environment_list",
                              "environment_set", "environment_unset",
+                             "file_delete", "file_write",
                              "inventory_query",
                              "inventory_spec", "keyring_fetch",
                              "playbook_info",
@@ -297,8 +298,7 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
                              "role_defaults", "role_files",
                              "role_handlers", "role_info", "role_tasks",
                              "role_templates", "role_variables",
-                             "secret_paths", "view_delete",
-                             "view_write"]
+                             "secret_paths"]
 
 
 def test_role_defaults_via_stdio(run_debops, mcp_env, project_dir):
@@ -595,7 +595,7 @@ def test_write_check_run_loop_via_stdio(run_debops, mcp_env,
         (response,) = read_json_lines(result.stdout)
         return response["result"]
 
-    written = call("view_write", {"path": "playbooks/written.yml",
+    written = call("file_write", {"path": "playbooks/written.yml",
                                   "content": playbook})
     assert "created: playbooks/written.yml" in written["content"][0]["text"]
     listed = call("playbooks", {"filter": "written"})
@@ -608,7 +608,7 @@ def test_write_check_run_loop_via_stdio(run_debops, mcp_env,
     log = subprocess.run(["git", "log", "--format=%s", "-1"],
                          cwd=str(project_dir), env=env,
                          capture_output=True, text=True)
-    assert "DebOps MCP: view_write playbooks/written.yml" in log.stdout
+    assert "DebOps MCP: file_write playbooks/written.yml" in log.stdout
 
 
 def test_inventory_spec_via_stdio(run_debops, mcp_env, project_dir):

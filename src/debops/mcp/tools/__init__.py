@@ -19,7 +19,7 @@ from .environment import (tool_environment_list, tool_environment_set,
 from .execute import tool_check, tool_run
 from .files import (tool_config_get, tool_inventory_query,
                     tool_inventory_spec, tool_project_files,
-                    tool_project_read, tool_view_delete, tool_view_write)
+                    tool_project_read, tool_file_delete, tool_file_write)
 from .galaxy import (tool_collection_remove, tool_collection_require,
                      tool_collection_sync)
 from .keyring import tool_keyring_fetch
@@ -255,10 +255,10 @@ TOOL_ANNOTATIONS = {
     'secret_paths': {'destructiveHint': False, 'idempotentHint': True,
                      'openWorldHint': False},
     # Writes change the project (recoverable via the auto-commit)
-    'view_write': {'destructiveHint': True, 'idempotentHint': True,
+    'file_write': {'destructiveHint': True, 'idempotentHint': True,
                    'openWorldHint': False},
     # Deleting an absent file is an error, so not idempotent
-    'view_delete': {'destructiveHint': True, 'idempotentHint': False,
+    'file_delete': {'destructiveHint': True, 'idempotentHint': False,
                     'openWorldHint': False},
     # A specification can remove inventory paths
     'inventory_spec': {'destructiveHint': True, 'idempotentHint': True,
@@ -667,7 +667,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                   'nginx.yml"'}},
           'required': ['path']},
          lambda arguments: tool_project_read(project, policy, arguments)),
-        ('view_write',
+        ('file_write',
          'Write a file in the current infrastructure view, in allowed '
          'locations only ("resources/" and "playbooks/" by default; the '
          'project.mcp.write_allow policy). One file per call; the '
@@ -691,9 +691,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                   'existing file, or 0644 for a new '
                                   'one'}},
           'required': ['path', 'content']},
-         lambda arguments: tool_view_write(project, policy, arguments,
+         lambda arguments: tool_file_write(project, policy, arguments,
                                            server=server)),
-        ('view_delete',
+        ('file_delete',
          'Delete a file from the current infrastructure view, in '
          'allowed locations only (the project.mcp.write_allow policy). '
          'Regular files only, one per call; the deletion is committed '
@@ -706,7 +706,7 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                   'relative to the view root, e.g. '
                                   '"playbooks/deploy.yml"'}},
           'required': ['path']},
-         lambda arguments: tool_view_delete(project, policy, arguments,
+         lambda arguments: tool_file_delete(project, policy, arguments,
                                             server=server)),
         ('inventory_spec',
          'Apply an inventory specification to the inventory of the '

@@ -297,11 +297,11 @@ class ViewWriteTestCase(unittest.TestCase):
         return content[0]['text']
 
     def write(self, path, content='x\n', mode=None):
-        from debops.mcp.tools.files import tool_view_write
+        from debops.mcp.tools.files import tool_file_write
         arguments = {'path': path, 'content': content}
         if mode is not None:
             arguments['mode'] = mode
-        return tool_view_write(self.project, self.policy, arguments)
+        return tool_file_write(self.project, self.policy, arguments)
 
     def written(self, relative):
         with open(os.path.join(self.view_root, relative)) as fp:
@@ -322,7 +322,7 @@ class ViewWriteTestCase(unittest.TestCase):
                          0o755)
         # The commit is part of the write
         self.assertEqual(self.commits,
-                         ['DebOps MCP: view_write '
+                         ['DebOps MCP: file_write '
                           'resources/scripts/hello.sh'])
 
     def test_unchanged_content_commits_nothing(self):
@@ -374,8 +374,8 @@ class ViewWriteTestCase(unittest.TestCase):
         self.project.config.raw['project'] = {
                 'mcp': {'write_allow': ['secret/**', 'resources/**']}}
         policy = McpPolicy(self.project)
-        from debops.mcp.tools.files import tool_view_write
-        response = tool_view_write(
+        from debops.mcp.tools.files import tool_file_write
+        response = tool_file_write(
                 self.project, policy,
                 {'path': 'secret/password', 'content': 'x'})
         self.assertTrue(response['isError'])
@@ -423,7 +423,7 @@ class ViewWriteTestCase(unittest.TestCase):
             raise RuntimeError('disk ate it')
 
         project = type('Project', (), {'commit': _fail})()
-        result = commit_or_report(project, 'view_write x',
+        result = commit_or_report(project, 'file_write x',
                                   'created: x')
         self.assertTrue(result['isError'])
         text = result['content'][0]['text']
@@ -453,7 +453,7 @@ class ViewWriteTestCase(unittest.TestCase):
         response = server.handle({
                 'jsonrpc': '2.0', 'id': 1,
                 'method': 'tools/call',
-                'params': {'_meta': REQUEST_META, 'name': 'view_write',
+                'params': {'_meta': REQUEST_META, 'name': 'file_write',
                            'arguments': {'path': 'playbooks/x.yml',
                                          'content': '---\n'}}})
         result = response['result']
@@ -480,11 +480,11 @@ class ViewWriteTestCase(unittest.TestCase):
         # The write itself landed
         self.assertEqual(self.written('playbooks/x.yml'), '---\n')
 
-    # -- view_delete ---------------------------------------------------
+    # -- file_delete ---------------------------------------------------
 
     def delete(self, path):
-        from debops.mcp.tools.files import tool_view_delete
-        return tool_view_delete(self.project, self.policy,
+        from debops.mcp.tools.files import tool_file_delete
+        return tool_file_delete(self.project, self.policy,
                                 {'path': path})
 
     def test_delete(self):
@@ -495,7 +495,7 @@ class ViewWriteTestCase(unittest.TestCase):
         self.assertFalse(os.path.exists(
                 os.path.join(self.view_root, 'playbooks', 'deploy.yml')))
         self.assertEqual(self.commits[-1],
-                         'DebOps MCP: view_delete playbooks/deploy.yml')
+                         'DebOps MCP: file_delete playbooks/deploy.yml')
 
     def test_delete_missing_file_is_an_error(self):
         response = self.delete('playbooks/nosuch.yml')
@@ -539,12 +539,12 @@ class ViewWriteTestCase(unittest.TestCase):
                   '# Demo\n')
 
     def write_scoped(self, path, content='x\n', allow=None):
-        from debops.mcp.tools.files import tool_view_write
+        from debops.mcp.tools.files import tool_file_write
         if allow is not None:
             self.project.config.raw['project'] = {
                     'mcp': {'write_allow': allow}}
             self.policy = McpPolicy(self.project)
-        return tool_view_write(self.project, self.policy,
+        return tool_file_write(self.project, self.policy,
                                {'path': path, 'content': content})
 
     def test_mcp_content_is_not_writable_by_default(self):
@@ -715,11 +715,11 @@ class ViewWriteTestCase(unittest.TestCase):
                 'emit_resource_updated': lambda self, uri:
                 events.append(('updated', uri)),
         })()
-        from debops.mcp.tools.files import tool_view_write
+        from debops.mcp.tools.files import tool_file_write
         self.project.config.raw['project'] = {
                 'mcp': {'write_allow': ['.debops/mcp/skills/**']}}
         self.policy = McpPolicy(self.project)
-        tool_view_write(self.project, self.policy,
+        tool_file_write(self.project, self.policy,
                         {'path': '.debops/mcp/skills/demo/SKILL.md',
                          'content': self.GOOD_SKILL}, server=server)
         self.assertEqual(events, [('list', 'resources'),
@@ -1215,6 +1215,7 @@ class ToolsTestCase(unittest.TestCase):
                           'collection_sync', 'config_get',
                           'environment_list',
                           'environment_set', 'environment_unset',
+                          'file_delete', 'file_write',
                           'inventory_query',
                           'inventory_spec', 'keyring_fetch',
                           'playbook_info',
@@ -1223,7 +1224,7 @@ class ToolsTestCase(unittest.TestCase):
                           'role_argspec', 'role_defaults', 'role_files',
                           'role_handlers', 'role_info', 'role_tasks',
                           'role_templates', 'role_variables',
-                          'secret_paths', 'view_delete', 'view_write'])
+                          'secret_paths'])
 
     def test_registration_into_a_staging_registry(self):
         # A reload builds the new surface aside and swaps it in whole;
@@ -1296,7 +1297,7 @@ class ToolsTestCase(unittest.TestCase):
         self.assertNotIn('_meta', tools['project_status'])
         self.assertNotIn('confirm',
                          tools['project_status']['description'])
-        self.assertNotIn('_meta', tools['view_write'])
+        self.assertNotIn('_meta', tools['file_write'])
 
     def test_confirm_disabled_marks_nothing(self):
         tools = self._tools_by_name({'execute': 'all', 'confirm': []})

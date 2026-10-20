@@ -297,8 +297,8 @@ class CustomToolWriteTestCase(unittest.TestCase):
                                       'tools', 'hello-world')
 
     def write(self, path, content='#!/bin/sh\ncat\n'):
-        from debops.mcp.tools.files import tool_view_write
-        return tool_view_write(self.project, self.policy,
+        from debops.mcp.tools.files import tool_file_write
+        return tool_file_write(self.project, self.policy,
                                {'path': path, 'content': content},
                                server=self.server)
 
@@ -316,7 +316,7 @@ class CustomToolWriteTestCase(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(os.stat(self.tool_path).st_mode),
                          0o755)
         self.assertEqual(self.commits,
-                         ['DebOps MCP: view_write '
+                         ['DebOps MCP: file_write '
                           '.debops/mcp/tools/hello-world'])
         # The new tool surface is picked up in place
         self.server.reload.assert_called_once()
@@ -325,8 +325,8 @@ class CustomToolWriteTestCase(unittest.TestCase):
         self.project.config.raw['project']['mcp']['custom_tools'] = \
             False
         policy = McpPolicy(self.project)
-        from debops.mcp.tools.files import tool_view_write
-        result = tool_view_write(
+        from debops.mcp.tools.files import tool_file_write
+        result = tool_file_write(
                 self.project, policy,
                 {'path': '.debops/mcp/tools/hello-world',
                  'content': '#!/bin/sh\n'})

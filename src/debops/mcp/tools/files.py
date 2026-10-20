@@ -350,7 +350,7 @@ def _parse_write_mode(arguments):
     return int(raw_mode, 8)
 
 
-def tool_view_write(project, policy, arguments, server=None):
+def tool_file_write(project, policy, arguments, server=None):
     # A leading slash anchors at the project root; keep it
     relative = str(arguments.get('path') or '').rstrip('/')
     content = arguments.get('content')
@@ -395,7 +395,7 @@ def tool_view_write(project, policy, arguments, server=None):
     def announce():
         _announce_mcp_content_change(server, view_relative)
     return _write_committed(project, policy, path, view_relative,
-                            content, mode, 'view_write ' + view_relative,
+                            content, mode, 'file_write ' + view_relative,
                             after=announce)
 
 
@@ -503,7 +503,7 @@ def _announce_mcp_content_change(server, view_relative):
         server.reload()
 
 
-def tool_view_delete(project, policy, arguments, server=None):
+def tool_file_delete(project, policy, arguments, server=None):
     # A leading slash anchors at the project root; keep it
     relative = str(arguments.get('path') or '').rstrip('/')
 
@@ -524,7 +524,7 @@ def tool_view_delete(project, policy, arguments, server=None):
                             'policy (project.mcp.project_content)')
 
     with exclusive_project(project, policy,
-                           note='view_delete ' + view_relative):
+                           note='file_delete ' + view_relative):
         if not os.path.lexists(path):
             return error_result('file not found: ' + view_relative)
         if not os.path.isfile(path):
@@ -535,10 +535,10 @@ def tool_view_delete(project, policy, arguments, server=None):
             return error_result('cannot delete {}: {}'.format(
                     view_relative, errmsg))
         _announce_mcp_content_change(server, view_relative)
-        # The commit is part of the tool's contract, as for view_write;
+        # The commit is part of the tool's contract, as for file_write;
         # when it fails the file is gone but NOT recorded in git
         commit_error = commit_or_report(
-                project, 'view_delete ' + view_relative,
+                project, 'file_delete ' + view_relative,
                 'deleted: {}'.format(view_relative))
         if commit_error is not None:
             return commit_error
@@ -673,7 +673,7 @@ def tool_inventory_spec(project, policy, arguments):
                 overwrite=overwrite, keep=keep)
         if result['written'] or result['removed']:
             # The commit is part of the tool's contract, as for
-            # view_write; when it fails the changes are NOT recorded
+            # file_write; when it fails the changes are NOT recorded
             try:
                 project.commit(message='DebOps MCP: inventory_spec')
             except Exception as errmsg:

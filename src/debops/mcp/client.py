@@ -159,9 +159,9 @@ TOOL_CALL_EXAMPLES = {
     'project_status': [''],
     'project_files': ['path=ansible/inventory'],
     'project_read': ['path=ansible/inventory/hosts'],
-    'view_write': ['path=resources/scripts/hello.sh '
+    'file_write': ['path=resources/scripts/hello.sh '
                    'content="#!/bin/sh" mode=0755'],
-    'view_delete': ['path=playbooks/deploy.yml'],
+    'file_delete': ['path=playbooks/deploy.yml'],
     'keyring_fetch': ['url=https://keybase.io/drybjed/key.asc'],
     'overrides_write': ['path=templates/nginx/nginx.conf.j2 '
                         'content=...'],
