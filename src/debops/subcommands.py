@@ -479,6 +479,11 @@ Commands:
                                  'bundled DebOps content and the '
                                  'collections of ANSIBLE_COLLECTIONS_PATH '
                                  'are served, read-only')
+        parser.add_argument('--view-lock', action='store_true',
+                            help='pin the active infrastructure view: '
+                                 'the view_switch tool is refused (same '
+                                 'as project.mcp.view_lock in the '
+                                 'project configuration)')
         parser.add_argument('--instance', type=str, metavar='NAME',
                             help='serve the named instance from the '
                                  'instances root: NAME is '
@@ -509,6 +514,8 @@ Commands:
                          'do not combine it with --view')
         if self.args.docs and self.args.instance is not None:
             parser.error('--docs and --instance exclude each other')
+        if self.args.docs and self.args.view_lock:
+            parser.error('--docs has no views to lock')
 
         if self.args.instance is not None:
             if self.args.view is not None:

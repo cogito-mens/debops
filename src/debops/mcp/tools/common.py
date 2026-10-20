@@ -270,7 +270,7 @@ class ProjectResourceError(RuntimeError):
     """An exclusive operation refused before it started (disk full)."""
 
 
-def check_free_space(policy):
+def check_free_space(policy, project):
     """Refuse when the project's filesystem is nearly full.
 
     A write which dies mid-way — a git object, a checkout — can leave
@@ -278,10 +278,11 @@ def check_free_space(policy):
     floor is used: a percentage means nothing on its own.
     """
     min_free = getattr(policy, 'min_free_bytes', 64 * 1024 * 1024)
-    # The view root may not exist yet (a fresh skeleton); the
-    # filesystem of the nearest existing ancestor is the one being
-    # written to
-    path = policy.view_root
+    # The view root may not exist yet (a fresh skeleton) — or at all
+    # (no active view); the filesystem of the nearest existing ancestor
+    # is the one being written to
+    path = policy.view_root if policy.view_root is not None \
+        else project.path
     while not os.path.exists(path):
         parent = os.path.dirname(path)
         if parent == path:
@@ -329,7 +330,9 @@ def _project_lock_path(project, policy):
     git_dir = os.path.join(project.path, '.git')
     if os.path.isdir(git_dir):
         return os.path.join(git_dir, 'mcp.lock')
-    return os.path.join(policy.view_root, '.mcp.lock')
+    if policy.view_root is not None:
+        return os.path.join(policy.view_root, '.mcp.lock')
+    return os.path.join(project.path, '.mcp.lock')
 
 
 @contextlib.contextmanager
@@ -367,7 +370,7 @@ def exclusive_project(project, policy, note=''):
     The operation is refused before it starts when the filesystem is
     nearly full.
     """
-    check_free_space(policy)
+    check_free_space(policy, project)
     with PROJECT_LOCK.write():
         with project_flock(project, policy, exclusive=True):
             try:

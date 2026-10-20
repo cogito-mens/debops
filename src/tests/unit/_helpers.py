@@ -15,6 +15,19 @@ def check_schema(data, schema, path='$'):
     expected = schema.get('type')
     types = {'object': dict, 'array': list, 'string': str,
              'boolean': bool}
+    if isinstance(expected, list):
+        # A union of types ('null' means Python's None); any
+        # alternative may match
+        for alternative in expected:
+            if alternative == 'null':
+                if data is None:
+                    return errors
+                continue
+            if not check_schema(data, {'type': alternative}, path):
+                return errors
+        errors.append('{}: expected {}, got {}'.format(
+                path, '/'.join(expected), type(data).__name__))
+        return errors
     if expected in types:
         if not isinstance(data, types[expected]):
             errors.append('{}: expected {}, got {}'.format(

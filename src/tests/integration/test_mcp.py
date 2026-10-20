@@ -249,6 +249,173 @@ def test_docs_flag_never_runs_hooks_inside_a_project(
     assert not user_marker.exists()
 
 
+class _LiveServer:
+    """A long-lived 'mcp serve' process answering sequential tool calls.
+
+    One process per call would lose the active view; the view tests
+    need the same server to answer across calls. stderr is discarded:
+    a pipe would deadlock the server once the buffer fills.
+    """
+
+    def __init__(self, project_dir, env, source_dir, serve_args=()):
+        env = dict(env)
+        env["PYTHONPATH"] = os.pathsep.join(
+                [source_dir, env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+        self.process = subprocess.Popen(
+                [sys.executable, "-m", "debops", "mcp", "serve",
+                 *serve_args],
+                cwd=str(project_dir), env=env, stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True)
+        self._counter = 0
+
+    def call(self, name, arguments):
+        self._counter += 1
+        request = json.dumps({
+            "jsonrpc": "2.0", "id": self._counter,
+            "method": "tools/call",
+            "params": {"_meta": REQUEST_META, "name": name,
+                       "arguments": arguments},
+        }) + "\n"
+        self.process.stdin.write(request)
+        self.process.stdin.flush()
+        line = self.process.stdout.readline()
+        if not line:
+            raise AssertionError(
+                    "the server exited ({}) without answering".format(
+                            self.process.poll()))
+        return json.loads(line)
+
+    def stop(self):
+        self.process.terminate()
+        self.process.wait(timeout=10)
+
+
+def test_no_view_startup_and_recovery_via_stdio(run_debops, mcp_env,
+                                                tmp_path,
+                                                debops_source_dir):
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    project_dir = tmp_path / "example"
+    run_debops("project", "init", "-t", "modern", "--no-requirements",
+               str(project_dir), env=mcp_env, check=True)
+    # An empty default view: a deliberate configuration meaning no view
+    # is active until one is selected explicitly
+    (project_dir / ".debops" / "conf.d" / "zz-noview.yml").write_text(
+            "---\nproject:\n  default_view: ''\n")
+
+    server = _LiveServer(project_dir, mcp_env, debops_source_dir)
+    try:
+        # The view-bound tools answer with the recovery path
+        blocked = server.call("file_write",
+                              {"path": "playbooks/x.yml",
+                               "content": "---\n"})
+        assert blocked["result"]["isError"]
+        assert "no active infrastructure view" in \
+            blocked["result"]["content"][0]["text"]
+        assert "view_switch" in blocked["result"]["content"][0]["text"]
+
+        # The discovery anchor works and names the registered view
+        listing = server.call("view_list", {})
+        assert "system" in listing["result"]["content"][0]["text"]
+        assert "Active: none" in listing["result"]["content"][0]["text"]
+
+        # Selecting the view unlocks the surface mid-session
+        switched = server.call("view_switch", {"view": "system"})
+        assert not switched["result"].get("isError", False)
+        written = server.call("file_write",
+                              {"path": "playbooks/x.yml",
+                               "content": "---\n"})
+        assert not written["result"].get("isError", False)
+        assert (project_dir / "ansible" / "views" / "system"
+                / "playbooks" / "x.yml").exists()
+        # The _meta stamp reports the active view on every result
+        assert switched["result"]["_meta"]["org.debops/view"] == \
+            "system"
+    finally:
+        server.stop()
+
+
+def test_view_create_and_switch_via_stdio(run_debops, mcp_env,
+                                          tmp_path,
+                                          debops_source_dir):
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    project_dir = tmp_path / "example"
+    run_debops("project", "init", "-t", "modern", "--no-requirements",
+               str(project_dir), env=mcp_env, check=True)
+
+    server = _LiveServer(project_dir, mcp_env, debops_source_dir)
+    try:
+        created = server.call("view_create", {"view": "webservers"})
+        assert not created["result"].get("isError", False)
+        assert (project_dir / "ansible" / "views" / "webservers"
+                ).is_dir()
+        assert (project_dir / ".debops" / "conf.d"
+                / "view-webservers.yml").exists()
+        log = subprocess.run(["git", "log", "--format=%s"],
+                             cwd=str(project_dir), capture_output=True,
+                             text=True, check=True)
+        assert "DebOps MCP: view_create webservers" in log.stdout
+
+        switched = server.call("view_switch", {"view": "webservers"})
+        assert not switched["result"].get("isError", False)
+        status = server.call("project_status", {})
+        assert "View: webservers" in \
+            status["result"]["content"][0]["text"]
+    finally:
+        server.stop()
+
+
+def test_view_switch_refused_with_view_lock(run_debops, mcp_env,
+                                            tmp_path,
+                                            debops_source_dir):
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    project_dir = tmp_path / "example"
+    run_debops("project", "init", "-t", "modern", "--no-requirements",
+               str(project_dir), env=mcp_env, check=True)
+
+    # The command line flag...
+    server = _LiveServer(project_dir, mcp_env, debops_source_dir,
+                         ("--view-lock",))
+    try:
+        refused = server.call("view_switch", {"view": "system"})
+        assert refused["result"]["isError"]
+        assert "locked" in refused["result"]["content"][0]["text"]
+    finally:
+        server.stop()
+
+    # ...and the configuration key behave the same
+    (project_dir / ".debops" / "conf.d" / "zz-lock.yml").write_text(
+            "---\nproject:\n  mcp:\n    view_lock: true\n")
+    server = _LiveServer(project_dir, mcp_env, debops_source_dir)
+    try:
+        refused = server.call("view_switch", {"view": "system"})
+        assert refused["result"]["isError"]
+        assert "locked" in refused["result"]["content"][0]["text"]
+    finally:
+        server.stop()
+
+
+def test_view_switch_on_legacy_is_refused(run_debops, mcp_env,
+                                          tmp_path,
+                                          debops_source_dir):
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    project_dir = tmp_path / "example"
+    run_debops("project", "init", "--no-requirements",
+               str(project_dir), env=mcp_env, check=True)
+
+    server = _LiveServer(project_dir, mcp_env, debops_source_dir)
+    try:
+        refused = server.call("view_switch", {"view": "system"})
+        assert refused["result"]["isError"]
+        assert "legacy" in refused["result"]["content"][0]["text"]
+    finally:
+        server.stop()
+
+
 def test_serve_exits_quietly_on_sigint(debops_source_dir, mcp_env,
                                        project_dir):
     env = os.environ.copy()
@@ -298,7 +465,8 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
                              "role_defaults", "role_files",
                              "role_handlers", "role_info", "role_tasks",
                              "role_templates", "role_variables",
-                             "secret_paths"]
+                             "secret_paths", "view_create", "view_list",
+                             "view_switch"]
 
 
 def test_role_defaults_via_stdio(run_debops, mcp_env, project_dir):
@@ -595,8 +763,9 @@ def test_write_check_run_loop_via_stdio(run_debops, mcp_env,
         (response,) = read_json_lines(result.stdout)
         return response["result"]
 
-    written = call("file_write", {"path": "playbooks/written.yml",
-                                  "content": playbook})
+    written = call("file_write",
+                   {"path": "playbooks/written.yml",
+                    "content": playbook})
     assert "created: playbooks/written.yml" in written["content"][0]["text"]
     listed = call("playbooks", {"filter": "written"})
     assert "written" in listed["content"][0]["text"]

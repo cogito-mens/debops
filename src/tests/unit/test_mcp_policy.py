@@ -36,10 +36,18 @@ class ViewRootTestCase(unittest.TestCase):
         self.assertEqual(policy.view_root, '/srv/projects/example/ansible')
 
     def test_modern_view_root(self):
-        project = FakeProject('/srv/projects/example', 'modern', 'infra')
+        project = FakeProject('/srv/projects/example', 'modern', 'infra',
+                              raw_config={'views': {'infra': {}}})
         policy = McpPolicy(project)
         self.assertEqual(policy.view_root,
                          '/srv/projects/example/ansible/views/infra')
+
+    def test_modern_view_root_unregistered_view_is_none(self):
+        # An unregistered view (an empty or stale default) means no
+        # active view, not a root pointing at nothing
+        project = FakeProject('/srv/projects/example', 'modern', 'infra')
+        policy = McpPolicy(project)
+        self.assertIsNone(policy.view_root)
 
 
 class ConfineTestCase(unittest.TestCase):

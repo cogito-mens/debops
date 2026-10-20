@@ -329,6 +329,18 @@ class McpServer(object):
         for event in events:
             event.set()
 
+    def switch_view(self, view):
+        """Switch the active infrastructure view.
+
+        The rebuild closure (set by 'debops mcp serve') validates the
+        view by constructing the project with it, rebuilds the policy
+        and swaps the tool surface in whole. Called by the view_switch
+        tool with the exclusive project lock held.
+        """
+        if self._rebuild is None:
+            raise RuntimeError('the server cannot switch views')
+        self._rebuild(view=view)
+
     def reload(self):
         """Re-read the project configuration and rebuild the policy and
         the tool surface; announce a change to the subscribers.

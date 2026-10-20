@@ -51,6 +51,12 @@ execute_diff = false
 # their own tasks). The per-call 'become' argument overrides this.
 become = false
 
+# Pin the active infrastructure view: the view_switch tool is refused.
+# The same pinning is available per server process with the serve
+# '--view-lock' option; the two combine. The change is global — all
+# connected clients share the active view either way.
+#view_lock = false
+
 # Tools which ask the user for confirmation before they run, on clients
 # which support it. The confirmation is a courtesy, not a security
 # boundary; the 'execute' option above is the boundary.

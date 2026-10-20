@@ -162,6 +162,9 @@ TOOL_CALL_EXAMPLES = {
     'file_write': ['path=resources/scripts/hello.sh '
                    'content="#!/bin/sh" mode=0755'],
     'file_delete': ['path=playbooks/deploy.yml'],
+    'view_list': [''],
+    'view_switch': ['view=webservers'],
+    'view_create': ['view=webservers'],
     'keyring_fetch': ['url=https://keybase.io/drybjed/key.asc'],
     'overrides_write': ['path=templates/nginx/nginx.conf.j2 '
                         'content=...'],

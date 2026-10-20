@@ -152,6 +152,7 @@ class McpPolicy(object):
         policy.execute_hosts = []
         policy.become = False
         policy.execute_diff = False
+        policy.view_lock = False
         policy.execute_options = []
         return policy
 
@@ -161,11 +162,19 @@ class McpPolicy(object):
         # projects the inventory lives in '<project>/ansible', in modern
         # projects each view has its own root under 'ansible/views'
         if project.project_type == 'legacy':
-            view_root = os.path.join(project.path, 'ansible')
+            self.view_root = os.path.realpath(
+                    os.path.join(project.path, 'ansible'))
+        elif project.view and project.view in project.config.raw.get(
+                'views', {}):
+            self.view_root = os.path.realpath(os.path.join(
+                    project.path, 'ansible', 'views', project.view))
         else:
-            view_root = os.path.join(project.path, 'ansible', 'views',
-                                     project.view)
-        self.view_root = os.path.realpath(view_root)
+            # No active view: the default view is unset (a deliberate
+            # configuration — the command line requires --view then,
+            # or a view directory as the working directory) or names a
+            # view which is not registered. The server starts anyway;
+            # the view-bound tools answer with guidance
+            self.view_root = None
 
         mcp_config = project.config.raw.get('project', {}).get('mcp', {})
         if not isinstance(mcp_config, dict):
@@ -370,6 +379,17 @@ class McpPolicy(object):
             logger.notice('Check-mode diffs enabled by policy '
                           '(rendered file content, with its secrets, '
                           'reaches the model)')
+
+        # The active infrastructure view cannot be switched mid-session;
+        # the '--view-lock' serve option does the same from the command
+        # line, and the two combine
+        view_lock = mcp_config.get('view_lock', False)
+        if isinstance(view_lock, str):
+            view_lock = strtobool(view_lock)
+        self.view_lock = bool(view_lock)
+        if self.view_lock:
+            logger.notice('The infrastructure view is locked by policy '
+                          '(project.mcp.view_lock)')
 
         options = mcp_config.get('execute_options')
         if options is None:

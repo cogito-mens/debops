@@ -36,6 +36,8 @@ from .roles import (COLLECTION_ROLES, project_role_paths, tool_role_argspec,
                     tool_role_variables)
 from .secrets import tool_secret_paths
 from .sync import make_sync_tool
+from .views import (NO_ACTIVE_VIEW, tool_view_create, tool_view_list,
+                    tool_view_switch)
 from ..policy import EXECUTE_OPTIONS
 from ..server import Tool
 
@@ -82,7 +84,7 @@ FORMAT_PROPERTY = {'type': 'string', 'enum': ['text', 'json'],
 READ_LOCKED_TOOLS = frozenset((
     'project_status', 'project_files', 'project_read', 'config_get',
     'environment_list', 'inventory_query', 'playbooks', 'playbook_info',
-    'role_info',
+    'view_list', 'role_info',
     'role_defaults', 'role_variables', 'role_argspec', 'role_tasks',
     'role_handlers', 'role_templates', 'role_files', 'collection_roles',
     'collection_playbooks',
@@ -117,17 +119,29 @@ TOOL_OUTPUT_SCHEMAS = {
                        'summary': {'type': 'string'}},
         'required': ['collection', 'target', 'summary']}},
     'secret_paths': {'type': 'array', 'items': {'type': 'string'}},
+    'view_list': {'type': 'object', 'properties': {
+        'active': {'type': ['string', 'null']},
+        'locked': {'type': 'boolean'},
+        'views': {'type': 'array', 'items': {
+            'type': 'object',
+            'properties': {
+                'name': {'type': 'string'},
+                'active': {'type': 'boolean'},
+                'present': {'type': 'boolean'}},
+            'required': ['name', 'active', 'present']}}},
+        'required': ['active', 'locked', 'views']},
     'project_status': {'type': 'object', 'properties': {
         'name': {'type': 'string'}, 'path': {'type': 'string'},
-        'type': {'type': 'string'}, 'view': {'type': 'string'},
+        'type': {'type': 'string'}, 'view': {'type': ['string', 'null']},
         'views': {'type': 'array', 'items': {'type': 'string'}},
-        'viewRoot': {'type': 'string'},
+        'viewLocked': {'type': 'boolean'},
+        'viewRoot': {'type': ['string', 'null']},
         'viewRootPresent': {'type': 'boolean'},
         'inventory': {'type': 'string'}, 'secrets': {'type': 'string'},
         'encryption': {'type': 'string'}},
         'required': ['name', 'path', 'type', 'view', 'views',
-                     'viewRoot', 'viewRootPresent', 'inventory',
-                     'secrets', 'encryption']},
+                     'viewLocked', 'viewRoot', 'viewRootPresent',
+                     'inventory', 'secrets', 'encryption']},
     'project_files': {'type': 'array', 'items': {'type': 'string'}},
     'config_get': {'type': 'object', 'properties': {
         'key': {'type': 'string'}, 'value': {}},
@@ -263,6 +277,13 @@ TOOL_ANNOTATIONS = {
     # A specification can remove inventory paths
     'inventory_spec': {'destructiveHint': True, 'idempotentHint': True,
                        'openWorldHint': False},
+    # The view is server-global state; listing it changes nothing, and
+    # a switch is visible to every connected client
+    'view_list': _READ_ONLY,
+    'view_switch': {'destructiveHint': False, 'idempotentHint': False,
+                    'openWorldHint': False},
+    'view_create': {'destructiveHint': False, 'idempotentHint': False,
+                    'openWorldHint': False},
     # Fetches over the network and adds a trust anchor
     'keyring_fetch': {'destructiveHint': True, 'idempotentHint': True,
                       'openWorldHint': True},
@@ -576,6 +597,24 @@ def _documentation_entries(server, policy, project, roles_path,
                  index_provider=collection_index_provider)),
         ])
     return entries
+
+
+# The tools which cannot work without an active infrastructure view
+VIEW_BOUND_TOOLS = frozenset((
+    'file_write', 'file_delete', 'inventory_query', 'inventory_spec',
+    'secret_paths', 'check', 'run', 'ansible_ping', 'ansible_facts',
+))
+
+
+def _no_view_stub(entry):
+    """Replace a view-bound handler with the no-view guidance.
+
+    The surface stays stable — a client which cached tools/list keeps
+    the same names — and the error teaches the recovery path.
+    """
+    return entry[:3] + (
+            lambda arguments, context=None: _error_result(
+                    NO_ACTIVE_VIEW),) + entry[4:]
 
 
 def _register_tool(target, name, description, schema, handler,
@@ -948,6 +987,47 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
             server, policy, project, roles_path, playbooks_path,
             collection_index_provider))
 
+    # View lifecycle: the active infrastructure view is a property of
+    # the server itself — the substrate (one git repository, the
+    # secrets mounts) is global, so the view is global, switchable
+    # mid-session unless the policy locks it
+    tools.extend([
+        ('view_list',
+         'List the infrastructure views of this project: which are '
+         'registered, which is active, whether the view is locked.'
+         + FORMAT_NOTE,
+         {'type': 'object',
+          'properties': {'format': FORMAT_PROPERTY},
+          'required': []},
+         lambda arguments: tool_view_list(project, policy, arguments)),
+        ('view_switch',
+         'Switch the active infrastructure view of the server to a '
+         'registered one. The change is global — all connected clients '
+         'then work in the new view, like sharing one checked-out git '
+         'branch; every response carries the active view in its '
+         '"_meta" stamp. Use view_list to see what exists.',
+         {'type': 'object',
+          'properties': {'view': {'type': 'string',
+                                  'description': 'Name of the '
+                                  'registered view to activate'}},
+          'required': ['view']},
+         lambda arguments: tool_view_switch(project, policy, arguments,
+                                            server)),
+        ('view_create',
+         'Create an infrastructure view (the way "debops project '
+         'mkview" does): a registered inventory root of its own, '
+         'committed to git. Activate it afterwards with view_switch. '
+         'Modern projects only; view names are lowercase letters, '
+         'digits and underscores — no dashes (the serve --instance '
+         'names split at the last dash).',
+         {'type': 'object',
+          'properties': {'view': {'type': 'string',
+                                  'description': 'Name of the view to '
+                                  'create'}},
+          'required': ['view']},
+         lambda arguments: tool_view_create(project, policy, arguments)),
+    ])
+
     # Git synchronization with the project origin; throttled per
     # direction by 'project.mcp.sync_interval'. The state lives on the
     # server so a policy reload does not reset the throttle
@@ -1086,6 +1166,14 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
              'required': ['path', 'content']},
             lambda arguments: tool_overrides_write(project, policy,
                                                    arguments)))
+
+    # With no active view the view-bound tools stay registered but
+    # answer with the recovery path, so a client which cached the
+    # surface keeps stable tool names
+    if (policy is not None and policy.view_root is None
+            and project.project_type != 'legacy'):
+        tools = [_no_view_stub(entry) if entry[0] in VIEW_BOUND_TOOLS
+                 else entry for entry in tools]
 
     # Tools the policy gates on user confirmation carry the marker and
     # say so in their description; an ungated tool never mentions it

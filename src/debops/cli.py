@@ -408,6 +408,18 @@ class Interpreter(object):
                           '(pid %s)', project.name, project.path,
                           project.view, os.getpid())
             policy = McpPolicy(project)
+            # The command line lock layers over the configuration
+            policy.view_lock = policy.view_lock or args.view_lock
+            if args.view_lock and policy.view_root is None:
+                print('Error: --view-lock with no active view leaves '
+                      'the server without its view tools permanently',
+                      file=sys.stderr)
+                sys.exit(2)
+            if policy.view_root is None:
+                logger.notice('No active infrastructure view (the '
+                              'default view is unset or unknown); the '
+                              'view_list, view_switch and view_create '
+                              'tools remain available')
             project_content = None
             prompts = None
             if policy.project_content:
@@ -425,13 +437,18 @@ class Interpreter(object):
             register_project_tools(server,
                                    enabled_check=killswitch.is_enabled)
 
-            def _rebuild():
+            def _rebuild(view=None):
                 """Re-read the project configuration and rebuild the policy
-                and the tool surface (a pull may have changed them)."""
+                and the tool surface (a pull may have changed them, or a
+                view switch is landing)."""
                 fresh = ProjectDir(path=project.path,
                                    config=Configuration(),
-                                   view=project.view)
+                                   view=view or server.project.view)
                 fresh_policy = McpPolicy(fresh)
+                # The command line lock re-applies over the reloaded
+                # configuration
+                fresh_policy.view_lock = (fresh_policy.view_lock
+                                          or args.view_lock)
                 # Registration reads the project and the policy from the
                 # server; the registry is built aside and swapped in
                 # whole, so that a concurrent tools/list never sees a

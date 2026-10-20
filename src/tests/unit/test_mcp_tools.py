@@ -1224,7 +1224,8 @@ class ToolsTestCase(unittest.TestCase):
                           'role_argspec', 'role_defaults', 'role_files',
                           'role_handlers', 'role_info', 'role_tasks',
                           'role_templates', 'role_variables',
-                          'secret_paths'])
+                          'secret_paths', 'view_create', 'view_list',
+                          'view_switch'])
 
     def test_registration_into_a_staging_registry(self):
         # A reload builds the new surface aside and swaps it in whole;
