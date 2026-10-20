@@ -9,6 +9,11 @@ The tests drive the real ``debops`` command line in temporary directories.
 configuration and the hook scripts of the machine running the tests cannot
 leak in; ``HOME`` is left alone so that the Python user site packages stay
 importable.
+
+Tests which need Ansible skip on the ambient ``PATH``. No fixture builds
+a project virtual environment, whose ``bin`` directory the server would
+prepend to the tool path; if one ever does, the skip guards must look
+there too.
 """
 
 import os

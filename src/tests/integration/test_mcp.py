@@ -516,6 +516,8 @@ def test_write_check_run_loop_via_stdio(run_debops, mcp_env,
 def test_inventory_spec_via_stdio(run_debops, mcp_env, project_dir):
     if shutil.which("git") is None:
         pytest.skip("git is not installed")
+    if shutil.which("ansible-inventory") is None:
+        pytest.skip("ansible-inventory is not installed")
 
     env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1",
                GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="t@example.org",
