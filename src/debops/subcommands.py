@@ -514,6 +514,14 @@ Commands:
                                  'PATH, or to the syslog (the journal) '
                                  'when PATH is omitted; a harness swallows '
                                  'the server\'s stderr')
+        parser.add_argument('--legacy', action='store_true',
+                            help='answer the 2025-era (stateful) '
+                                 'revision of the protocol instead of '
+                                 '2026-07-28: the initialize handshake, '
+                                 'no per-request _meta envelope, the old '
+                                 'result shape. For harnesses which do '
+                                 'not speak the stateless revision (Pi, '
+                                 'Codex)')
         self.args = parser.parse_args(self.args[3:])
 
         if self.args.docs and self.args.view is not None:

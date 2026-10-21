@@ -416,7 +416,8 @@ class Interpreter(object):
                             package_path=os.path.join(
                                     DEBOPS_PACKAGE_DATA, 'prompts')),
                     killswitch=killswitch,
-                    transport='unix' if args.socket else 'stdio')
+                    transport='unix' if args.socket else 'stdio',
+                    legacy=args.legacy)
             register_documentation_tools(server)
             logger.notice('Serving DebOps documentation (no project '
                           'directory, pid %s)', os.getpid())
@@ -478,7 +479,8 @@ class Interpreter(object):
                                    sources=[RoleSkillSource(roles_paths)]),
                                prompts=prompts, killswitch=killswitch,
                                transport='unix' if args.socket
-                               else 'stdio')
+                               else 'stdio',
+                               legacy=args.legacy)
             register_project_tools(server,
                                    enabled_check=killswitch.is_enabled)
 

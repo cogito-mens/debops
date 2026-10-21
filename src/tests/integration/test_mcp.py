@@ -105,6 +105,43 @@ def test_serve_stdio_reports_parse_errors(run_debops, mcp_env,
     assert response["error"]["code"] == -32700
 
 
+def test_serve_legacy_mode_speaks_the_2025_protocol(run_debops, mcp_env,
+                                                    project_dir):
+    """A 2025-era client (the Pi/Codex shape): the initialize handshake,
+    no per-request _meta envelope, the old result shape."""
+    messages = [
+        # The handshake
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                    "clientInfo": {"name": "probe", "version": "0.1"}}},
+        # The client is ready
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list",
+         "params": {}},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+         "params": {"name": "project.status", "arguments": {}}},
+    ]
+    input_text = "".join(json.dumps(message) + "\n" for message in messages)
+    result = run_debops("mcp", "serve", "--legacy",
+                        cwd=str(project_dir), env=mcp_env,
+                        input_text=input_text)
+
+    assert result.returncode == 0
+    responses = read_json_lines(result.stdout)
+    handshake, listing, call = responses
+    assert handshake["result"]["protocolVersion"] == "2025-11-25"
+    assert handshake["result"]["serverInfo"]["name"] == "debops"
+    assert "instructions" in handshake["result"]
+    assert "resultType" not in handshake["result"]
+    # The 2025 shape: no resultType, no caching metadata anywhere
+    assert "resultType" not in listing["result"]
+    assert "ttlMs" not in listing["result"]
+    assert any(tool["name"] == "project.status"
+               for tool in listing["result"]["tools"])
+    assert call["result"]["isError"] is False
+    assert "resultType" not in call["result"]
+
+
 def test_serve_stdio_reports_unknown_methods(run_debops, mcp_env,
                                              project_dir):
     request = (json.dumps({"jsonrpc": "2.0",

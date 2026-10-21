@@ -34,6 +34,10 @@ except ModuleNotFoundError:
 # The revision of the Model Context Protocol implemented by this server
 PROTOCOL_VERSION = '2026-07-28'
 
+# The stateful (2025-era) revisions the legacy mode answers
+LEGACY_PROTOCOL_VERSIONS = ('2025-11-25', '2025-06-18', '2025-03-26',
+                            '2024-11-05')
+
 PROTOCOL_VERSION_KEY = 'io.modelcontextprotocol/protocolVersion'
 CLIENT_CAPABILITIES_KEY = 'io.modelcontextprotocol/clientCapabilities'
 CLIENT_INFO_KEY = 'io.modelcontextprotocol/clientInfo'
@@ -313,7 +317,7 @@ class McpServer(object):
 
     def __init__(self, name='debops', version=None, project=None,
                  policy=None, skills=None, prompts=None, killswitch=None,
-                 transport=None):
+                 transport=None, legacy=False):
         self.name = name
         self.version = version or __version__
         # The project directory the server is confined to; tools resolve
@@ -324,6 +328,15 @@ class McpServer(object):
         # read it ('stdio' means the harness opened the project
         # directory, 'unix' means the project may live elsewhere)
         self.transport = transport
+        # The legacy mode: answer the 2025-era (stateful) revision of
+        # the protocol — the initialize handshake, no per-request
+        # '_meta' envelope, the old result shape. The era is pinned by
+        # the operator, so the handshake needs no negotiation state;
+        # requests stay self-contained
+        self.legacy = legacy
+        # Legacy clients which completed the handshake, by peer pid:
+        # their capabilities and identity from 'initialize'
+        self._legacy_clients = {}
         # The skill library served as resources; None when absent
         self.skills = skills
         # The prompt library; None when absent
@@ -348,6 +361,12 @@ class McpServer(object):
             'tasks/update': self._tasks_update,
             'tasks/cancel': self._tasks_cancel,
         }
+        if self.legacy:
+            # The 2025-era handshake and keepalive
+            self._methods['initialize'] = self._legacy_initialize
+            self._methods['ping'] = self._legacy_ping
+            self._methods['notifications/initialized'] = \
+                self._legacy_initialized
         # Open subscription streams: request id → filter and event queue
         self._subscriptions = {}
         self._subscriptions_lock = threading.Lock()
@@ -566,18 +585,22 @@ class McpServer(object):
             raise rpc.JsonRpcError(rpc.INVALID_REQUEST, 'Invalid Request',
                                    request_id=request_id)
 
-        if method == 'initialize' and not is_notification:
+        if method == 'initialize' and not is_notification \
+                and not self.legacy:
             # A legacy client has no fall-forward mechanism; name the
             # supported versions, since this error may be the only
             # diagnostic it can surface
             raise rpc.JsonRpcError(
                     rpc.METHOD_NOT_FOUND,
                     'Unsupported protocol version: this server speaks '
-                    + PROTOCOL_VERSION,
+                    + PROTOCOL_VERSION
+                    + ' (start it with --legacy for the 2025-era '
+                      'protocol)',
                     data={'supported': [PROTOCOL_VERSION]},
                     request_id=request_id)
 
-        # The request metadata rides in 'params._meta', per the spec
+        # The request metadata rides in 'params._meta', per the spec;
+        # a legacy client carries it only in the handshake
         params = message.get('params')
         if params is None:
             params = {}
@@ -585,8 +608,9 @@ class McpServer(object):
             raise rpc.JsonRpcError(rpc.INVALID_PARAMS, 'Invalid params',
                                    request_id=request_id)
 
-        # Notifications carry no '_meta' requirement; requests do
-        if not is_notification:
+        # Notifications carry no '_meta' requirement; requests do —
+        # except in the legacy mode, where the handshake carried them
+        if not is_notification and not self.legacy:
             self._check_request_meta(params, request_id)
 
         meta = params.get('_meta')
@@ -594,21 +618,26 @@ class McpServer(object):
                           if isinstance(meta, dict) else None)
         capabilities = (meta.get(CLIENT_CAPABILITIES_KEY)
                         if isinstance(meta, dict) else None)
+        client_info = (meta.get(CLIENT_INFO_KEY)
+                       if isinstance(meta, dict) else None)
+        if self.legacy and peer_pid is not None:
+            legacy_client = self._legacy_clients.get(peer_pid, {})
+            if capabilities is None:
+                capabilities = legacy_client.get('capabilities')
+            if client_info is None:
+                client_info = legacy_client.get('clientInfo')
         context = RequestContext(request_id, notify=notify,
                                  progress_token=progress_token,
                                  client_capabilities=capabilities,
-                                 client_info=(meta.get(CLIENT_INFO_KEY)
-                                              if isinstance(meta, dict)
-                                              else None),
+                                 client_info=client_info,
                                  peer_pid=peer_pid, dead=dead)
 
         if is_notification:
             logger.info('Notification: %s', method)
         else:
-            client = meta.get(CLIENT_INFO_KEY, {})
             logger.info('Request: %s (id=%s, client=%s %s)', method,
-                        request_id, client.get('name', '?'),
-                        client.get('version', ''))
+                        request_id, (client_info or {}).get('name', '?'),
+                        (client_info or {}).get('version', ''))
 
         handler = self._methods.get(method)
         if handler is None:
@@ -635,15 +664,58 @@ class McpServer(object):
             return None
         if result is None:
             result = {}
-        result.setdefault('resultType', 'complete')
-        # The handler's own '_meta' keys (a subscription id, ...) ride
-        # alongside the server's identity
-        meta = self._base_meta()
-        meta.update(result.get('_meta', {}))
-        result['_meta'] = meta
+        if self.legacy:
+            # The 2025-era result shape: no resultType, no caching
+            # metadata
+            result.pop('resultType', None)
+            result.pop('ttlMs', None)
+            result.pop('cacheScope', None)
+        else:
+            result.setdefault('resultType', 'complete')
+            # The handler's own '_meta' keys (a subscription id, ...)
+            # ride alongside the server's identity
+            meta = self._base_meta()
+            meta.update(result.get('_meta', {}))
+            result['_meta'] = meta
         return rpc.make_result(request_id, result)
 
     # -- protocol methods ---------------------------------------------------
+
+    def _legacy_initialize(self, params, context):
+        """Answer the 2025-era handshake.
+
+        The era is pinned by the operator ('serve --legacy'), so there
+        is no negotiation state: the answer is the same for every
+        client. The client's capabilities and identity are remembered
+        per calling process, since legacy requests carry no '_meta'
+        envelope.
+        """
+        requested = params.get('protocolVersion')
+        version = (requested if requested in LEGACY_PROTOCOL_VERSIONS
+                   else LEGACY_PROTOCOL_VERSIONS[0])
+        if context.peer_pid is not None:
+            self._legacy_clients[context.peer_pid] = {
+                    'capabilities': params.get('capabilities') or {},
+                    'clientInfo': params.get('clientInfo') or {}}
+        client = params.get('clientInfo') or {}
+        logger.notice('Legacy client initialized: %s %s (pid %s, '
+                      'protocol %s)', client.get('name', '?'),
+                      client.get('version', ''), context.peer_pid,
+                      version)
+        return {
+            'protocolVersion': version,
+            'capabilities': {'tools': {'listChanged': True}},
+            'serverInfo': {'name': self.name, 'version': self.version},
+            'instructions': self._instructions(),
+        }
+
+    def _legacy_ping(self, params, context):
+        """The keepalive of the 2025-era protocol."""
+        return {}
+
+    def _legacy_initialized(self, params, context):
+        """The client finished the handshake; nothing to do."""
+        return None
 
     def _check_request_meta(self, params, request_id):
         """Enforce the per-request protocol fields.
@@ -867,7 +939,11 @@ class McpServer(object):
                                          'by the user.'}],
                     'isError': True}
 
-        if not _supports_form_elicitation(context.client_capabilities):
+        if not _supports_form_elicitation(context.client_capabilities) \
+                or self.legacy:
+            # A legacy client's elicitation is the in-band kind
+            # (a server-initiated request mid-call), which this server
+            # does not drive; it is treated as unable to ask
             if self.policy.confirm_required:
                 logger.notice('Tool %s refused: the client cannot '
                               'elicit and the policy requires '

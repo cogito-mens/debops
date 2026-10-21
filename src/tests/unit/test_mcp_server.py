@@ -892,5 +892,115 @@ class ClacksOverheadTestCase(unittest.TestCase):
         self.assertNotIn('org.debops/view', response['result']['_meta'])
 
 
+class LegacyModeTestCase(unittest.TestCase):
+    """The 2025-era protocol revision, answered with --legacy."""
+
+    def _server(self):
+        server = McpServer(legacy=True)
+        server.register_tool(
+                'probe', 'A probe tool', {'type': 'object'},
+                lambda arguments: {'content': [{'type': 'text',
+                                                'text': 'ok'}],
+                                   'isError': False})
+        return server
+
+    def _initialize(self, server, version='2025-11-25', peer_pid=4321):
+        return server.handle({
+            'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
+            'params': {'protocolVersion': version,
+                       'capabilities': {},
+                       'clientInfo': {'name': 'pi', 'version': '1.3.0'}}},
+            peer_pid=peer_pid)
+
+    def test_initialize_handshake(self):
+        server = self._server()
+        response = self._initialize(server)
+        result = response['result']
+        self.assertEqual(result['protocolVersion'], '2025-11-25')
+        self.assertEqual(result['serverInfo']['name'], 'debops')
+        self.assertIn('capabilities', result)
+        self.assertIn('instructions', result)
+        # The legacy result shape: no resultType, no server stamp
+        self.assertNotIn('resultType', result)
+        self.assertNotIn('_meta', result)
+
+    def test_an_unknown_legacy_version_falls_to_the_newest(self):
+        server = self._server()
+        response = self._initialize(server, version='1999-01-01')
+        self.assertEqual(response['result']['protocolVersion'],
+                         '2025-11-25')
+
+    def test_requests_need_no_meta_envelope(self):
+        server = self._server()
+        self._initialize(server)
+        response = server.handle(
+                {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
+                 'params': {'name': 'probe', 'arguments': {}}},
+                peer_pid=4321)
+        result = response['result']
+        self.assertEqual(result['content'][0]['text'], 'ok')
+        self.assertNotIn('resultType', result)
+        self.assertNotIn('_meta', result)
+
+    def test_tools_list_carries_the_legacy_shape(self):
+        server = self._server()
+        self._initialize(server)
+        response = server.handle(
+                {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list',
+                 'params': {}}, peer_pid=4321)
+        result = response['result']
+        self.assertEqual([tool['name'] for tool in result['tools']],
+                         ['probe'])
+        self.assertNotIn('ttlMs', result)
+        self.assertNotIn('cacheScope', result)
+
+    def test_the_handshake_identity_reaches_the_audit_line(self):
+        server = self._server()
+        self._initialize(server)
+        with self.assertLogs('debops.mcp.server', level='NOTICE') as logs:
+            server.handle(
+                    {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
+                     'params': {'name': 'probe', 'arguments': {}}},
+                    peer_pid=4321)
+        (line,) = [line for line in logs.output if 'Tool probe(' in line]
+        self.assertIn('-> ok [pi 1.3.0]', line)
+
+    def test_ping(self):
+        server = self._server()
+        response = server.handle({'jsonrpc': '2.0', 'id': 5,
+                                  'method': 'ping', 'params': {}})
+        self.assertEqual(response['result'], {})
+
+    def test_non_legacy_mode_rejects_initialize_with_the_hint(self):
+        server = McpServer()
+        response = server.handle(make_request(
+                'initialize',
+                params={'protocolVersion': '2025-11-25'}))
+        self.assertEqual(response['error']['code'],
+                         rpc.METHOD_NOT_FOUND)
+        self.assertIn('--legacy', response['error']['message'])
+
+    def test_a_legacy_initialize_is_stateless_per_client(self):
+        # Two peers get independent handshakes; the audit identity
+        # does not leak across them
+        server = self._server()
+        self._initialize(server, peer_pid=4321)
+        self._initialize(server, peer_pid=9999)
+        response = server.handle(
+                {'jsonrpc': '2.0', 'id': 3, 'method': 'initialize',
+                 'params': {'protocolVersion': '2025-06-18',
+                            'capabilities': {},
+                            'clientInfo': {'name': 'codex'}}},
+                peer_pid=9999)
+        self.assertEqual(response['result']['protocolVersion'],
+                         '2025-06-18')
+        self.assertEqual(
+                server._legacy_clients[4321]['clientInfo']['name'],
+                'pi')
+        self.assertEqual(
+                server._legacy_clients[9999]['clientInfo']['name'],
+                'codex')
+
+
 if __name__ == '__main__':
     unittest.main()
