@@ -302,6 +302,43 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('unknown tool: playbook.run',
                       response['error']['data']['details'])
 
+    def test_an_unknown_tool_gets_a_close_match(self):
+        # A near-miss name gets the pointer instead of a retry loop
+        server = McpServer()
+        server.register_tool('playbook.list', 'List', {'type': 'object'},
+                             lambda arguments: {})
+        server.register_tool('playbook.info', 'Info', {'type': 'object'},
+                             lambda arguments: {})
+        response = server.handle(make_request(
+                'tools/call',
+                params={'name': 'playbook.lst', 'arguments': {}}))
+        self.assertEqual(response['error']['code'], rpc.INVALID_PARAMS)
+        details = response['error']['data']['details']
+        self.assertIn('unknown tool: playbook.lst', details)
+        self.assertIn("'playbook.list'", details)
+
+    def test_a_normalized_name_is_matched_through_the_underscore(self):
+        # Harnesses which show the model underscore-normalized names
+        # get near-misses like 'playbook_list' back
+        server = McpServer()
+        server.register_tool('playbook.list', 'List', {'type': 'object'},
+                             lambda arguments: {})
+        response = server.handle(make_request(
+                'tools/call',
+                params={'name': 'playbook_list', 'arguments': {}}))
+        self.assertIn("'playbook.list'",
+                      response['error']['data']['details'])
+
+    def test_an_unknown_tool_without_a_match_stays_plain(self):
+        server = McpServer()
+        server.register_tool('playbook.list', 'List', {'type': 'object'},
+                             lambda arguments: {})
+        response = server.handle(make_request(
+                'tools/call',
+                params={'name': 'zzz-no-such', 'arguments': {}}))
+        self.assertEqual(response['error']['data']['details'],
+                         'unknown tool: zzz-no-such')
+
     def test_tool_calls_are_audited(self):
         server = McpServer()
         server.register_tool(

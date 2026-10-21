@@ -11,6 +11,7 @@ can hand any message to handle_bytes() independently of any other.
 """
 
 import base64
+import difflib
 import json
 import logging
 import os
@@ -850,9 +851,24 @@ class McpServer(object):
                               name, canonical)
         if tool is None:
             logger.warning('Unknown tool requested: %s', name)
+            details = 'unknown tool: {}'.format(name)
+            # A near-miss name (a renamed tool, a harness-normalized
+            # form) gets the pointer instead of a retry loop; harnesses
+            # which keep the error from the model usually have their
+            # own suggestion, so this costs them nothing
+            closest = difflib.get_close_matches(
+                    name, sorted(self.tools), n=3, cutoff=0.6)
+            if not closest and '_' in name:
+                closest = difflib.get_close_matches(
+                        name.replace('_', '.'), sorted(self.tools),
+                        n=3, cutoff=0.6)
+            if closest:
+                details += ('; did you mean {}?'
+                            .format(', '.join(repr(item)
+                                              for item in closest)))
             raise rpc.JsonRpcError(
                     rpc.INVALID_PARAMS, 'Invalid params',
-                    data={'details': 'unknown tool: {}'.format(name)})
+                    data={'details': details})
         arguments = params.get('arguments')
         if arguments is None:
             arguments = {}
