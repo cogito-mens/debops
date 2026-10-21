@@ -881,8 +881,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
         ('file.write',
          'Write a file in the current infrastructure view, in allowed '
          'locations only ("resources/" and "playbooks/" by default; the '
-         'project.mcp.write_allow policy). One file per call; the '
-         'change is committed to git automatically. The change is '
+         'project.mcp.write_allow policy). One file per call, or a '
+         'batch with "files" (one commit either way). The change is '
+         'committed to git automatically. The change is '
          'complete when this call returns; a dependent call must wait '
          'for it (batched requests run concurrently).',
          {'type': 'object',
@@ -900,8 +901,23 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                   'executable bit; permission bits '
                                   'only. Omit to keep the mode of an '
                                   'existing file, or 0644 for a new '
-                                  'one'}},
-          'required': ['path', 'content']},
+                                  'one'},
+                         'files': {'type': 'array',
+                                   'items': {'type': 'object',
+                                             'properties': {
+                                                 'path': {'type':
+                                                          'string'},
+                                                 'content': {'type':
+                                                             'string'},
+                                                 'mode': {'type':
+                                                          'string'}},
+                                             'required': ['path',
+                                                          'content']},
+                                   'description': 'Write several files '
+                                   'in one call, one commit for the '
+                                   'batch (instead of "path"/'
+                                   '"content"); every entry is '
+                                   'validated before any write'}}},
          lambda arguments: tool_file_write(project, policy, arguments,
                                            server=server)),
         ('file.delete',

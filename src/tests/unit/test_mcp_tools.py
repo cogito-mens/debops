@@ -325,6 +325,48 @@ class ViewWriteTestCase(unittest.TestCase):
                          ['DebOps MCP: file.write '
                           'resources/scripts/hello.sh'])
 
+    def write_batch(self, entries):
+        from debops.mcp.tools.files import tool_file_write
+        return tool_file_write(self.project, self.policy,
+                               {'files': entries})
+
+    def test_batch_writes_and_commits_once(self):
+        # One call, one commit: a role written in several files lands
+        # as one record
+        response = self.write_batch([
+                {'path': 'resources/a.txt', 'content': 'a\n'},
+                {'path': 'playbooks/b.yml', 'content': '---\n[]\n'},
+        ])
+        text = self.result_text(response)
+        self.assertIn('Files written: 2', text)
+        self.assertEqual(self.written('resources/a.txt'), 'a\n')
+        self.assertEqual(self.written('playbooks/b.yml'), '---\n[]\n')
+        self.assertEqual(len(self.commits), 1)
+        self.assertIn('resources/a.txt', self.commits[0])
+        self.assertIn('playbooks/b.yml', self.commits[0])
+
+    def test_batch_validates_everything_before_writing(self):
+        # A denied entry voids the batch: nothing written, nothing
+        # committed
+        response = self.write_batch([
+                {'path': 'resources/a.txt', 'content': 'a\n'},
+                {'path': '../outside.txt', 'content': 'x\n'},
+        ])
+        self.assertTrue(response['isError'])
+        self.assertEqual(self.commits, [])
+        self.assertFalse(os.path.exists(
+                os.path.join(self.view_root, 'resources', 'a.txt')))
+
+    def test_batch_rejects_a_missing_content(self):
+        response = self.write_batch([{'path': 'resources/a.txt'}])
+        self.assertTrue(response['isError'])
+        self.assertIn('content', self.result_text(response))
+
+    def test_batch_needs_a_non_empty_list(self):
+        for bad in ({}, [], 'x'):
+            response = self.write_batch(bad)
+            self.assertTrue(response['isError'], repr(bad))
+
     def test_unchanged_content_commits_nothing(self):
         self.write('playbooks/deploy.yml')
         self.write('playbooks/deploy.yml')

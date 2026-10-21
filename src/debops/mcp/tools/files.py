@@ -351,6 +351,9 @@ def _parse_write_mode(arguments):
 
 
 def tool_file_write(project, policy, arguments, server=None):
+    files = arguments.get('files')
+    if files is not None:
+        return _write_batch(project, policy, files, server)
     # A leading slash anchors at the project root; keep it
     relative = str(arguments.get('path') or '').rstrip('/')
     content = arguments.get('content')
@@ -397,6 +400,117 @@ def tool_file_write(project, policy, arguments, server=None):
     return _write_committed(project, policy, path, view_relative,
                             content, mode, 'file.write ' + view_relative,
                             after=announce)
+
+
+def _validate_write_entry(project, policy, entry):
+    """Validate one write entry; ((path, display, content, mode), None)
+    or (None, error text)."""
+    if not isinstance(entry, dict):
+        return None, 'each entry needs "path" and "content"'
+    relative = str(entry.get('path') or '').rstrip('/')
+    content = entry.get('content')
+    if not isinstance(content, str):
+        return None, 'the "content" argument is required: ' + relative
+    size = len(content.encode('utf-8'))
+    if size > WRITE_SIZE_LIMIT:
+        return None, 'content is larger than {} bytes: {}'.format(
+                WRITE_SIZE_LIMIT, relative)
+    try:
+        mode = _parse_write_mode(entry)
+    except ValueError as errmsg:
+        return None, str(errmsg)
+    try:
+        path, view_relative = _authorized_write_path(project, policy,
+                                                     relative)
+    except ValueError as errmsg:
+        return None, str(errmsg)
+    if (view_relative.startswith('.debops/mcp/')
+            and not policy.project_content):
+        return None, ('project MCP content is disabled by the policy '
+                      '(project.mcp.project_content)')
+    invalid = _validate_mcp_content(view_relative, content)
+    if invalid is not None:
+        return None, invalid
+    if (mode is None and content.startswith('#!')
+            and view_relative.startswith('.debops/mcp/tools/')
+            and view_relative.count('/') == 3):
+        # A custom script tool is only discovered when it is executable
+        mode = 0o755
+    return (path, view_relative, content, mode), None
+
+
+def _write_file(path, display, content, mode):
+    """Write content to path atomically; ((outcome, size), None) or
+    (None, error text). The file mechanics without the commit."""
+    if os.path.lexists(path) and not os.path.isfile(path):
+        return None, 'not a regular file: ' + display
+    old_content = None
+    old_mode = None
+    if os.path.isfile(path):
+        with open(path, 'rb') as fp:
+            try:
+                old_content = fp.read().decode('utf-8')
+            except UnicodeDecodeError:
+                return None, 'not a UTF-8 text file: ' + display
+        old_mode = stat.S_IMODE(os.stat(path).st_mode)
+    size = len(content.encode('utf-8'))
+    if old_content == content:
+        if mode is None or mode == old_mode:
+            return ('unchanged', size), None
+        os.chmod(path, mode)
+        return ('mode changed', size), None
+    try:
+        _atomic_write(path, content, mode, old_mode)
+    except OSError as errmsg:
+        return None, 'cannot write {}: {}'.format(display, errmsg)
+    return (('overwritten' if old_content is not None else 'created'),
+            size), None
+
+
+def _write_batch(project, policy, files, server):
+    """Write a batch of files, one commit for the lot.
+
+    Every entry is validated before anything is written — a refused
+    entry voids the batch. A mid-batch write failure leaves the
+    written prefix uncommitted and says so.
+    """
+    if not isinstance(files, list) or not files:
+        return error_result('"files" must be a non-empty list of '
+                            '{path, content} entries')
+    refused = require_git_tracked(project)
+    if refused is not None:
+        return refused
+    validated = []
+    for entry in files:
+        prepared, problem = _validate_write_entry(project, policy, entry)
+        if problem is not None:
+            return error_result(problem)
+        validated.append(prepared)
+    paths = [entry[0] for entry in validated]
+    note = 'file.write ' + ', '.join(entry[1] for entry in validated)
+    with exclusive_project(project, policy, note=note, paths=paths):
+        outcomes = []
+        for index, (path, view_relative, content, mode) in enumerate(
+                validated):
+            outcome, problem = _write_file(path, view_relative, content,
+                                           mode)
+            if problem is not None:
+                return error_result('{} ({} file(s) already written '
+                                    'are left uncommitted)'.format(
+                                            problem, index))
+            outcomes.append('{}: {}'.format(outcome, view_relative))
+            _announce_mcp_content_change(server, view_relative)
+        commit_error = commit_or_report(
+                project, note,
+                '{} file(s) written'.format(len(paths)), paths=paths)
+        if commit_error is not None:
+            return commit_error
+    lines = ['# Files written: {}'.format(len(paths)), '']
+    lines.extend('- {}'.format(outcome) for outcome in outcomes)
+    written = [entry[1] for entry in validated]
+    return text_result('\n'.join(lines) + '\n',
+                       structured={'written': written,
+                                   'count': len(validated)})
 
 
 def _atomic_write(path, content, mode, old_mode):
