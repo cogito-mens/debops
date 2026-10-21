@@ -25,12 +25,14 @@ import collections
 import logging
 import os
 import re
+import time
 
 from datetime import datetime, timezone
 
 from .. import runs
 
-from .common import error_result, text_result
+from .common import (ProjectLockedError, error_result, project_flock,
+                     text_result)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_LINES = 200
 MAX_LINES = 1000
 MAX_LINE_LENGTH = 1000
+
+# The youngest age a purge accepts; the marker/flock rule decides
+# liveness, this damps the boundary races
+PURGE_FLOOR = 60  # seconds
 
 # The canned queries
 KINDS = ('changed', 'failed', 'unreachable', 'recap', 'warnings',
@@ -157,6 +163,90 @@ def _cap(lines, max_lines):
     return lines[:max_lines], cut
 
 
+def _project_busy(project, policy):
+    """Whether a writer — a run — holds the project lock right now.
+
+    A detached execution holds the flock until its finalize exits, so
+    a held lock is the definitive 'a run is alive' signal; a quiet
+    task writes nothing for minutes, so the file's age alone cannot
+    tell.
+    """
+    try:
+        with project_flock(project, policy, exclusive=True):
+            return False
+    except ProjectLockedError:
+        return True
+
+
+def tool_execution_purge(project, policy, arguments):
+    """Remove the run logs of ended executions older than a cutoff.
+
+    The cutoff is an age in seconds, floored at PURGE_FLOOR. A log
+    whose run never wrote its completion marker is kept while the
+    project lock is held — a live run may hold it open without
+    writing for a while.
+    """
+    try:
+        older_than = int(arguments.get('older_than'))
+    except (TypeError, ValueError):
+        return error_result("'older_than' is required (seconds)")
+    if older_than < 0:
+        return error_result("'older_than' must not be negative")
+    cutoff_age = max(older_than, PURGE_FLOOR)
+    cutoff = time.time() - cutoff_age
+    clamped = cutoff_age != older_than
+
+    busy = _project_busy(project, policy)
+    removed = []
+    skipped = 0
+    for execution_id, path in runs.list_logs(project):
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        if mtime >= cutoff:
+            skipped += 1
+            continue
+        if busy and _log_exit_code(path) is None:
+            # No completion marker while a writer holds the project:
+            # a live run may be holding it open, mid quiet task
+            skipped += 1
+            continue
+        try:
+            os.unlink(path)
+            removed.append(execution_id)
+        except OSError:
+            skipped += 1
+            continue
+        # The sidecar goes with its log
+        sidecar = os.path.splitext(path)[0] + '.json'
+        try:
+            os.unlink(sidecar)
+        except OSError:
+            pass
+
+    if not removed and skipped == 0:
+        return text_result('Nothing to purge: no run logs recorded for '
+                           'the active project view.',
+                           structured={'removed': [], 'skipped': 0,
+                                       'cutoffSeconds': cutoff_age})
+
+    lines = ['Purged {} execution log(s): {}'.format(
+            len(removed), ', '.join(str(execution_id)
+                                    for execution_id in removed)
+            or '(none)')]
+    if skipped:
+        lines.append('Kept {} (too young, or a run is in flight)'
+                     .format(skipped))
+    if clamped:
+        lines.append('Note: the cutoff is floored at {} seconds.'
+                     .format(PURGE_FLOOR))
+    return text_result('\n'.join(lines),
+                       structured={'removed': removed,
+                                   'skipped': skipped,
+                                   'cutoffSeconds': cutoff_age})
+
+
 def tool_execution_list(project, policy, arguments):
     entries = []
     for execution_id, path in runs.list_logs(project):
@@ -217,6 +307,17 @@ def tool_execution_list(project, policy, arguments):
         lines.append('  '.join(parts))
         if entry.get('lastLine'):
             lines.append('    ' + entry['lastLine'])
+    lines.append('')
+    age = policy.run_logs_max_age
+    if age % 86400 == 0:
+        human_age = '{} days'.format(age // 86400)
+    elif age % 3600 == 0:
+        human_age = '{} hours'.format(age // 3600)
+    else:
+        human_age = '{} seconds'.format(age)
+    lines.append('The cache prunes itself: the last {} runs per view, '
+                 'nothing older than {}; execution.purge removes logs '
+                 'on demand.'.format(policy.run_logs_keep, human_age))
     return text_result('\n'.join(lines), structured=entries)
 
 

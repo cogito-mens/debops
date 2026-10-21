@@ -565,6 +565,7 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
                              "environment.list",
                              "environment.set", "environment.unset",
                              "execution.list", "execution.output",
+                             "execution.purge",
                              "file.delete", "file.write",
                              "inventory.query",
                              "inventory.spec", "keyring.fetch",
@@ -2448,7 +2449,7 @@ def test_configure_agents_writes_the_guidance(run_debops, mcp_env,
     assert "Created: AGENTS.md" in result.stdout
     content = (project_dir / "AGENTS.md").read_text()
     assert "## MCP server" in content
-    assert "playbook.check" in content
+    assert "`check` before `run`" in content
 
     result = run_debops("mcp", "configure", "--agents",
                         cwd=str(project_dir), env=mcp_env)

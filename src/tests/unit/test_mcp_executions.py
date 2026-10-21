@@ -13,10 +13,12 @@ no playbook runs.
 from debops.mcp import runs
 from debops.mcp.policy import McpPolicy
 from debops.mcp.tools.executions import (tool_execution_list,
-                                         tool_execution_output)
+                                         tool_execution_output,
+                                         tool_execution_purge)
 import os
 import shutil
 import tempfile
+import time
 import unittest
 
 
@@ -122,6 +124,16 @@ class ExecutionsTestCase(unittest.TestCase):
         (entry,) = result['structuredContent']
         self.assertNotIn('exitCode', entry)
         self.assertIn('no outcome recorded', self.text(result))
+
+    def test_list_states_the_retention(self):
+        # Nothing on the surface should leave a model guessing whether
+        # the cache grows forever
+        self.write_log(1)
+        result = tool_execution_list(self.project, self.policy, {})
+        text = self.text(result)
+        self.assertIn('prunes itself', text)
+        self.assertIn('last 10 runs', text)
+        self.assertIn('execution.purge', text)
 
     # -- execution.output: addressing ------------------------------------
 
@@ -354,6 +366,103 @@ class ExecutionsTestCase(unittest.TestCase):
         self.assertEqual(check_schema(answer['structuredContent'],
                                       TOOL_OUTPUT_SCHEMAS[
                                           'execution.output']), [])
+
+
+class PurgeTestCase(unittest.TestCase):
+    """execution.purge: the run logs of ended executions, on demand."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-purge-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        os.environ['XDG_CACHE_HOME'] = os.path.join(self.tmpdir, 'cache')
+        self.project = FakeProject(os.path.join(self.tmpdir, 'project'))
+        self.policy = McpPolicy(self.project)
+
+    def write_log(self, execution_id, content=SAMPLE_LOG, age=None):
+        _id, path = runs.new_log(self.project)
+        self.assertEqual(_id, execution_id)
+        with open(path, 'w') as fp:
+            fp.write(content)
+        runs.write_metadata(path, {'executionId': execution_id})
+        if age is not None:
+            old = time.time() - age
+            os.utime(path, (old, old))
+            os.utime(os.path.splitext(path)[0] + '.json', (old, old))
+        return path
+
+    def purge(self, **arguments):
+        return tool_execution_purge(self.project, self.policy,
+                                    arguments)
+
+    def test_older_than_is_required(self):
+        self.assertTrue(self.purge()['isError'])
+        self.assertTrue(self.purge(older_than='x')['isError'])
+        self.assertTrue(self.purge(older_than=-1)['isError'])
+
+    def test_an_old_ended_log_and_its_sidecar_go(self):
+        path = self.write_log(1, age=3600)
+        result = self.purge(older_than=600)
+        self.assertFalse(result['isError'])
+        self.assertEqual(result['structuredContent']['removed'], [1])
+        self.assertFalse(os.path.exists(path))
+        self.assertFalse(os.path.exists(
+                os.path.splitext(path)[0] + '.json'))
+
+    def test_a_young_log_stays(self):
+        self.write_log(1)
+        result = self.purge(older_than=600)
+        self.assertEqual(result['structuredContent']['removed'], [])
+        self.assertEqual(result['structuredContent']['skipped'], 1)
+
+    def test_the_floor_clamps_the_cutoff(self):
+        self.write_log(1, age=90)
+        result = self.purge(older_than=0)
+        self.assertEqual(result['structuredContent']['cutoffSeconds'],
+                         60)
+        # Ninety seconds is past the floor: purged
+        self.assertEqual(result['structuredContent']['removed'], [1])
+        self.assertIn('floored', self.text(result))
+
+    def text(self, result):
+        return result['content'][0]['text']
+
+    def test_an_unmarked_log_goes_when_no_run_holds_the_lock(self):
+        self.write_log(1, content='PLAY [web] ***\n', age=3600)
+        result = self.purge(older_than=600)
+        self.assertEqual(result['structuredContent']['removed'], [1])
+
+    def test_an_unmarked_log_stays_while_the_project_is_locked(self):
+        # No completion marker and the flock is held: a live run may
+        # be holding the log open mid quiet task
+        from debops.mcp.tools.common import project_flock
+        self.write_log(1, content='PLAY [web] ***\n', age=3600)
+        with project_flock(self.project, self.policy, exclusive=True):
+            result = self.purge(older_than=600)
+        self.assertEqual(result['structuredContent']['removed'], [])
+        self.assertEqual(result['structuredContent']['skipped'], 1)
+
+    def test_a_marked_log_goes_even_while_the_project_is_locked(self):
+        # The completion marker is the definitive record that the run
+        # ended; whoever holds the lock now is a different job
+        from debops.mcp.tools.common import project_flock
+        self.write_log(1, age=3600)
+        with project_flock(self.project, self.policy, exclusive=True):
+            result = self.purge(older_than=600)
+        self.assertEqual(result['structuredContent']['removed'], [1])
+
+    def test_nothing_to_purge(self):
+        result = self.purge(older_than=600)
+        self.assertIn('Nothing to purge', self.text(result))
+        self.assertEqual(result['structuredContent']['removed'], [])
+
+    def test_structured_matches_the_schema(self):
+        from tests.unit._helpers import check_schema
+        from debops.mcp.tools import TOOL_OUTPUT_SCHEMAS
+        self.write_log(1, age=3600)
+        result = self.purge(older_than=600)
+        self.assertEqual(check_schema(result['structuredContent'],
+                                      TOOL_OUTPUT_SCHEMAS[
+                                          'execution.purge']), [])
 
 
 if __name__ == '__main__':

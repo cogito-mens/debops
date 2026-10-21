@@ -23,7 +23,8 @@ from .custom import discover_custom_tools, make_custom_tool
 from .environment import (tool_environment_list, tool_environment_set,
                           tool_environment_unset)
 from .execute import tool_check, tool_run
-from .executions import tool_execution_list, tool_execution_output
+from .executions import (tool_execution_list, tool_execution_output,
+                         tool_execution_purge)
 from .files import (tool_config_get, tool_inventory_query,
                     tool_inventory_spec, tool_project_files,
                     tool_project_read, tool_file_delete, tool_file_write)
@@ -277,6 +278,11 @@ TOOL_OUTPUT_SCHEMAS = {
         'lines': {'type': 'array', 'items': {'type': 'string'}}},
         'required': ['executionId', 'query', 'matched', 'returned',
                      'truncated', 'lines']},
+    'execution.purge': {'type': 'object', 'properties': {
+        'removed': {'type': 'array', 'items': {'type': 'integer'}},
+        'skipped': {'type': 'integer'},
+        'cutoffSeconds': {'type': 'integer'}},
+        'required': ['removed', 'skipped', 'cutoffSeconds']},
 }
 
 
@@ -312,6 +318,9 @@ TOOL_ANNOTATIONS = {
     # The run logs are read from the cache; the project is untouched
     'execution.list': _READ_ONLY,
     'execution.output': _READ_ONLY,
+    # Deleting cache logs is recoverable by re-running
+    'execution.purge': {'destructiveHint': True, 'idempotentHint': True,
+                        'openWorldHint': False},
     # Plugin documentation is a local read
     'ansible.doc': _READ_ONLY,
     # Secrets are mounted and unmounted; the project may be committed
@@ -708,7 +717,7 @@ def _apply_aliases(server):
 VIEW_BOUND_TOOLS = frozenset((
     'file.write', 'file.delete', 'inventory.query', 'inventory.spec',
     'secret.paths', 'check', 'run', 'ansible.ping', 'ansible.facts',
-    'execution.list', 'execution.output',
+    'execution.list', 'execution.output', 'execution.purge',
 ))
 
 
@@ -1093,7 +1102,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
          'size, timestamps, and the last log line (the completion '
          'marker on a finished run, the current output on a live '
          'one). Use an id with the execution.output tool to inspect '
-         'that run without re-executing anything.',
+         'that run without re-executing anything. The cache prunes '
+         'itself (project.mcp.run_logs_keep / run_logs_max_age); '
+         'execution.purge removes logs on demand.',
          {'type': 'object', 'properties': {},
           'additionalProperties': False},
          lambda arguments: tool_execution_list(project, policy,
@@ -1133,7 +1144,24 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                            '(default 200, at most 1000)'}},
           'additionalProperties': False},
          lambda arguments: tool_execution_output(project, policy,
-                                                 arguments))])
+                                                 arguments)),
+        ('execution.purge',
+         'Remove the run logs of ended executions of the active '
+         'project view, older than "older_than" seconds (a one-minute '
+         'floor applies). A log without a completion marker is kept '
+         'while the project lock is held: a run in flight may hold it '
+         'open without writing for a while. Debug and diff runs can '
+         'carry secrets in their logs — purge them when done. The '
+         'audit log is not part of the cache and stays.',
+         {'type': 'object', 'properties': {
+             'older_than': {'type': 'integer',
+                            'description': 'Remove logs last modified '
+                            'more than this many seconds ago (floored '
+                            'at 60)'}},
+          'required': ['older_than'],
+          'additionalProperties': False},
+         lambda arguments: tool_execution_purge(project, policy,
+                                                arguments))])
 
     # Host queries change nothing, so they are registered wherever
     # execution is allowed at all

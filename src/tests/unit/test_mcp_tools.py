@@ -1278,6 +1278,7 @@ class ToolsTestCase(unittest.TestCase):
                           'environment.list',
                           'environment.set', 'environment.unset',
                           'execution.list', 'execution.output',
+                          'execution.purge',
                           'file.delete', 'file.write',
                           'inventory.query',
                           'inventory.spec', 'keyring.fetch',
