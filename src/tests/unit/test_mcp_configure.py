@@ -49,6 +49,9 @@ class ConfigureTestCase(unittest.TestCase):
         # The modern protocol revision is pinned: the harness' default
         # is the legacy handshake, which the server does not speak
         self.assertEqual(entry['protocol'], '2026-07-28')
+        # Direct tool calls, not the Code Mode wrapper — the
+        # confirmation elicitations need them
+        self.assertEqual(entry['codemode'], False)
         self.assertIn('.opencode/opencode.json', lines[0])
 
     def test_merge_preserves_the_existing_content(self):

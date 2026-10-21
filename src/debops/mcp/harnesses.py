@@ -33,7 +33,10 @@ def _serve_entry():
 
 def _opencode_entry():
     return {'type': 'local', 'command': _serve_entry(),
-            'protocol': '2026-07-28'}
+            'protocol': '2026-07-28',
+            # Direct tool calls, not the Code Mode wrapper: the
+            # confirmation elicitations and the per-tool UX need them
+            'codemode': False}
 
 
 def _claude_entry():
