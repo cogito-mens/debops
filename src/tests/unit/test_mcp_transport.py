@@ -58,8 +58,11 @@ class TransportLifecycleTestCase(unittest.TestCase):
                         'on_stop': lambda: events.append('stop')},
                 daemon=True)
         thread.start()
+        # Wait for the readiness itself: the socket file appears at
+        # bind(2) time, which precedes the callback, and under load the
+        # thread may not get there before the next poll tick
         for _ in range(500):
-            if os.path.exists(path):
+            if events:
                 break
             time.sleep(0.01)
         self.assertEqual(events, ['ready'])
