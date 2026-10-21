@@ -971,6 +971,66 @@ def test_an_orphaned_run_keeps_the_project_locked(
         server_a.wait(timeout=10)
 
 
+def test_execution_log_holds_exactly_one_execution(
+        run_debops, mcp_env, project_dir, debops_source_dir):
+    """A playbook list runs each playbook as its own invocation; the
+    log aggregates their output once each — never duplicated, never
+    re-used by a later run."""
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+    disable_confirm_gate(project_dir)
+
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+    playbooks = project_dir / "ansible" / "playbooks"
+    playbooks.mkdir(parents=True)
+    for name in ("first", "second"):
+        (playbooks / (name + ".yml")).write_text("""---
+- name: Playbook {0}
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Task of {0}
+      ansible.builtin.debug:
+        msg: "hello from {0}"
+""".format(name))
+
+    server = _LiveServer(project_dir, mcp_env, debops_source_dir)
+    try:
+        result = server.call("check", {"playbook": ["first", "second"]})
+        assert result["result"]["isError"] is False
+        log = result["result"]["structuredContent"]["log"]
+        with open(log) as fp:
+            content = fp.read()
+        lines = content.splitlines()
+
+        def count(prefix):
+            return sum(1 for line in lines if line.startswith(prefix))
+
+        # Two invocations, one recap each, one completion marker
+        assert count("PLAY RECAP ") == 2
+        assert count("PLAY [") == 2
+        assert count("TASK [") == 2
+        assert count("debops-mcp: the execution finished") == 1
+        # No section appears twice
+        assert content.count("hello from first") == 1
+        assert content.count("hello from second") == 1
+
+        # The canned recap query returns both invocation blocks
+        answer = server.call("execution.output",
+                             {"id": 1, "kind": "recap"})
+        recaps = [line for line in
+                  answer["result"]["structuredContent"]["lines"]
+                  if line.startswith("PLAY RECAP ")]
+        assert len(recaps) == 2
+    finally:
+        server.stop()
+
+
 def test_execution_output_answers_what_changed(run_debops, mcp_env,
                                                project_dir,
                                                debops_source_dir):
