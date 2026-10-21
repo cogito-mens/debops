@@ -1190,6 +1190,55 @@ class DetachedExecutionTestCase(unittest.TestCase):
         self.assertEqual(second['structuredContent']['executionId'], 2)
         self.assertEqual(len(self.run_logs()), 2)
 
+    def test_the_answer_anchors_at_the_final_recap(self):
+        # A hundred hosts make a hundred recap lines; the answer keeps
+        # the complete table, and the failure context before it, by
+        # eliding the middle instead of cutting the end
+        lines = ['PLAY [all] ' + '*' * 60, 'TASK [work] ' + '*' * 60]
+        lines.extend('ok: [host{}]'.format(index) for index in range(200))
+        lines.append('')
+        lines.append('PLAY RECAP ' + '*' * 65)
+        lines.extend('host{0} : ok=1 changed=0 unreachable=0 failed=0 '
+                     'skipped=0 rescued=0 ignored=0'.format(index)
+                     for index in range(100))
+        result, _p = self.call_detached(output='\n'.join(lines) + '\n')
+        self.assertFalse(result['isError'])
+        text = result['content'][0]['text']
+        # The complete recap is in the answer
+        self.assertIn('host0 : ok=1', text)
+        self.assertIn('host99 : ok=1', text)
+        # The middle was elided, with the pointer at the query tool
+        self.assertIn('103 lines elided', text)
+        self.assertIn('execution.output id=1', text)
+        self.assertNotIn('ok: [host50]', text)
+
+    def test_the_answer_keeps_a_short_run_whole(self):
+        result, _p = self.call_detached(output=PROGRESS_OUTPUT)
+        self.assertFalse(result['isError'])
+        text = result['content'][0]['text']
+        self.assertNotIn('lines elided', text)
+        self.assertIn('ok: [localhost]', text)
+        self.assertIn('PLAY RECAP', text)
+
+    def test_the_answer_windows_a_crash_without_a_recap(self):
+        # A run which never reached a recap: the plain tail, elided
+        # from the top
+        output = ''.join('line {}\n'.format(index) for index in range(500))
+        result, _p = self.call_detached(output=output, returncode=1)
+        text = result['content'][0]['text']
+        self.assertIn('400 lines elided', text)
+        self.assertIn('line 499', text)
+        self.assertNotIn('line 200\n', text)
+
+    def test_a_failure_carries_its_neighborhood_without_debug(self):
+        result, _p = self.call_detached(output=FAILING_OUTPUT,
+                                        returncode=2)
+        self.assertTrue(result['isError'])
+        text = result['content'][0]['text']
+        self.assertIn('## First failure', text)
+        self.assertIn('TASK [Install the package]', text)
+        self.assertIn('apache3', text)
+
 
 if __name__ == '__main__':
     unittest.main()

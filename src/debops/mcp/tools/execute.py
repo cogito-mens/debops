@@ -143,10 +143,10 @@ _RECAP_LINE = re.compile(
 
 
 def _failure_excerpt(output):
-    """The first failure with its task header, for a debug answer.
+    """The first failure with its task header, for a failed answer.
 
-    The full -vv output stays in the text; this is the 'start here'
-    section of a failed debug run.
+    The full output stays in the text (or in the run log); this is the
+    'start here' section of a failed run.
     """
     fatal = re.search(r'^fatal: \[', output, re.M)
     if fatal is None:
@@ -163,6 +163,64 @@ def _failure_excerpt(output):
     block = output[fatal.start():].split('\n\n', 1)[0]
     lines.extend(block.splitlines()[:30])
     return '\n'.join(lines)
+
+
+# The answer shows the end of the run: this many lines of context
+# before the final recap, and the recap complete — however many hosts
+# it lists — unless it is absurd
+ANSWER_CONTEXT_LINES = 100
+ANSWER_RECAP_LINES = 2000
+
+# The recap section header: 'PLAY RECAP *****...'
+_RECAP_HEADER = re.compile(r'^PLAY RECAP \*+\s*$')
+
+
+def _answer_output(output, execution_id):
+    """The answer's view of the run output.
+
+    A blind byte tail loses one of the two things the answer is for:
+    the failure context (above the recap) or the per-host recap itself
+    (with a hundred hosts the table alone is a hundred lines). So the
+    answer is structural: the last stretch of the play, then the
+    complete final recap; the middle is elided with a pointer at the
+    query tool.
+    """
+    lines = output.splitlines()
+    recap_start = None
+    for index in range(len(lines) - 1, -1, -1):
+        if _RECAP_HEADER.match(lines[index]):
+            recap_start = index
+            break
+    if recap_start is None:
+        # A run which never reached a recap (a crash, a parse error):
+        # the plain tail, with the same elision marker
+        if len(lines) <= ANSWER_CONTEXT_LINES:
+            return output
+        return ('… ({} lines elided; inspect: execution.output id={})\n'
+                .format(len(lines) - ANSWER_CONTEXT_LINES, execution_id)
+                + '\n'.join(lines[-ANSWER_CONTEXT_LINES:]) + '\n')
+    context = lines[:recap_start]
+    recap = lines[recap_start:]
+    out = []
+    if len(context) > ANSWER_CONTEXT_LINES:
+        out.append('… ({} lines elided; inspect: execution.output '
+                   'id={})'.format(len(context) - ANSWER_CONTEXT_LINES,
+                                   execution_id))
+        out.extend(context[-ANSWER_CONTEXT_LINES:])
+    else:
+        out.extend(context)
+    if len(recap) > ANSWER_RECAP_LINES:
+        # Thousands of hosts: the table is cut, the query tool has it
+        half = ANSWER_RECAP_LINES // 2
+        out.extend(recap[:half])
+        out.append('… ({} more recap lines; inspect: execution.output '
+                   'id={} kind=recap)'
+                   .format(len(recap) - ANSWER_RECAP_LINES,
+                           execution_id))
+        out.extend(recap[-half:])
+    else:
+        out.extend(recap)
+    return '\n'.join(out) + ('\n' if out else '')
 
 
 def _parse_recap(output):
@@ -783,15 +841,20 @@ def _execute_playbook(project, policy, arguments, context, check,
         # The log outlives the server; it is where the run is read
         header += 'log: {}\n'.format(log_path)
     header += '\n'
+    notes = []
     if debug:
-        notes = ['debug mode (-vv, ANSIBLE_DEBUG, the remote module '
-                 'scripts were kept on the hosts)']
-        if returncode != 0:
-            excerpt = _failure_excerpt(output)
-            if excerpt is not None:
-                notes.append('## First failure\n\n' + excerpt)
+        notes.append('debug mode (-vv, ANSIBLE_DEBUG, the remote module '
+                     'scripts were kept on the hosts)')
+    if returncode != 0:
+        # The first failure with its neighborhood, no debug flag
+        # needed; the full output is in the run log
+        excerpt = _failure_excerpt(output)
+        if excerpt is not None:
+            notes.append('## First failure\n\n' + excerpt)
+    if notes:
         header += '\n\n'.join(notes) + '\n\n'
-    # The machine-readable summary; the full output stays in the text.
+    # The machine-readable summary; the full output stays in the run
+    # log, the text carries the end of the run (see _answer_output).
     # The recap answers the maintainer's question — 'exit code 0' means
     # no failures, only the recap says whether anything changed
     summary = {'mode': mode, 'playbooks': targets,
@@ -802,19 +865,20 @@ def _execute_playbook(project, policy, arguments, context, check,
     recap = _parse_recap(output)
     if recap:
         summary['recap'] = recap
+    body = _answer_output(output, execution_id)
     if status == 'disabled':
         return error_result(header + 'terminated: the MCP functionality '
                             'was disabled mid-run (the kill switch)\n\n'
-                            + output, structured=summary)
+                            + body, structured=summary)
     if status == 'cancelled':
         raise RequestCancelled()
     if status == 'timeout':
         return error_result(header + 'timed out after {} seconds\n\n{}'
-                            .format(policy.execute_timeout, output),
+                            .format(policy.execute_timeout, body),
                             structured=summary)
     if returncode != 0:
-        return error_result(header + output, structured=summary)
-    return text_result(header + output, structured=summary)
+        return error_result(header + body, structured=summary)
+    return text_result(header + body, structured=summary)
 
 
 def tool_check(project, policy, arguments, context, enabled_check=None,
