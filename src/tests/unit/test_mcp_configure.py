@@ -158,6 +158,32 @@ class ConfigureTestCase(unittest.TestCase):
         _status, lines = configure_harness(self.tmpdir, 'codex')
         self.assertTrue(any('trusted' in line for line in lines), lines)
 
+    def test_pi_fresh_write(self):
+        configure_harness(self.tmpdir, 'pi')
+        config = self.read_json(os.path.join('.pi', 'mcp.json'))
+        entry = config['mcpServers']['debops']
+        self.assertEqual(entry['command'], 'debops')
+        # Pi speaks the 2025-era revision of the protocol
+        self.assertEqual(entry['args'], ['mcp', 'serve', '--legacy'])
+        # Direct tool calls, not the codemode wrapper
+        self.assertEqual(entry['exposure'], 'direct')
+        self.assertIn('description', entry)
+
+    def test_pi_merge_preserves_the_existing_content(self):
+        self.write(os.path.join('.pi', 'mcp.json'),
+                   json.dumps({'mcpServers': {'other': {
+                           'command': 'other-mcp'}}}))
+        configure_harness(self.tmpdir, 'pi')
+        config = self.read_json(os.path.join('.pi', 'mcp.json'))
+        self.assertEqual(config['mcpServers']['other']['command'],
+                         'other-mcp')
+        self.assertIn('debops', config['mcpServers'])
+
+    def test_pi_carries_the_trust_and_elicitation_notes(self):
+        _status, lines = configure_harness(self.tmpdir, 'pi')
+        self.assertTrue(any('trusted' in line for line in lines), lines)
+        self.assertTrue(any('confirm' in line for line in lines), lines)
+
     def test_print_only_needs_no_project(self):
         # Printing asks for no directory at all
         status, lines = configure_harness(None, 'opencode',

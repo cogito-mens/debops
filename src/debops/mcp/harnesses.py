@@ -18,6 +18,8 @@ documented default which negotiates it):
 - Claude Code: '.mcp.json' (the portable file, also read by VS Code's
   Copilot harness); asks stdio servers for the revision by default
 - Codex: '.codex/config.toml' (TOML; the project must be trusted)
+- Pi: '.pi/mcp.json' (the project must be trusted); speaks the 2025-era
+  protocol, so its entry serves with '--legacy'
 """
 
 import json
@@ -45,6 +47,18 @@ def _claude_entry():
 
 def _codex_entry():
     return {'command': 'debops', 'args': ['mcp', 'serve']}
+
+
+def _pi_entry():
+    return {'command': 'debops',
+            # Pi speaks the 2025-era revision of the protocol; the
+            # server answers it in its legacy mode
+            'args': ['mcp', 'serve', '--legacy'],
+            # Direct tool calls, not the codemode wrapper: the
+            # confirmation elicitations and the per-tool UX need them
+            'exposure': 'direct',
+            'description': 'Manage the DebOps project (inventory, '
+                           'playbooks, executions)'}
 
 
 class Harness(object):
@@ -84,6 +98,15 @@ HARNESSES = {
             note_project='Codex reads project configuration only in '
                          'trusted projects',
             user_filename='~/.codex/config.toml'),
+    'pi': Harness(
+            'pi', os.path.join('.pi', 'mcp.json'),
+            'json', ('mcpServers', 'debops'), _pi_entry,
+            note="Pi cannot answer confirmation elicitations; "
+                 "confirm-gated tools refuse while "
+                 "'project.mcp.confirm_required' is on",
+            note_project='Pi reads project configuration only in '
+                         'trusted projects',
+            user_filename='~/.pi/agent/mcp.json'),
 }
 
 
