@@ -73,6 +73,9 @@ def _execution_label(execution_id, context):
     parts = ['execution {}'.format(execution_id)]
     if context.request_id is not None:
         parts.append('request {}'.format(context.request_id))
+    client_name = context.client_info.get('name')
+    if client_name:
+        parts.append('client {}'.format(client_name))
     if context.peer_pid is not None:
         parts.append('client pid {}'.format(context.peer_pid))
     return ', '.join(parts)

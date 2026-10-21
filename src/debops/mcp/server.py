@@ -150,24 +150,37 @@ class RequestContext(object):
 
     Carries the request id and the transport-level notification channel
     (for server-initiated messages such as progress notifications), plus
-    the client's progress token, capabilities and process id from the
-    request '_meta' and the transport.
+    the client's progress token, capabilities, identity and process id
+    from the request '_meta' and the transport.
     """
 
     def __init__(self, request_id, notify=None, progress_token=None,
-                 client_capabilities=None, peer_pid=None, dead=None):
+                 client_capabilities=None, client_info=None,
+                 peer_pid=None, dead=None):
         self.request_id = request_id
         self.notify = notify
         self.progress_token = progress_token
         self.client_capabilities = (client_capabilities
                                     if isinstance(client_capabilities, dict)
                                     else {})
+        self.client_info = (client_info if isinstance(client_info, dict)
+                            else {})
         self.peer_pid = peer_pid
         self._dead = dead
 
     def is_dead(self):
         """Whether the transport channel is gone (EOF, teardown)."""
         return self._dead is not None and self._dead.is_set()
+
+
+def _client_tag(client_info):
+    """The client identity for an audit line, when it identified
+    itself — e.g. ' [opencode 2.1.2]'."""
+    name = client_info.get('name')
+    if not name:
+        return ''
+    version = client_info.get('version') or ''
+    return ' [{}]'.format(' '.join([name, version]).strip())
 
 
 # How often the project configuration files are checked for changes
@@ -210,12 +223,13 @@ class ToolContext(object):
     poll it and stop. 'progress()' sends a progress notification when
     the client asked for one with a 'progressToken' in the request
     '_meta'. 'peer_pid' identifies the client process on this host,
-    for the audit log.
+    'client_info' its self-reported name and version — both for the
+    audit log.
     """
 
     def __init__(self, request_id, cancelled, progress_token=None,
                  notify=None, peer_pid=None, client_capabilities=None,
-                 input_responses=None, task=None):
+                 client_info=None, input_responses=None, task=None):
         self.request_id = request_id
         self.cancelled = cancelled
         self.progress_token = progress_token
@@ -223,6 +237,8 @@ class ToolContext(object):
         self.client_capabilities = (client_capabilities
                                     if isinstance(client_capabilities, dict)
                                     else {})
+        self.client_info = (client_info if isinstance(client_info, dict)
+                            else {})
         self.input_responses = (input_responses
                                 if isinstance(input_responses, dict)
                                 else None)
@@ -581,6 +597,9 @@ class McpServer(object):
         context = RequestContext(request_id, notify=notify,
                                  progress_token=progress_token,
                                  client_capabilities=capabilities,
+                                 client_info=(meta.get(CLIENT_INFO_KEY)
+                                              if isinstance(meta, dict)
+                                              else None),
                                  peer_pid=peer_pid, dead=dead)
 
         if is_notification:
@@ -774,19 +793,22 @@ class McpServer(object):
                      name, sorted(arguments))
         gated = self._confirmation_gate(tool, arguments, params, context)
         if gated is not None:
-            logger.notice('Tool %s(%s) -> gated', name,
-                          ','.join(sorted(arguments)))
+            logger.notice('Tool %s(%s) -> gated%s', name,
+                          ','.join(sorted(arguments)),
+                          _client_tag(context.client_info))
             return gated
         if (tool.task_eligible
                 and self._client_supports(context, TASKS_EXTENSION)):
-            logger.notice('Tool %s(%s) -> task', name,
-                          ','.join(sorted(arguments)))
+            logger.notice('Tool %s(%s) -> task%s', name,
+                          ','.join(sorted(arguments)),
+                          _client_tag(context.client_info))
             return self._start_task(tool, arguments, params, context)
         if not tool.needs_context:
             result = tool.handler(arguments)
-            logger.notice('Tool %s(%s) -> %s', name,
+            logger.notice('Tool %s(%s) -> %s%s', name,
                           ','.join(sorted(arguments)),
-                          'error' if result.get('isError') else 'ok')
+                          'error' if result.get('isError') else 'ok',
+                          _client_tag(context.client_info))
             return result
 
         request_id = context.request_id
@@ -801,11 +823,13 @@ class McpServer(object):
                     notify=context.notify,
                     peer_pid=context.peer_pid,
                     client_capabilities=context.client_capabilities,
+                    client_info=context.client_info,
                     input_responses=params.get('inputResponses'))
             result = tool.handler(arguments, tool_context)
-            logger.notice('Tool %s(%s) -> %s', name,
+            logger.notice('Tool %s(%s) -> %s%s', name,
                           ','.join(sorted(arguments)),
-                          'error' if result.get('isError') else 'ok')
+                          'error' if result.get('isError') else 'ok',
+                          _client_tag(context.client_info))
             return result
         finally:
             if request_id is not None:
@@ -1052,6 +1076,7 @@ class McpServer(object):
                     progress_token=None, notify=context.notify,
                     peer_pid=context.peer_pid,
                     client_capabilities=context.client_capabilities,
+                    client_info=context.client_info,
                     input_responses=params.get('inputResponses'),
                     task=task)
             if tool.needs_context:

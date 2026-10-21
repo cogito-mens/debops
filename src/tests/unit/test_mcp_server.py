@@ -334,6 +334,36 @@ class ToolsTestCase(unittest.TestCase):
         (line,) = [line for line in logs.output if 'Tool broken(' in line]
         self.assertIn('-> error', line)
 
+    def test_the_audit_line_names_the_client(self):
+        # The durable record of who called: the client identifies
+        # itself in the request '_meta' envelope
+        server = McpServer()
+        server.register_tool(
+                'probe', 'Probe', {'type': 'object'},
+                lambda arguments: {'content': [{'type': 'text',
+                                                'text': 'ok'}],
+                                   'isError': False})
+        meta = {
+            'io.modelcontextprotocol/protocolVersion': PROTOCOL_VERSION,
+            'io.modelcontextprotocol/clientCapabilities': {},
+            'io.modelcontextprotocol/clientInfo': {
+                'name': 'testharness', 'version': '1.2.3'},
+        }
+        with self.assertLogs('debops.mcp.server', level='NOTICE') as logs:
+            server.handle(make_request(
+                    'tools/call',
+                    params={'name': 'probe', 'arguments': {}},
+                    meta=meta))
+        (line,) = [line for line in logs.output if 'Tool probe(' in line]
+        self.assertIn('-> ok [testharness 1.2.3]', line)
+        # No identity, no tag
+        with self.assertLogs('debops.mcp.server', level='NOTICE') as logs:
+            server.handle(make_request(
+                    'tools/call',
+                    params={'name': 'probe', 'arguments': {}}))
+        (line,) = [line for line in logs.output if 'Tool probe(' in line]
+        self.assertNotIn('[', line)
+
     def test_registered_tool_listed_and_called(self):
         server = McpServer()
 
