@@ -637,6 +637,44 @@ def test_commit_with_paths_is_a_noop_when_they_are_clean(tmp_path):
     assert log.stdout.strip() == "init"
 
 
+def test_push_allows_an_unclean_tree(tmp_path):
+    # Only the committed history travels; a pending change must not
+    # block the push
+    env = _git_env()
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)],
+                   env=env, check=True)
+    work = tmp_path / "project"
+    work.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=str(work), env=env,
+                   check=True)
+    (work / "base.txt").write_text("base\n")
+    subprocess.run(["git", "add", "base.txt"], cwd=str(work), env=env,
+                   check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=str(work),
+                   env=env, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(origin)],
+                   cwd=str(work), env=env, check=True)
+    subprocess.run(["git", "push", "-qu", "origin", "HEAD"],
+                   cwd=str(work), env=env, check=True)
+    project = make_project_at(
+            work, raw={"binaries": {"git": "git"}, "views": {}})
+    (work / "new.txt").write_text("committed\n")
+    subprocess.run(["git", "add", "new.txt"], cwd=str(work), env=env,
+                   check=True)
+    subprocess.run(["git", "commit", "-qm", "new"], cwd=str(work),
+                   env=env, check=True)
+    # The operator's pending edit
+    (work / "pending.txt").write_text("pending\n")
+
+    result = project.push()
+
+    assert result["pushed"] is True
+    assert result["commits"] == ["new"]
+    # The pending edit never left the working tree
+    assert (work / "pending.txt").read_text() == "pending\n"
+
+
 @pytest.mark.skipif(platform.system() != "Linux",
                     reason="helper processes are listed via ps")
 def test_commit_closes_git_helper_processes(tmp_path):

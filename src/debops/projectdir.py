@@ -1759,15 +1759,17 @@ class ProjectDir(object):
 
         run_hooks(self.path, 'post-commit')
 
-    def _sync_precheck(self, repo):
+    def _sync_precheck(self, repo, require_clean=True):
         """Shared guards for pull() and push().
 
-        Returns the current branch. The project must be a clean git
-        working tree with an 'origin' remote and an upstream for the
-        current branch; anything else is a ValueError for the caller to
-        show.
+        Returns the current branch. The project must have an 'origin'
+        remote and an upstream for the current branch; a pull also
+        requires a clean working tree (a merge over dirty files is a
+        hazard), while a push reads only the committed history, so the
+        working tree may be dirty. Anything else is a ValueError for
+        the caller to show.
         """
-        if repo.is_dirty(untracked_files=True):
+        if require_clean and repo.is_dirty(untracked_files=True):
             raise ValueError('the project directory has uncommitted '
                              'changes; commit or stash them first')
         try:
@@ -1836,15 +1838,16 @@ class ProjectDir(object):
     def push(self):
         """Push the project's committed state to the configured origin.
 
-        Only already-committed history is sent; the working tree must be
-        clean. Returns a dict describing what was pushed.
+        Only already-committed history is sent; the working tree may be
+        dirty (pending changes are not pushed). Returns a dict
+        describing what was pushed.
         """
         if not self._is_git_repo(self.path):
             raise ValueError('the project directory is not a git '
                              'repository')
         git_cmd = self.config.raw['binaries']['git']
         with self._closing_repo() as repo:
-            branch = self._sync_precheck(repo)
+            branch = self._sync_precheck(repo, require_clean=False)
             upstream = branch.tracking_branch().name
             ahead = repo.git.log('--format=%s', '{}..{}'.format(
                     upstream, branch.name))
