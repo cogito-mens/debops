@@ -170,7 +170,7 @@ Prefer them over reading the project files directly: they enforce the
 confinement policy (secrets and key material are never served) and
 commit writes to git automatically. Browse with `project.files` and
 `project.read`, inspect roles and playbooks with the `role.*` and
-`playbook.*` tools, and run `playbook.check` before `playbook.run`.
+`playbook.*` tools, and run `check` before `run`.
 ''' + AGENTS_END
 
 

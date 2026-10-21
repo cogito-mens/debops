@@ -789,7 +789,7 @@ class McpServer(object):
                 'the debops tools are the access path — browse with '
                 'project.files and project.read, inspect roles and '
                 'playbooks with the role.* and playbook.* tools, run '
-                'playbook.check before playbook.run. Writes are '
+                "'check' before 'run'. Writes are "
                 'confined and committed to git automatically; secrets '
                 'and key material are never served. Reusable DebOps '
                 'workflows are available as skill:// resources. '
@@ -805,7 +805,7 @@ class McpServer(object):
             'commit writes to git automatically. Browse with '
             'project.files and project.read, inspect roles and '
             'playbooks with the role.* and playbook.* tools, run '
-            'playbook.check before playbook.run. Reusable DebOps '
+            "'check' before 'run'. Reusable DebOps "
             'workflows are available as skill:// resources. '
             .format(self.project.name, self.project.view)
             + batching)
