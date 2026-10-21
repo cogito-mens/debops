@@ -274,8 +274,11 @@ def tool_execution_output(project, policy, arguments):
         total = len(matched)
         lines, cut = _cap(matched, max_lines)
     elif kind == 'warnings':
+        # Both the [WARNING] lines and the [DEPRECATION WARNING] ones —
+        # the deprecations are usually what the question is about
         matched = [_shorten(line) for line in _scan_lines(log)
-                   if '[WARNING]' in line]
+                   if '[WARNING]' in line or '[DEPRECATION WARNING]'
+                   in line]
         total = len(matched)
         lines, cut = _cap(matched, max_lines)
     else:

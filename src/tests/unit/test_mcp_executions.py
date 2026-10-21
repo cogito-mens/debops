@@ -29,6 +29,8 @@ ok: [web2]
 
 TASK [Install the package] *****************************************************
 [WARNING]: Consider using the apt module instead
+[DEPRECATION WARNING]: The frobnicate option is deprecated and will be
+removed in a future release
 changed: [web1]
 changed: [web2]
 
@@ -228,8 +230,12 @@ class ExecutionsTestCase(unittest.TestCase):
     def test_warnings(self):
         self.write_log(1)
         result = self.query(kind='warnings')
-        self.assertIn('Consider using the apt module',
-                      self.text(result))
+        text = self.text(result)
+        self.assertIn('Consider using the apt module', text)
+        # The deprecation warnings are usually what the question is
+        # about; they are not '[WARNING]' lines
+        self.assertIn('[DEPRECATION WARNING]: The frobnicate option',
+                      text)
 
     def test_pattern_with_context(self):
         self.write_log(1)
