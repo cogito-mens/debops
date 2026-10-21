@@ -424,7 +424,7 @@ class AgentsMdTestCase(unittest.TestCase):
         self.assertIn('# My project', content)
         self.assertIn('## My own section', content)
         self.assertNotIn('stale', content)
-        self.assertIn('playbook.check', content)
+        self.assertIn('`check` before `run`', content)
 
     def test_appends_to_an_unmarked_file(self):
         with open(self.path, 'w') as fp:
