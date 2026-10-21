@@ -640,6 +640,23 @@ Commands:
                             help='write the MCP guidance section into '
                                  'the project AGENTS.md (honored by '
                                  'OpenCode, Codex and Claude Code)')
+        parser.add_argument('--name', type=str, metavar='NAME',
+                            help="the entry name (default: 'debops'; "
+                                 "letters, digits, '-' and '_')")
+        parser.add_argument('--connect', type=str, metavar='PATH',
+                            help="bridge the harness to the daemon's "
+                                 'UNIX socket at PATH instead of '
+                                 'launching the server; requires '
+                                 '--name (never the default entry)')
+        parser.add_argument('--disconnect', type=str, metavar='NAME',
+                            help='remove the named bridge entry')
+        parser.add_argument('--remove', action='store_true',
+                            help='remove all of our entries (with '
+                                 '--name, only that one)')
+        parser.add_argument('--log', nargs='?', const='', default=None,
+                            metavar='PATH',
+                            help='launch the server with the audit log '
+                                 '(to PATH, or the syslog when bare)')
         parser.add_argument('--print', dest='print_only',
                             action='store_true',
                             help='print the configuration instead of '
@@ -651,6 +668,27 @@ Commands:
         if self.args.agents and self.args.user:
             parser.error('--agents writes the project AGENTS.md; '
                          'there is no account-level convention')
+        managing = (self.args.connect is not None
+                    or self.args.disconnect is not None
+                    or self.args.remove)
+        if self.args.connect is not None:
+            if self.args.name is None:
+                parser.error('a bridge entry needs its own --name')
+            if self.args.name == 'debops':
+                parser.error("a bridge entry needs its own --name: "
+                             "'debops' is the launcher (a management "
+                             'project holds the bridges; the default '
+                             'entry keeps the documentation mode '
+                             'outside projects)')
+        if self.args.disconnect is not None and (
+                self.args.connect is not None or self.args.remove):
+            parser.error('--disconnect does not combine with '
+                         '--connect or --remove')
+        if self.args.remove and self.args.connect is not None:
+            parser.error('--remove does not combine with --connect')
+        if managing and self.args.print_only:
+            parser.error('--print writes nothing; it does not combine '
+                         'with --disconnect or --remove')
 
     def do_mcp_skills(self):
         parser = argparse.ArgumentParser(

@@ -197,6 +197,81 @@ class ConfigureTestCase(unittest.TestCase):
         self.assertIn('unknown harness', str(context.exception))
         self.assertIn('opencode', str(context.exception))
 
+    def test_connect_writes_the_bridge_entry(self):
+        socket_path = os.path.join(self.tmpdir, 'daemon.sock')
+        status, lines = configure_harness(self.tmpdir, 'opencode',
+                                          name='prod',
+                                          connect=socket_path)
+        self.assertEqual(status, 'created')
+        config = self.read_json(os.path.join('.opencode',
+                                             'opencode.json'))
+        entry = config['mcp']['servers']['prod']
+        self.assertEqual(entry['command'],
+                         ['debops', 'mcp', 'connect', socket_path])
+        # The socket does not exist yet; the note says so
+        self.assertTrue(any('does not exist' in line
+                            for line in lines), lines)
+
+    def test_connect_refuses_a_non_socket_path(self):
+        existing = self.write('not-a-socket', '')
+        with self.assertRaises(ValueError) as context:
+            configure_harness(self.tmpdir, 'opencode', name='prod',
+                              connect=existing)
+        self.assertIn('not a socket', str(context.exception))
+
+    def test_connect_never_takes_the_default_name(self):
+        # The default entry launches the server (the documentation
+        # mode outside a project); a bridge must not replace it
+        with self.assertRaises(ValueError) as context:
+            configure_harness(self.tmpdir, 'opencode', name='debops',
+                              connect='/run/x.sock')
+        self.assertIn('its own --name', str(context.exception))
+
+    def test_invalid_names_are_refused(self):
+        for name in ('a b', 'prod/dev', ''):
+            with self.assertRaises(ValueError, msg=name):
+                configure_harness(self.tmpdir, 'opencode', name=name)
+
+    def test_connect_entries_coexist_with_the_launcher(self):
+        configure_harness(self.tmpdir, 'pi')
+        configure_harness(self.tmpdir, 'pi', name='prod',
+                          connect='/run/prod.sock')
+        configure_harness(self.tmpdir, 'pi', name='dmz',
+                          connect='/run/dmz.sock')
+        config = self.read_json(os.path.join('.pi', 'mcp.json'))
+        servers = config['mcpServers']
+        self.assertEqual(sorted(servers), ['debops', 'dmz', 'prod'])
+        self.assertEqual(servers['debops']['args'][:2],
+                         ['mcp', 'serve'])
+        self.assertEqual(servers['prod']['args'],
+                         ['mcp', 'connect', '/run/prod.sock'])
+
+    def test_verbosity_and_log_ride_the_serve_entry(self):
+        configure_harness(self.tmpdir, 'opencode', verbosity=3,
+                          log='/var/log/debops-mcp.log')
+        config = self.read_json(os.path.join('.opencode',
+                                             'opencode.json'))
+        self.assertEqual(
+                config['mcp']['servers']['debops']['command'],
+                ['debops', 'mcp', 'serve', '--log',
+                 '/var/log/debops-mcp.log', '-vvv'])
+
+    def test_bare_log_means_syslog(self):
+        configure_harness(self.tmpdir, 'claude', log='')
+        config = self.read_json('.mcp.json')
+        self.assertEqual(config['mcpServers']['debops']['args'],
+                         ['mcp', 'serve', '--log'])
+
+    def test_connect_ignores_the_debug_flags_with_a_note(self):
+        _status, lines = configure_harness(
+                self.tmpdir, 'claude', name='prod',
+                connect='/run/prod.sock', verbosity=3, log='')
+        config = self.read_json('.mcp.json')
+        self.assertEqual(config['mcpServers']['prod']['args'],
+                         ['mcp', 'connect', '/run/prod.sock'])
+        self.assertTrue(any('dumb relay' in line for line in lines),
+                        lines)
+
     def test_filename_override(self):
         custom = self.write('custom.json', '{}')
         configure_harness(self.tmpdir, 'claude', filename=custom)
@@ -373,6 +448,84 @@ class AgentsMdTestCase(unittest.TestCase):
         _status, lines = self.configure(self.tmpdir,
                                         harness_name='claude')
         self.assertTrue(any('@AGENTS.md' in line for line in lines))
+
+
+class DisconnectTestCase(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-disconnect-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        # A management project: the launcher, two bridges, one foreign
+        configure_harness(self.tmpdir, 'opencode')
+        configure_harness(self.tmpdir, 'opencode', name='prod',
+                          connect='/run/prod.sock')
+        configure_harness(self.tmpdir, 'opencode', name='dmz',
+                          connect='/run/dmz.sock')
+        with open(os.path.join(self.tmpdir, '.opencode',
+                               'opencode.json')) as fp:
+            data = json.load(fp)
+        data['mcp']['servers']['grafana'] = {
+                'type': 'remote', 'url': 'https://x.invalid'}
+        with open(os.path.join(self.tmpdir, '.opencode',
+                               'opencode.json'), 'w') as fp:
+            json.dump(data, fp)
+
+    def read_json(self, relative):
+        with open(os.path.join(self.tmpdir, relative)) as fp:
+            return json.load(fp)
+
+    def read_servers(self):
+        return self.read_json(os.path.join(
+                '.opencode', 'opencode.json'))['mcp']['servers']
+
+    def test_disconnect_removes_the_bridge(self):
+        from debops.mcp.harnesses import disconnect_harness
+        status, _lines = disconnect_harness(self.tmpdir, 'opencode',
+                                            'prod')
+        self.assertEqual(status, 'removed')
+        self.assertEqual(sorted(self.read_servers()),
+                         ['debops', 'dmz', 'grafana'])
+
+    def test_disconnect_of_a_missing_entry_is_a_noop(self):
+        from debops.mcp.harnesses import disconnect_harness
+        status, _lines = disconnect_harness(self.tmpdir, 'opencode',
+                                            'missing')
+        self.assertEqual(status, 'unchanged')
+
+    def test_disconnect_refuses_the_launcher(self):
+        from debops.mcp.harnesses import disconnect_harness
+        with self.assertRaises(ValueError) as context:
+            disconnect_harness(self.tmpdir, 'opencode', 'debops')
+        self.assertIn('--remove', str(context.exception))
+
+    def test_disconnect_refuses_a_foreign_entry(self):
+        from debops.mcp.harnesses import disconnect_harness
+        with self.assertRaises(ValueError) as context:
+            disconnect_harness(self.tmpdir, 'opencode', 'grafana')
+        self.assertIn('not ours', str(context.exception))
+
+    def test_remove_clears_all_of_our_entries(self):
+        from debops.mcp.harnesses import remove_harness
+        status, _lines = remove_harness(self.tmpdir, 'opencode')
+        self.assertEqual(status, 'removed')
+        # Only the foreign entry stays
+        self.assertEqual(sorted(self.read_servers()), ['grafana'])
+
+    def test_remove_with_a_name_removes_the_launcher(self):
+        from debops.mcp.harnesses import remove_harness
+        status, _lines = remove_harness(self.tmpdir, 'opencode',
+                                        name='debops')
+        self.assertEqual(status, 'removed')
+        self.assertEqual(sorted(self.read_servers()),
+                         ['dmz', 'grafana', 'prod'])
+
+    def test_remove_without_a_file_is_not_configured(self):
+        from debops.mcp.harnesses import remove_harness
+        empty = os.path.join(self.tmpdir, 'elsewhere')
+        os.makedirs(empty)
+        status, lines = remove_harness(empty, 'opencode')
+        self.assertEqual(status, 'not configured')
+        self.assertIn('Nothing', lines[0])
 
 
 if __name__ == '__main__':

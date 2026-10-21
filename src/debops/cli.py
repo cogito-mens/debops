@@ -25,7 +25,8 @@ from .mcp.client import UnixClient
 from .mcp.transport import StdioTransport, UnixSocketTransport
 from .mcp.transport import bridge_stdio_to_unix, ping_unix
 from .mcp.harnesses import (configure_agents_md, configure_harness,
-                            fragment_for_display)
+                            disconnect_harness, fragment_for_display,
+                            remove_harness)
 from .hooks import run_hooks
 from .utils import set_process_name
 from xdg.BaseDirectory import xdg_config_home
@@ -823,7 +824,8 @@ class Interpreter(object):
     def do_mcp_configure(self, args):
         self._mcp_refuse_if_disabled()
         # The account level needs no project, and printing needs no
-        # directory at all; only writing the project-local file does
+        # directory at all; only writing the project-local file does.
+        # Removals work wherever the file is
         project_path = None
         if not args.user:
             try:
@@ -837,16 +839,36 @@ class Interpreter(object):
                 project_path = project.path
         if args.harness is not None:
             try:
-                status, lines = configure_harness(
-                        project_path, args.harness,
-                        filename=args.filename, user=args.user,
-                        print_only=args.print_only)
+                if args.disconnect is not None:
+                    status, lines = disconnect_harness(
+                            project_path, args.harness,
+                            args.disconnect, filename=args.filename,
+                            user=args.user)
+                elif args.remove:
+                    status, lines = remove_harness(
+                            project_path, args.harness,
+                            filename=args.filename, user=args.user,
+                            name=args.name)
+                else:
+                    status, lines = configure_harness(
+                            project_path, args.harness,
+                            filename=args.filename, user=args.user,
+                            print_only=args.print_only,
+                            name=args.name or 'debops',
+                            connect=args.connect,
+                            verbosity=args.verbose or 0,
+                            log=args.log)
             except ValueError as errmsg:
                 print('Error:', errmsg, file=sys.stderr)
-                print()
-                print('The entry to add by hand:')
-                print()
-                print(fragment_for_display(args.harness))
+                if args.disconnect is None and not args.remove:
+                    print()
+                    print('The entry to add by hand:')
+                    print()
+                    print(fragment_for_display(
+                            args.harness, connect=args.connect,
+                            name=args.name or 'debops',
+                            verbosity=args.verbose or 0,
+                            log=args.log))
                 sys.exit(1)
             for line in lines:
                 print(line)

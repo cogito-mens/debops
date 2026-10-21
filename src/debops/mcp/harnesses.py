@@ -10,6 +10,13 @@ starts there. Each harness has a default file location and an entry
 shape; an existing file is merged, never clobbered, and the entry is
 keyed by name, so a rerun updates in place instead of duplicating.
 
+An entry either launches the server per invocation ('debops mcp
+serve', the default) or bridges the harness to a running daemon
+('--connect' writes 'debops mcp connect <socket>'). Connect entries
+are per-instance and always named: the default entry must never be
+repurposed into a bridge — outside a project it launches the
+documentation mode, which a stray socket would silently replace.
+
 Supported harnesses are the ones with a project-local configuration
 file AND a known way to speak the 2026-07-28 protocol revision (or a
 documented default which negotiates it):
@@ -24,36 +31,56 @@ documented default which negotiates it):
 
 import json
 import os
+import re
+import stat
 import tempfile
 
 import toml
 
+# Entry names follow the strictest harness's rule (Pi)
+NAME_PATTERN = re.compile(r'^[A-Za-z0-9_-]+$')
 
-def _serve_entry():
-    return ['debops', 'mcp', 'serve']
+# The default entry name; reserved for the launcher, never a bridge
+DEFAULT_NAME = 'debops'
 
 
-def _opencode_entry():
-    return {'type': 'local', 'command': _serve_entry(),
+def _serve_argv(verbosity=0, log=None, legacy=False):
+    """The argv of an entry which launches the server per call."""
+    argv = ['debops', 'mcp', 'serve']
+    if legacy:
+        argv.append('--legacy')
+    if log is not None:
+        argv.append('--log')
+        if log:
+            argv.append(log)
+    if verbosity:
+        argv.append('-' + 'v' * verbosity)
+    return argv
+
+
+def _connect_argv(path):
+    """The argv of an entry which bridges to a running daemon."""
+    return ['debops', 'mcp', 'connect', path]
+
+
+def _opencode_entry(argv):
+    return {'type': 'local', 'command': argv,
             'protocol': '2026-07-28',
             # Direct tool calls, not the Code Mode wrapper: the
             # confirmation elicitations and the per-tool UX need them
             'codemode': False}
 
 
-def _claude_entry():
-    return {'type': 'stdio', 'command': 'debops', 'args': ['mcp', 'serve']}
+def _claude_entry(argv):
+    return {'type': 'stdio', 'command': argv[0], 'args': argv[1:]}
 
 
-def _codex_entry():
-    return {'command': 'debops', 'args': ['mcp', 'serve']}
+def _codex_entry(argv):
+    return {'command': argv[0], 'args': argv[1:]}
 
 
-def _pi_entry():
-    return {'command': 'debops',
-            # Pi speaks the 2025-era revision of the protocol; the
-            # server answers it in its legacy mode
-            'args': ['mcp', 'serve', '--legacy'],
+def _pi_entry(argv):
+    return {'command': argv[0], 'args': argv[1:],
             # Direct tool calls, not the codemode wrapper: the
             # confirmation elicitations and the per-tool UX need them
             'exposure': 'direct',
@@ -66,11 +93,13 @@ class Harness(object):
 
     'default_filename' is project-relative, 'user_filename' account-
     level ('$XDG_CONFIG_HOME/...' is resolved at call time; '~' too).
+    'path' is the key path of the servers mapping; the entry name is
+    appended at configure time.
     """
 
     def __init__(self, name, default_filename, config_format, path,
                  entry_builder, note=None, user_filename=None,
-                 note_project=None):
+                 note_project=None, legacy=False):
         self.name = name
         self.default_filename = default_filename
         self.format = config_format
@@ -79,20 +108,23 @@ class Harness(object):
         self.note = note
         self.user_filename = user_filename
         self.note_project = note_project
+        # The harness speaks only the 2025-era protocol revision; its
+        # spawned entries serve with '--legacy'
+        self.legacy = legacy
 
 
 HARNESSES = {
     'opencode': Harness(
             'opencode', os.path.join('.opencode', 'opencode.json'),
-            'json', ('mcp', 'servers', 'debops'), _opencode_entry,
+            'json', ('mcp', 'servers'), _opencode_entry,
             user_filename='$XDG_CONFIG_HOME/opencode/opencode.json'),
     'claude': Harness(
             'claude', '.mcp.json',
-            'json', ('mcpServers', 'debops'), _claude_entry,
+            'json', ('mcpServers',), _claude_entry,
             user_filename='~/.claude.json'),
     'codex': Harness(
             'codex', os.path.join('.codex', 'config.toml'),
-            'toml', ('mcp_servers', 'debops'), _codex_entry,
+            'toml', ('mcp_servers',), _codex_entry,
             note='whether Codex negotiates the 2026-07-28 protocol '
                  'revision is unverified',
             note_project='Codex reads project configuration only in '
@@ -100,13 +132,14 @@ HARNESSES = {
             user_filename='~/.codex/config.toml'),
     'pi': Harness(
             'pi', os.path.join('.pi', 'mcp.json'),
-            'json', ('mcpServers', 'debops'), _pi_entry,
+            'json', ('mcpServers',), _pi_entry,
             note="Pi cannot answer confirmation elicitations; "
                  "confirm-gated tools refuse while "
                  "'project.mcp.confirm_required' is on",
             note_project='Pi reads project configuration only in '
                          'trusted projects',
-            user_filename='~/.pi/agent/mcp.json'),
+            user_filename='~/.pi/agent/mcp.json',
+            legacy=True),
 }
 
 
@@ -192,19 +225,29 @@ def configure_agents_md(project_path, harness_name=None,
     return status, lines
 
 
-def _harness_fragment(harness):
+def _entry_argv(harness, connect, verbosity, log):
+    """The command an entry runs: the bridge, or the server launch."""
+    if connect is not None:
+        return _connect_argv(connect)
+    return _serve_argv(verbosity=verbosity, log=log,
+                       legacy=harness.legacy)
+
+
+def _harness_fragment(harness, argv, name):
     """The entry as a nested dict along the harness' key path."""
-    fragment = harness.entry()
+    fragment = {name: harness.entry(argv)}
     for key in reversed(harness.path):
         fragment = {key: fragment}
     return fragment
 
 
-def fragment_for_display(harness_name):
+def fragment_for_display(harness_name, connect=None, name=DEFAULT_NAME,
+                         verbosity=0, log=None):
     """The harness configuration fragment as text, for hand-merging
     when a file cannot be rewritten safely."""
     harness = HARNESSES[harness_name]
-    fragment = _harness_fragment(harness)
+    argv = _entry_argv(harness, connect, verbosity, log)
+    fragment = _harness_fragment(harness, argv, name)
     if harness.format == 'toml':
         return toml.dumps(fragment)
     return json.dumps(fragment, indent=2)
@@ -257,25 +300,9 @@ def _write_atomic(path, content):
         raise
 
 
-def configure_harness(project_path, harness_name, filename=None,
-                      user=False, print_only=False):
-    """Write the harness configuration; return a (status, lines) pair
-    for the caller to present.
-
-    The default mode writes the project-local file of the harness (a
-    project directory is required). With 'user' the account-level file
-    of the harness is the target and needs no project; the spawned
-    server serves a project when launched inside one and the
-    documentation mode otherwise. Printing instead of writing is the
-    safe fallback for anything uncertain ('printed' status), and asks
-    for no directory at all. Raises ValueError with the refusal reason
-    when an existing file cannot be merged safely.
-    """
-    harness = HARNESSES.get(harness_name)
-    if harness is None:
-        raise ValueError('unknown harness: {!r} (supported: {})'.format(
-                harness_name, ', '.join(sorted(HARNESSES))))
-
+def _target_path(harness, project_path, filename, user,
+                 print_only=False):
+    """The file to write and its display name, plus the notes."""
     notes = []
     if user:
         if filename is not None:
@@ -284,48 +311,37 @@ def configure_harness(project_path, harness_name, filename=None,
             relative = filename
         else:
             path = _user_config_path(harness)
-            if path is None:
-                notes.append('note: no known account-level '
-                             'configuration file for this harness')
-                print_only = True
             relative = path
-    else:
-        if project_path is None:
-            if not print_only:
-                raise ValueError('not a DebOps project directory (the '
-                                 'project-local configuration needs one; '
-                                 'the account level does not: --user)')
-            relative = filename if filename else harness.default_filename
-            path = relative
-        else:
-            relative = filename if filename else harness.default_filename
-            path = relative if os.path.isabs(relative) \
-                else os.path.join(project_path, relative)
-            if (harness_name == 'opencode' and filename is None):
-                # The file at the project root is also read, but the
-                # '.opencode/' one wins for the same server name
-                for shadow in ('opencode.json', 'opencode.jsonc'):
-                    shadow_path = os.path.join(project_path, shadow)
-                    if os.path.isfile(shadow_path):
-                        notes.append(
-                                'note: {} also exists; the .opencode/ '
-                                'configuration takes precedence for '
-                                'the same server name'.format(shadow))
-    if harness.note is not None:
-        notes.append('note: ' + harness.note)
-    if harness.note_project is not None and not user:
-        notes.append('note: ' + harness.note_project)
+        return path, relative, notes
+    if project_path is None:
+        if not print_only:
+            raise ValueError('not a DebOps project directory (the '
+                             'project-local configuration needs one; '
+                             'the account level does not: --user)')
+        # Printing asks for no directory at all
+        relative = filename if filename else harness.default_filename
+        return relative, relative, notes
+    relative = filename if filename else harness.default_filename
+    path = relative if os.path.isabs(relative) \
+        else os.path.join(project_path, relative)
+    if harness.name == 'opencode' and filename is None:
+        # The file at the project root is also read, but the
+        # '.opencode/' one wins for the same server name
+        for shadow in ('opencode.json', 'opencode.jsonc'):
+            shadow_path = os.path.join(project_path, shadow)
+            if os.path.isfile(shadow_path):
+                notes.append(
+                        'note: {} also exists; the .opencode/ '
+                        'configuration takes precedence for '
+                        'the same server name'.format(shadow))
+    return path, relative, notes
 
-    if print_only:
-        lines = ['Configuration for {} ({}), not written to {}:'.format(
-                harness_name, ' '.join(_serve_entry()), relative)]
-        lines.extend(notes)
-        lines.append('')
-        lines.append(fragment_for_display(harness_name))
-        return 'printed', lines
 
-    data = _read_config(path, harness.format)
-    if harness.format == 'toml' and data is not None:
+def _read_for_rewrite(path, config_format):
+    """Read the existing configuration file for a rewrite; the TOML
+    files keep their comments, which a rewrite would lose."""
+    data = _read_config(path, config_format)
+    if config_format == 'toml' and data is not None:
         with open(path) as fp:
             # A rewrite would silently drop the comments
             if any(line.lstrip().startswith('#')
@@ -333,11 +349,87 @@ def configure_harness(project_path, harness_name, filename=None,
                 raise ValueError(
                         'the file carries comments, which a rewrite '
                         'would lose: merge by hand')
+    return data
+
+
+def _check_connect_path(path, notes):
+    """The socket path sanity of a bridge entry."""
+    if os.path.exists(path):
+        if not stat.S_ISSOCK(os.stat(path).st_mode):
+            raise ValueError('not a socket: ' + path)
+    else:
+        notes.append('note: {} does not exist; the daemon creates the '
+                     'socket when it starts'.format(path))
+
+
+def configure_harness(project_path, harness_name, filename=None,
+                      user=False, print_only=False, name=DEFAULT_NAME,
+                      connect=None, verbosity=0, log=None):
+    """Write the harness configuration; return a (status, lines) pair
+    for the caller to present.
+
+    The default entry launches the server per invocation. With
+    'connect' the entry bridges the harness to a running daemon's
+    socket — always under its own 'name': the default entry must never
+    be repurposed into a bridge, since outside a project the launcher
+    serves the documentation mode. 'verbosity' and 'log' ride the
+    launched command; a bridge ignores them (the daemon's own flags
+    govern). The default mode writes the project-local file of the
+    harness (a project directory is required). With 'user' the
+    account-level file of the harness is the target and needs no
+    project; the spawned server serves a project when launched inside
+    one and the documentation mode otherwise. Printing instead of
+    writing is the safe fallback for anything uncertain ('printed'
+    status), and asks for no directory at all. Raises ValueError with
+    the refusal reason when an existing file cannot be merged safely.
+    """
+    harness = HARNESSES.get(harness_name)
+    if harness is None:
+        raise ValueError('unknown harness: {!r} (supported: {})'.format(
+                harness_name, ', '.join(sorted(HARNESSES))))
+    if not NAME_PATTERN.match(name):
+        raise ValueError('invalid entry name {!r} (letters, digits, '
+                         "'-' and '_' only)".format(name))
+    if connect is not None and name == DEFAULT_NAME:
+        raise ValueError("a bridge entry needs its own --name: the "
+                         "default entry launches the server (in the "
+                         "documentation mode outside a project)")
+
+    path, relative, notes = _target_path(harness, project_path,
+                                         filename, user,
+                                         print_only=print_only)
+    if user and filename is None and path is None:
+        notes.append('note: no known account-level configuration file '
+                     'for this harness')
+        print_only = True
+    if connect is not None:
+        _check_connect_path(connect, notes)
+        if verbosity or log is not None:
+            notes.append("note: the bridge is a dumb relay; the "
+                         "daemon's own flags govern its logging")
+    if harness.note is not None:
+        notes.append('note: ' + harness.note)
+    if harness.note_project is not None and not user:
+        notes.append('note: ' + harness.note_project)
+
+    argv = _entry_argv(harness, connect, verbosity, log)
+    command = ' '.join(argv)
+    if print_only:
+        lines = ['Configuration for {} ({}), not written to {}:'.format(
+                harness_name, command, relative)]
+        lines.extend(notes)
+        lines.append('')
+        lines.append(fragment_for_display(harness_name,
+                                          connect=connect, name=name,
+                                          verbosity=verbosity, log=log))
+        return 'printed', lines
+
+    data = _read_for_rewrite(path, harness.format)
     status = 'updated' if data is not None else 'created'
     if data is None:
         data = {}
 
-    _merge(data, _harness_fragment(harness))
+    _merge(data, _harness_fragment(harness, argv, name))
     if harness.format == 'toml':
         content = toml.dumps(data)
     else:
@@ -350,10 +442,111 @@ def configure_harness(project_path, harness_name, filename=None,
     if status != 'unchanged':
         _write_atomic(path, content)
 
-    command = ' '.join(_serve_entry())
     lines = ['{}: {} ({}: {})'.format(
-            status.capitalize(), relative, harness_name, command)]
+            status.capitalize(), relative,
+            name if name != DEFAULT_NAME else harness_name, command)]
     lines.extend(notes)
     if status == 'unchanged':
         lines.append('The configuration is already up to date.')
     return status, lines
+
+
+def _entry_argv_of(entry):
+    """The command argv of a harness entry, across the shapes."""
+    command = entry.get('command')
+    if isinstance(command, list):
+        return command
+    if isinstance(command, str):
+        return [command] + list(entry.get('args') or [])
+    return None
+
+
+def _entry_is_ours(entry):
+    """Whether an entry launches one of our commands."""
+    argv = _entry_argv_of(entry)
+    return (argv is not None and len(argv) >= 3
+            and os.path.basename(argv[0]) == 'debops'
+            and argv[1] == 'mcp' and argv[2] in ('serve', 'connect'))
+
+
+def _entry_is_bridge(entry):
+    argv = _entry_argv_of(entry)
+    return argv is not None and argv[1:3] == ['mcp', 'connect']
+
+
+def _remove_entries(project_path, harness_name, filename=None,
+                    user=False, name=None, bridges_only=False):
+    """Remove our entries from the harness' configuration file.
+
+    With 'name', only that entry (and with 'bridges_only' — the
+    disconnect case — only when it is a bridge: the launcher goes only
+    with a full remove). Without it, every entry of ours goes. Returns
+    (status, lines); status is 'removed', 'unchanged' (nothing of ours
+    present) or 'not configured' (no file).
+    """
+    harness = HARNESSES.get(harness_name)
+    if harness is None:
+        raise ValueError('unknown harness: {!r} (supported: {})'.format(
+                harness_name, ', '.join(sorted(HARNESSES))))
+    path, relative, notes = _target_path(harness, project_path,
+                                         filename, user)
+    if path is None or not os.path.isfile(path):
+        return 'not configured', ['Nothing of ours is configured for '
+                                  '{} here.'.format(harness_name)]
+
+    data = _read_for_rewrite(path, harness.format)
+    servers = data
+    for key in harness.path:
+        servers = servers.get(key) if isinstance(servers, dict) else None
+    if not isinstance(servers, dict):
+        return 'unchanged', ['No server entries in {}.'.format(relative)]
+
+    if name is not None:
+        entry = servers.get(name)
+        if entry is None:
+            return 'unchanged', ['No entry {!r} in {}.'.format(
+                    name, relative)]
+        if not _entry_is_ours(entry):
+            raise ValueError(
+                    'the entry {!r} is not ours; refusing to remove '
+                    'it (the command is: {})'.format(
+                            name, ' '.join(_entry_argv_of(entry) or [])))
+        if bridges_only and not _entry_is_bridge(entry):
+            raise ValueError(
+                    'the entry {!r} launches the server, it is not a '
+                    'bridge; remove it with --remove'.format(name))
+        doomed = [name]
+    else:
+        doomed = [key for key, entry in servers.items()
+                  if _entry_is_ours(entry)]
+        if not doomed:
+            return 'unchanged', ['Nothing of ours in {}.'.format(
+                    relative)]
+
+    for key in doomed:
+        del servers[key]
+    if harness.format == 'toml':
+        content = toml.dumps(data)
+    else:
+        content = json.dumps(data, indent=2) + '\n'
+    _write_atomic(path, content)
+    lines = ['Removed: {} ({})'.format(relative, ', '.join(sorted(doomed)))]
+    lines.extend(notes)
+    return 'removed', lines
+
+
+def disconnect_harness(project_path, harness_name, name, filename=None,
+                       user=False):
+    """Remove the named bridge entry of ours from the harness'
+    configuration file."""
+    return _remove_entries(project_path, harness_name,
+                           filename=filename, user=user, name=name,
+                           bridges_only=True)
+
+
+def remove_harness(project_path, harness_name, filename=None,
+                   user=False, name=None):
+    """Remove all of our entries from the harness' configuration file
+    (with 'name', only that one)."""
+    return _remove_entries(project_path, harness_name,
+                           filename=filename, user=user, name=name)
