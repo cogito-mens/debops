@@ -184,6 +184,14 @@ def tool_execution_list(project, policy, arguments):
             entry['logBytes'] = os.path.getsize(path)
         except OSError:
             pass
+        # The last line says where the run stands: the completion
+        # marker on a finished one, the current output on a live one
+        tail = [line for line in
+                runs.read_tail(path, 4096).splitlines() if line.strip()]
+        if tail:
+            last = tail[-1]
+            entry['lastLine'] = (last[:200] + '…'
+                                 if len(last) > 200 else last)
         entries.append(entry)
 
     if not entries:
@@ -207,6 +215,8 @@ def tool_execution_list(project, policy, arguments):
         if entry.get('hosts'):
             parts.append('({} hosts)'.format(len(entry['hosts'])))
         lines.append('  '.join(parts))
+        if entry.get('lastLine'):
+            lines.append('    ' + entry['lastLine'])
     return text_result('\n'.join(lines), structured=entries)
 
 
@@ -314,17 +324,20 @@ def tool_execution_output(project, policy, arguments):
                     structured={'executionId': execution_id,
                                 'query': query, 'matched': 0,
                                 'returned': len(tail), 'truncated': False,
-                                'degraded': True})
+                                'degraded': True, 'lines': tail})
         return text_result(
                 'execution {}: no matches ({})'.format(execution_id,
                                                        query),
                 structured={'executionId': execution_id, 'query': query,
                             'matched': 0, 'returned': 0,
-                            'truncated': False})
+                            'truncated': False, 'lines': []})
 
     text = '# execution {} — {}\n\n{}{}\n'.format(
             execution_id, query, '\n'.join(lines), truncated_note)
+    # The lines ride the structured result as well as the text: a
+    # harness may surface only the structured content of a tool with an
+    # output schema, and the lines are the answer
     structured = {'executionId': execution_id, 'query': query,
                   'matched': total, 'returned': len(lines),
-                  'truncated': cut_note}
+                  'truncated': cut_note, 'lines': lines}
     return text_result(text, structured=structured)

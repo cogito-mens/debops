@@ -196,6 +196,24 @@ class ExecutionsTestCase(unittest.TestCase):
         self.assertNotIn('ok: [web1]', text)
         self.assertNotIn('PLAY RECAP', text)
 
+    def test_the_lines_ride_the_structured_result(self):
+        # A harness may show only the structured content of a tool
+        # with an output schema; the lines are the answer, so they
+        # must be there and not only in the text
+        self.write_log(1)
+        result = self.query(kind='changed')
+        lines = result['structuredContent']['lines']
+        self.assertTrue(lines[0].startswith('TASK [Install the package]'))
+        self.assertIn('changed: [web1]', lines)
+        self.assertIn('changed: [web2]', lines)
+        self.assertEqual(len(lines),
+                         result['structuredContent']['returned'])
+
+    def test_no_matches_carry_empty_lines(self):
+        self.write_log(1)
+        result = self.query(kind='unreachable')
+        self.assertEqual(result['structuredContent']['lines'], [])
+
     def test_failed_lists_the_failing_task(self):
         self.write_log(1)
         result = self.query(kind='failed')
@@ -236,6 +254,23 @@ class ExecutionsTestCase(unittest.TestCase):
         # about; they are not '[WARNING]' lines
         self.assertIn('[DEPRECATION WARNING]: The frobnicate option',
                       text)
+
+    def test_list_entries_carry_the_last_line(self):
+        # The last line says where the run stands without a follow-up
+        # query: the completion marker on a finished run
+        self.write_log(1)
+        result = tool_execution_list(self.project, self.policy, {})
+        (entry,) = result['structuredContent']
+        self.assertEqual(entry['lastLine'],
+                         'debops-mcp: the execution finished with '
+                         'exit code 2')
+        self.assertIn(entry['lastLine'], self.text(result))
+
+    def test_list_last_line_of_a_running_execution(self):
+        self.write_log(1, content='PLAY [web] ***\n\nTASK [working] ***\n')
+        result = tool_execution_list(self.project, self.policy, {})
+        (entry,) = result['structuredContent']
+        self.assertTrue(entry['lastLine'].startswith('TASK [working]'))
 
     def test_pattern_with_context(self):
         self.write_log(1)

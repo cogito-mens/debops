@@ -258,15 +258,17 @@ TOOL_OUTPUT_SCHEMAS = {
             'finishedAt': {'type': 'string'},
             'exitCode': {'type': 'integer'},
             'status': {'type': 'string'},
-            'logBytes': {'type': 'integer'}},
+            'logBytes': {'type': 'integer'},
+            'lastLine': {'type': 'string'}},
         'required': ['id', 'log']}},
     'execution.output': {'type': 'object', 'properties': {
         'executionId': {'type': 'integer'}, 'query': {'type': 'string'},
         'matched': {'type': 'integer'}, 'returned': {'type': 'integer'},
         'truncated': {'type': 'boolean'},
-        'degraded': {'type': 'boolean'}},
+        'degraded': {'type': 'boolean'},
+        'lines': {'type': 'array', 'items': {'type': 'string'}}},
         'required': ['executionId', 'query', 'matched', 'returned',
-                     'truncated']},
+                     'truncated', 'lines']},
 }
 
 
@@ -1078,8 +1080,10 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
         ('execution.list',
          'List the playbook executions of the active project view, '
          'oldest first: id, mode, playbooks, hosts, exit code, log '
-         'size, timestamps. Use an id with the execution.output tool '
-         'to inspect that run without re-executing anything.',
+         'size, timestamps, and the last log line (the completion '
+         'marker on a finished run, the current output on a live '
+         'one). Use an id with the execution.output tool to inspect '
+         'that run without re-executing anything.',
          {'type': 'object', 'properties': {},
           'additionalProperties': False},
          lambda arguments: tool_execution_list(project, policy,
@@ -1091,11 +1095,13 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
          'tasks which changed something, with their per-host changed '
          'lines), "failed", "unreachable", "recap", "warnings" '
          '(includes the deprecation warnings), "tail" (the default). '
-         'Or a free regex in "pattern", with '
-         '"context" lines of surroundings — that is how to pull a '
-         'diff block. Results are capped ("max_lines", default 200); '
-         'a truncation marker says when to narrow the query. Works on '
-         'a run which is still going.',
+         'Or a free regex in "pattern", with "context" lines of '
+         'surroundings — that is how to pull a diff block. Results '
+         'are capped ("max_lines", default 200); a truncation marker '
+         'says when to narrow the query. The matched lines ride the '
+         'structured result ("lines"), so a harness which shows only '
+         'structured content still gets the answer. Works on a run '
+         'which is still going.',
          {'type': 'object', 'properties': {
              'id': {'type': ['integer', 'string'],
                     'description': 'The execution id, from a check/run '

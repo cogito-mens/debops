@@ -1020,6 +1020,12 @@ def test_execution_output_answers_what_changed(run_debops, mcp_env,
         assert "Pretend to change something" in text
         assert "changed: [localhost]" in text
         assert "Say hello" not in text
+        # A harness which shows only the structured content still gets
+        # the lines
+        lines = answer["result"]["structuredContent"]["lines"]
+        assert any("Pretend to change something" in line
+                   for line in lines)
+        assert any(line == "changed: [localhost]" for line in lines)
 
         # The listing addresses the run afterwards
         listing = server.call("execution.list", {})
