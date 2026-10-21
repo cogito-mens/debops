@@ -43,12 +43,17 @@ KEEP_LOGS = 10
 MAX_LOG_AGE = 7 * 24 * 60 * 60
 
 
-def cache_root():
-    """The root of the run log cache: the XDG cache directory."""
+def _cache_base():
+    """The user's cache directory (the XDG cache home)."""
     base = os.environ.get('XDG_CACHE_HOME')
     if not base:
         base = os.path.join(os.path.expanduser('~'), '.cache')
-    return os.path.join(base, CACHE_SUBDIRECTORY)
+    return base
+
+
+def cache_root():
+    """The root of the run log cache: the XDG cache directory."""
+    return os.path.join(_cache_base(), CACHE_SUBDIRECTORY)
 
 
 def project_key(project):
@@ -77,9 +82,16 @@ def project_directory(project):
     The old logs are pruned on the way: the cache is not a place where
     a long-lived server accumulates run logs forever.
     """
-    path = os.path.join(cache_root(), project_key(project))
+    base = _cache_base()
+    path = os.path.join(base, CACHE_SUBDIRECTORY, project_key(project))
     try:
         os.makedirs(path, exist_ok=True)
+        # A diff or a debug run renders secrets into the log; our chain
+        # below the user's cache directory is private to the account
+        directory = path
+        while directory.startswith(base + os.sep):
+            os.chmod(directory, 0o700)
+            directory = os.path.dirname(directory)
     except OSError as errmsg:
         logger.warning('Cannot create the run log directory %s: %s',
                        path, errmsg)

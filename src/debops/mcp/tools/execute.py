@@ -369,7 +369,12 @@ def run_cancellable(command, env, cwd, context, timeout, on_line=None,
     stdout = subprocess.PIPE
     stdin = subprocess.PIPE if input_data is not None else None
     if log_path is not None:
-        log_file = open(log_path, 'w', encoding='utf-8')
+        # The log can carry secrets (a diff or a debug run renders
+        # them); create it private, and force the mode of a reused file
+        fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                     0o600)
+        os.fchmod(fd, 0o600)
+        log_file = os.fdopen(fd, 'w', encoding='utf-8')
         if detached:
             # The child writes to the log file itself; the file is the
             # only channel which survives the server

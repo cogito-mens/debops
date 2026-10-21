@@ -44,6 +44,19 @@ class RunsTestCase(unittest.TestCase):
         path = runs.log_path(project, 1)
         self.assertTrue(os.path.isdir(os.path.dirname(path)))
 
+    def test_the_cache_chain_is_private(self):
+        # A diff or a debug run renders secrets into the log; nothing
+        # below the user's cache directory may be readable by others
+        project = FakeProject(os.path.join(self.tmpdir, 'myproject'))
+        path = runs.log_path(project, 1)
+        base = os.environ['XDG_CACHE_HOME']
+        directory = os.path.dirname(path)
+        while directory.startswith(base + os.sep):
+            mode = os.stat(directory).st_mode & 0o777
+            self.assertEqual(mode, 0o700,
+                             '{} has mode {:o}'.format(directory, mode))
+            directory = os.path.dirname(directory)
+
     def test_project_key_distinguishes_same_named_projects(self):
         one = FakeProject(os.path.join(self.tmpdir, 'one', 'project'))
         two = FakeProject(os.path.join(self.tmpdir, 'two', 'project'))

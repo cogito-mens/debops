@@ -982,6 +982,9 @@ class DetachedRunTestCase(unittest.TestCase):
         self.assertEqual(output, 'hello\nworld\n')
         with open(log) as fp:
             self.assertEqual(fp.read(), 'hello\nworld\n')
+        # The log can carry secrets; it is private to the account
+        mode = os.stat(log).st_mode & 0o777
+        self.assertEqual(mode, 0o600)
 
     def test_the_progress_lines_come_back_from_the_log_file(self):
         from debops.mcp.tools.execute import run_cancellable
