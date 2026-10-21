@@ -223,11 +223,15 @@ class McpPolicy(object):
         try:
             self.execute_timeout = int(
                     mcp_config.get('execute_timeout', 3600))
+            if self.execute_timeout < 0:
+                raise ValueError()
         except (TypeError, ValueError):
             self.execute_timeout = 3600
         if self.execute != 'none':
+            timeout = ('unlimited' if self.execute_timeout == 0
+                       else '{}s'.format(self.execute_timeout))
             logger.notice('Playbook execution enabled: %s '
-                          '(timeout %ss)', self.execute, self.execute_timeout)
+                          '(timeout %s)', self.execute, timeout)
 
         # The run logs of the executions, kept in the user's cache
         # directory: how many per project view, and for how long

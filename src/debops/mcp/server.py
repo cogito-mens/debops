@@ -1027,7 +1027,10 @@ class McpServer(object):
         """Run a task-eligible tool in the background; return the handle."""
         timeout = (self.policy.execute_timeout
                    if self.policy is not None else 3600)
-        task = self._tasks.create(ttl_ms=max(3600000, timeout * 2000))
+        # An unlimited execution timeout (0) still needs a task bound
+        task = self._tasks.create(
+                ttl_ms=max(3600000,
+                           (timeout if timeout > 0 else 43200) * 2000))
         thread = threading.Thread(
                 target=self._run_task,
                 args=(task, tool, arguments, params, context),

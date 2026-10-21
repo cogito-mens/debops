@@ -27,7 +27,8 @@
 # check mode only, 'all' allows changing the managed hosts.
 execute = "check"
 
-# How long a playbook execution may run before it is killed, in seconds.
+# How long a playbook execution may run before it is killed, in seconds;
+# 0 means no limit (the run still ends when the client cancels it).
 execute_timeout = 3600
 
 # The ansible-playbook options an execution may pass through.

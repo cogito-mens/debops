@@ -738,6 +738,38 @@ class ExecuteTestCase(unittest.TestCase):
     def test_timeout_kills_the_process(self):
         from debops.mcp.tools.execute import _execute_playbook
         project = FakeProject(self.tmpdir,
+                              {'project': {'mcp': {'execute_timeout': 1}}})
+        policy = McpPolicy(project)
+        killed = threading.Event()
+
+        def poll():
+            # The process runs until the timeout kills it
+            return 0 if killed.is_set() else None
+
+        with mock.patch(
+                'debops.mcp.tools.execute.AnsiblePlaybookRunner'), \
+                mock.patch('debops.mcp.tools.execute.AnsibleInventory'), \
+                mock.patch('debops.mcp.tools.execute.run_hooks',
+                           return_value=True), \
+                mock.patch('debops.mcp.tools.execute.subprocess.run',
+                           return_value=make_resolve_result()), \
+                mock.patch('debops.mcp.tools.execute.os.killpg') \
+                as killpg, \
+                mock.patch(
+                'debops.mcp.tools.execute.subprocess.Popen') as popen:
+            killpg.side_effect = lambda pid, sig: killed.set()
+            popen.return_value = make_process(returncode=-9, poll=poll)
+            result = _execute_playbook(project, policy,
+                                       {'playbook': 'site'}, self.context,
+                                       check=True)
+        killpg.assert_called_once_with(popen.return_value.pid,
+                                       signal.SIGKILL)
+        self.assertTrue(result['isError'])
+        self.assertIn('timed out', result['content'][0]['text'])
+
+    def test_a_zero_timeout_means_no_limit(self):
+        from debops.mcp.tools.execute import _execute_playbook
+        project = FakeProject(self.tmpdir,
                               {'project': {'mcp': {'execute_timeout': 0}}})
         policy = McpPolicy(project)
         with mock.patch(
@@ -751,14 +783,13 @@ class ExecuteTestCase(unittest.TestCase):
                 as killpg, \
                 mock.patch(
                 'debops.mcp.tools.execute.subprocess.Popen') as popen:
-            popen.return_value = make_process(returncode=-9)
+            popen.side_effect = make_popen()
             result = _execute_playbook(project, policy,
                                        {'playbook': 'site'}, self.context,
                                        check=True)
-        killpg.assert_called_once_with(popen.return_value.pid,
-                                       signal.SIGKILL)
-        self.assertTrue(result['isError'])
-        self.assertIn('timed out', result['content'][0]['text'])
+        # The deadline never fires; the run completes
+        killpg.assert_not_called()
+        self.assertFalse(result['isError'])
 
 
 class ExecutionGateTestCase(unittest.TestCase):
@@ -951,6 +982,13 @@ class DetachedCommandTestCase(unittest.TestCase):
                       script)
         self.assertTrue(script.rstrip().endswith('exit $?'))
 
+    def test_a_zero_timeout_disables_the_wrapper_bound(self):
+        # coreutils timeout: a duration of 0 disables the limit
+        from debops.mcp.tools.execute import _detached_command
+        command = _detached_command(['ansible-playbook', 'site.yml'], 0)
+        self.assertIn('timeout -k 5 0 ansible-playbook site.yml',
+                      command[2])
+
     def test_quotes_the_arguments(self):
         from debops.mcp.tools.execute import _detached_command
         command = _detached_command(
@@ -1048,14 +1086,21 @@ class DetachedRunTestCase(unittest.TestCase):
 
     def test_timeout_kills_the_detached_process_group(self):
         from debops.mcp.tools.execute import run_cancellable
-        process = make_process(returncode=-9, poll=[None, 0])
+        killed = threading.Event()
+
+        def poll():
+            # The process runs until the timeout kills it
+            return 0 if killed.is_set() else None
+
+        process = make_process(returncode=-9, poll=poll)
         with mock.patch(
                 'debops.mcp.tools.execute.subprocess.Popen',
                 return_value=process), \
                 mock.patch('debops.mcp.tools.execute.os.killpg') as killpg:
+            killpg.side_effect = lambda pid, sig: killed.set()
             _output, _rc, status = run_cancellable(
                     ['sleep', '60'], env={}, cwd=self.tmpdir,
-                    context=self.context, timeout=0, detached=True)
+                    context=self.context, timeout=1, detached=True)
         killpg.assert_called_once_with(process.pid, signal.SIGKILL)
         self.assertEqual(status, 'timeout')
 

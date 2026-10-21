@@ -354,6 +354,7 @@ def _detached_command(command, timeout, finalize=None):
                        'detached execution is not bounded by the server')
         script = _shell_command(command)
     else:
+        # coreutils: a duration of 0 disables the limit
         script = 'timeout -k {} {} {}'.format(
                 TERMINATION_GRACE, int(timeout), _shell_command(command))
     lines = [script]
@@ -568,7 +569,9 @@ def run_cancellable(command, env, cwd, context, timeout, on_line=None,
                 cancelled = True
                 signal_process(signal.SIGTERM)
                 break
-            if time.monotonic() > deadline:
+            # A timeout of 0 means no limit: the run ends when it ends,
+            # or when the client cancels it
+            if timeout > 0 and time.monotonic() > deadline:
                 timed_out = True
                 signal_process(signal.SIGKILL)
                 break

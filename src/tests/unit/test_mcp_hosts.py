@@ -108,6 +108,17 @@ class HostsTestCase(unittest.TestCase):
         self.assertIn('pong', text)
         self.assertIn('Hosts: web1', text)
 
+    def test_unlimited_execute_timeout_keeps_the_ad_hoc_bound(self):
+        # 0 means unlimited for the playbook executions; the ad-hoc
+        # queries keep their own bound
+        self.policy.execute_timeout = 0
+        with mock.patch('debops.mcp.tools.hosts.run_cancellable',
+                        return_value=('pong\n', 0, 'done')) as runner:
+            _popen, response = self._run('ansible.ping',
+                                         {'hosts': 'web1'})
+        self.assertFalse(response['result'].get('isError', False))
+        self.assertEqual(runner.call_args[1]['timeout'], 120)
+
     def test_ping_structured(self):
         from tests.unit._helpers import check_schema
         from debops.mcp.tools import TOOL_OUTPUT_SCHEMAS

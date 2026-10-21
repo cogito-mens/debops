@@ -224,8 +224,13 @@ def _exec(project, policy, arguments, context, module, module_filter,
 
             logger.notice('Querying hosts: %s → %s', hosts,
                           ', '.join(resolved))
-            timeout = min(policy.execute_timeout if policy is not None
-                          else 3600, EXEC_TIMEOUT_LIMIT)
+            timeout = (policy.execute_timeout if policy is not None
+                       else 3600)
+            if timeout <= 0:
+                # 0 means unlimited for the executions; the ad-hoc
+                # queries keep their own bound
+                timeout = EXEC_TIMEOUT_LIMIT
+            timeout = min(timeout, EXEC_TIMEOUT_LIMIT)
             output, returncode, status = run_cancellable(
                     command, env=env, cwd=project.path, context=context,
                     timeout=timeout, enabled_check=enabled_check,

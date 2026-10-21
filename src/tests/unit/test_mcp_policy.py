@@ -214,6 +214,20 @@ class RunLogRetentionTestCase(unittest.TestCase):
         self.assertEqual(policy.run_logs_max_age, 7 * 24 * 60 * 60)
 
 
+class ExecuteTimeoutTestCase(unittest.TestCase):
+    """The execution timeout: 0 means unlimited."""
+
+    def test_zero_is_kept(self):
+        project = FakeProject('/srv/projects/example', raw_config={
+                'project': {'mcp': {'execute_timeout': 0}}})
+        self.assertEqual(McpPolicy(project).execute_timeout, 0)
+
+    def test_a_negative_value_falls_back_to_the_default(self):
+        project = FakeProject('/srv/projects/example', raw_config={
+                'project': {'mcp': {'execute_timeout': -10}}})
+        self.assertEqual(McpPolicy(project).execute_timeout, 3600)
+
+
 class EnvFileDenyTestCase(unittest.TestCase):
 
     def _policy(self):
