@@ -848,6 +848,7 @@ def _execute_playbook(project, policy, arguments, context, check,
     if debug:
         notes.append('debug mode (-vv, ANSIBLE_DEBUG, the remote module '
                      'scripts were kept on the hosts)')
+    excerpt = None
     if returncode != 0:
         # The first failure with its neighborhood, no debug flag
         # needed; the full output is in the run log
@@ -865,6 +866,10 @@ def _execute_playbook(project, policy, arguments, context, check,
                'status': status, 'executionId': execution_id}
     if log_path is not None:
         summary['log'] = log_path
+    if excerpt is not None:
+        # A harness may show only the structured content; the failure
+        # neighborhood is the piece of the text which matters most
+        summary['failureExcerpt'] = excerpt
     recap = _parse_recap(output)
     if recap:
         summary['recap'] = recap

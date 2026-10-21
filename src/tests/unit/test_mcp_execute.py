@@ -1283,6 +1283,16 @@ class DetachedExecutionTestCase(unittest.TestCase):
         self.assertIn('## First failure', text)
         self.assertIn('TASK [Install the package]', text)
         self.assertIn('apache3', text)
+        # A harness which shows only the structured content still
+        # learns where to start looking
+        excerpt = result['structuredContent']['failureExcerpt']
+        self.assertIn('TASK [Install the package]', excerpt)
+        self.assertIn('fatal: [web1]: FAILED!', excerpt)
+        from tests.unit._helpers import check_schema
+        from debops.mcp.tools import TOOL_OUTPUT_SCHEMAS
+        self.assertEqual(check_schema(result['structuredContent'],
+                                      TOOL_OUTPUT_SCHEMAS['check']),
+                         [])
 
 
 if __name__ == '__main__':
