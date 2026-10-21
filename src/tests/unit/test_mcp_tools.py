@@ -1246,7 +1246,8 @@ class ToolsTestCase(unittest.TestCase):
                 'params': {'_meta': REQUEST_META, }})
         names = [tool['name'] for tool in response['result']['tools']]
         self.assertEqual(sorted(names),
-                         ['ansible.facts', 'ansible.ping', 'check',
+                         ['ansible.doc', 'ansible.facts',
+                          'ansible.ping', 'check',
                           'collection.playbooks', 'collection.remove',
                           'collection.require', 'collection.roles',
                           'collection.sync', 'config.get',
@@ -2174,11 +2175,12 @@ class DocumentationModeTestCase(unittest.TestCase):
                 'params': {'_meta': REQUEST_META, }})
         names = [tool['name'] for tool in response['result']['tools']]
         self.assertEqual(sorted(names),
-                         ['collection.playbooks', 'collection.roles',
-                          'playbook.info', 'playbook.list',
-                          'role.argspec', 'role.defaults', 'role.files',
-                          'role.handlers', 'role.info', 'role.tasks',
-                          'role.templates', 'role.vars'])
+                         ['ansible.doc', 'collection.playbooks',
+                          'collection.roles', 'playbook.info',
+                          'playbook.list', 'role.argspec',
+                          'role.defaults', 'role.files', 'role.handlers',
+                          'role.info', 'role.tasks', 'role.templates',
+                          'role.vars'])
 
     def test_role_info_works_on_the_bundled_content(self):
         response = self.call_tool('role.info', {'name': 'testrole'})

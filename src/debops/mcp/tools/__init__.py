@@ -38,6 +38,7 @@ from .secrets import tool_secret_paths
 from .sync import make_sync_tool
 from .views import (NO_ACTIVE_VIEW, tool_view_create, tool_view_list,
                     tool_view_switch)
+from .doc import PLUGIN_TYPES, tool_ansible_doc
 from ..policy import EXECUTE_OPTIONS
 from ..server import Tool
 
@@ -266,6 +267,8 @@ TOOL_ANNOTATIONS = {
     # Host queries reach out over SSH but change nothing
     'ansible.ping': {'readOnlyHint': True},
     'ansible.facts': {'readOnlyHint': True},
+    # Plugin documentation is a local read
+    'ansible.doc': _READ_ONLY,
     # Secrets are mounted and unmounted; the project may be committed
     'secret.paths': {'destructiveHint': False, 'idempotentHint': True,
                      'openWorldHint': False},
@@ -339,6 +342,13 @@ def _documentation_entries(server, policy, project, roles_path,
     one (the documentation mode) only the shipped content is served.
     """
     bundled_content = policy is None or policy.bundled_content
+    # The roles the document tools resolve; ansible.doc searches the
+    # same paths, so the tools agree
+    roles_paths = []
+    if project is not None:
+        roles_paths = project_role_paths(project)
+    if bundled_content:
+        roles_paths.append(roles_path)
     entries = [
         ('playbook.list',
          'List the playbook targets which "run" and "check" can execute '
@@ -402,17 +412,44 @@ def _documentation_entries(server, policy, project, roles_path,
                                     'this string'}}},
          lambda arguments: tool_collection_roles(
              collection_index_provider, arguments)),
+        ('ansible.doc',
+         'Look up Ansible plugin documentation with ansible-doc: '
+         'modules, lookups, filters, tests and the other plugin types '
+         '(the "type" argument), the keywords of the playbook language '
+         '("type": "keyword"), and role argument specifications '
+         '("type": "role", with "entry_point" when a role declares '
+         'several). With "list": true, enumerate the plugins of a '
+         'type, narrowed by a namespace or collection name in '
+         '"plugin". With "snippet": true, the paste-ready playbook '
+         'snippet.' + FORMAT_NOTE,
+         {'type': 'object',
+          'properties': {
+              'plugin': {'type': 'string',
+                         'description': 'Plugin name, short or fully '
+                         'qualified (namespace.collection.name)'},
+              'type': {'type': 'string', 'enum': list(PLUGIN_TYPES),
+                       'description': 'The plugin type (default: '
+                       '"module")'},
+              'list': {'type': 'boolean',
+                       'description': 'Enumerate the plugins of the '
+                       'type instead of showing one (default: false)'},
+              'snippet': {'type': 'boolean',
+                          'description': 'The paste-ready playbook '
+                          'snippet instead of the documentation '
+                          '(inventory, lookup and module plugins)'},
+              'entry_point': {'type': 'string',
+                              'description': 'The entry point of the '
+                              'role (with "type": "role" only)'},
+              'format': FORMAT_PROPERTY},
+          'required': []},
+         lambda arguments: tool_ansible_doc(
+             project, policy, arguments, roles_paths=roles_paths)),
     ]
 
     # Role tools search the project's own roles first; the bundled
     # DebOps collection is included unless the policy disables it. With
     # neither, there are no roles to serve and the tools are not
     # registered at all
-    roles_paths = []
-    if project is not None:
-        roles_paths = project_role_paths(project)
-    if bundled_content:
-        roles_paths.append(roles_path)
     if roles_paths:
         entries.extend([
             ('role.info',

@@ -159,7 +159,8 @@ def test_serve_outside_a_project_serves_documentation(
     assert result.returncode == 0
     (response,) = read_json_lines(result.stdout)
     names = sorted(tool["name"] for tool in response["result"]["tools"])
-    assert names == ["collection.playbooks", "collection.roles",
+    assert names == ["ansible.doc", "collection.playbooks",
+                     "collection.roles",
                      "playbook.info", "playbook.list",
                      "role.argspec", "role.defaults", "role.files",
                      "role.handlers", "role.info", "role.tasks",
@@ -483,7 +484,8 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
     assert result.returncode == 0
     (response,) = read_json_lines(result.stdout)
     names = [tool["name"] for tool in response["result"]["tools"]]
-    assert sorted(names) == ["ansible.facts", "ansible.ping", "check",
+    assert sorted(names) == ["ansible.doc", "ansible.facts",
+                             "ansible.ping", "check",
                              "collection.playbooks", "collection.remove",
                              "collection.require", "collection.roles",
                              "collection.sync", "config.get",
@@ -1927,6 +1929,37 @@ def test_skills_cli_filters(run_debops, mcp_env, tmp_path):
                         cwd=str(tmp_path), env=mcp_env)
     assert result.returncode == 0
     assert "roles/" not in result.stdout
+
+
+def test_ansible_doc_via_stdio(run_debops, mcp_env, tmp_path):
+    if shutil.which("ansible-doc") is None:
+        pytest.skip("ansible-doc is not installed")
+
+    def call(arguments, request_id=1):
+        request = json.dumps({
+            "jsonrpc": "2.0", "id": request_id, "method": "tools/call",
+            "params": {"_meta": REQUEST_META, "name": "ansible.doc",
+                       "arguments": arguments},
+        }) + "\n"
+        result = run_debops("mcp", "serve", cwd=str(tmp_path),
+                            env=mcp_env, input_text=request)
+        assert result.returncode == 0
+        (response,) = read_json_lines(result.stdout)
+        return response
+
+    # The documentation mode serves it: ansible.builtin content and
+    # the bundled collection's own plugins
+    response = call({"plugin": "ansible.builtin.service"})
+    text = response["result"]["content"][0]["text"]
+    assert "manage" in text.lower() and "service" in text.lower()
+
+    response = call({"plugin": "debops.debops.dpkg_divert",
+                     "format": "json"}, 2)
+    document = json.loads(response["result"]["content"][0]["text"])
+    assert "debops.debops.dpkg_divert" in document
+
+    response = call({"plugin": "nosuch.module"}, 3)
+    assert response["result"]["isError"]
 
 
 def test_docs_mode_serves_the_role_briefs(run_debops, mcp_env,

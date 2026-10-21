@@ -197,6 +197,8 @@ TOOL_CALL_EXAMPLES = {
               'playbook=site limit=web1.example.com'],
     'run': ['playbook=service/nginx',
             'playbook=site limit=web1.example.com'],
+    'ansible.doc': ['plugin=ansible.builtin.service',
+                    'type=lookup plugin=debops.debops.dpkg_divert'],
     'ansible.ping': ['hosts=webservers', 'hosts=all become=true'],
     'ansible.facts': ['hosts=web1.example.com',
                       'hosts=all filter=ansible_distribution*'],
