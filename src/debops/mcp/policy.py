@@ -152,6 +152,7 @@ class McpPolicy(object):
         policy.execute_hosts = []
         policy.become = False
         policy.execute_diff = False
+        policy.execute_debug = False
         policy.view_lock = False
         policy.execute_options = []
         return policy
@@ -390,6 +391,18 @@ class McpPolicy(object):
         if self.view_lock:
             logger.notice('The infrastructure view is locked by policy '
                           '(project.mcp.view_lock)')
+
+        # Debug runs of playbooks: the verbosity prints task arguments
+        # — secrets included — into the answer, which goes to the
+        # model. Off by default, like the check-mode diffs
+        debug = mcp_config.get('execute_debug', False)
+        if isinstance(debug, str):
+            debug = strtobool(debug)
+        self.execute_debug = bool(debug)
+        if self.execute_debug:
+            logger.notice('Playbook debugging enabled by policy '
+                          '(project.mcp.execute_debug: task arguments, '
+                          'secrets included, reach the model)')
 
         options = mcp_config.get('execute_options')
         if options is None:

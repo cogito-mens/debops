@@ -123,6 +123,29 @@ _RECAP_LINE = re.compile(
         + r'\s*$')
 
 
+def _failure_excerpt(output):
+    """The first failure with its task header, for a debug answer.
+
+    The full -vv output stays in the text; this is the 'start here'
+    section of a failed debug run.
+    """
+    fatal = re.search(r'^fatal: \[', output, re.M)
+    if fatal is None:
+        return None
+    header = None
+    # (the module-level _TASK_HEADER matches per line, no re.M — the
+    # progress lines; here the slice is the whole run so far)
+    for match in re.finditer(r'^TASK \[.*\]', output[:fatal.start()],
+                             re.M):
+        header = match
+    lines = []
+    if header is not None:
+        lines.append(header.group(0))
+    block = output[fatal.start():].split('\n\n', 1)[0]
+    lines.extend(block.splitlines()[:30])
+    return '\n'.join(lines)
+
+
 def _parse_recap(output):
     """The per-host counters of the play recap(s), summed per host."""
     recap = {}
@@ -179,13 +202,14 @@ def _playbook_targets(arguments):
 
 
 def _build_ansible_args(arguments, check, allowed_options=EXECUTE_OPTIONS,
-                        diff=False):
+                        diff=False, debug=False):
     """Build the ansible-playbook arguments from the tool arguments.
 
     Only options permitted by the project policy are accepted. The diff
     rides only when the project opts in (project.mcp.execute_diff): it
     renders the files a template task would write, secrets included,
-    into the tool result.
+    into the tool result. The debugging verbosity (-vv, gated by
+    project.mcp.execute_debug upstream) is the same class of opt-in.
     """
     args = _playbook_targets(arguments)
     for option, flag in ALLOWED_OPTIONS.items():
@@ -206,6 +230,10 @@ def _build_ansible_args(arguments, check, allowed_options=EXECUTE_OPTIONS,
         if diff:
             args.append('--diff')
         args.append('--check')
+    if debug:
+        # -vv pairs the invocation with the result per task, without
+        # the connection chatter of -vvv
+        args.append('-vv')
     return args
 
 
@@ -339,12 +367,20 @@ def _execute_playbook(project, policy, arguments, context, check,
     except ValueError as errmsg:
         return error_result(str(errmsg))
 
+    debug = bool(arguments.get('debug'))
+    if debug and not policy.execute_debug:
+        return error_result('debugging is disabled by the project '
+                            'policy (project.mcp.execute_debug): a '
+                            'debug run prints task arguments — secrets '
+                            'included — into the answer')
+
     with exclusive_project(project, policy,
                            note='{} {}'.format(mode, ' '.join(targets))):
         try:
             args = _build_ansible_args(arguments, check,
                                        policy.execute_options,
-                                       diff=policy.execute_diff)
+                                       diff=policy.execute_diff,
+                                       debug=debug)
         except ValueError as errmsg:
             return error_result(str(errmsg))
 
@@ -395,6 +431,11 @@ def _execute_playbook(project, policy, arguments, context, check,
             unlocked = inventory.unlock()
 
             env = mcp_environ(project)
+            if debug:
+                env['ANSIBLE_DEBUG'] = 'true'
+                # The module scripts stay on the host for manual
+                # re-runs ('expel' them with the next normal run)
+                env['ANSIBLE_KEEP_REMOTE_FILES'] = '1'
 
             # Resolve the affected hosts before running: the inventory
             # is the security boundary, and the resolution is the audit
@@ -471,6 +512,14 @@ def _execute_playbook(project, policy, arguments, context, check,
     header = '# debops {} {}\n\nexit code: {}\nhosts: {}\n\n'.format(
             mode, ' '.join(targets), returncode,
             ', '.join(resolved_hosts) if resolved_hosts else '(none)')
+    if debug:
+        notes = ['debug mode (-vv, ANSIBLE_DEBUG, the remote module '
+                 'scripts were kept on the hosts)']
+        if returncode != 0:
+            excerpt = _failure_excerpt(output)
+            if excerpt is not None:
+                notes.append('## First failure\n\n' + excerpt)
+        header += '\n\n'.join(notes) + '\n\n'
     # The machine-readable summary; the full output stays in the text.
     # The recap answers the maintainer's question — 'exit code 0' means
     # no failures, only the recap says whether anything changed

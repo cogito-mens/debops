@@ -39,6 +39,12 @@ execute_options = ["limit", "tags", "skip-tags"]
 # is the agent-usable answer without it.
 execute_diff = false
 
+# Whether the execution tools accept 'debug': true. A debug run adds
+# -vv, ANSIBLE_DEBUG and ANSIBLE_KEEP_REMOTE_FILES, and its answer
+# prints the task arguments — secrets included (the leak starts before
+# the debug verbosity; even -v shows them). Off by default.
+#execute_debug = false
+
 # Glob allowlists of inventory host patterns the host-query and
 # the execution tools may touch; empty means every host is allowed.
 #ansible_hosts = []

@@ -67,6 +67,15 @@ def execution_schema(policy):
         if option in allowed:
             properties[option] = {'type': 'string',
                                   'description': description}
+    if policy is None or policy.execute_debug:
+        properties['debug'] = {
+            'type': 'boolean',
+            'description': 'Run with Ansible debugging (-vv, '
+                           'ANSIBLE_DEBUG, the remote module scripts '
+                           'kept on the hosts). Prints task arguments '
+                           '— secrets included — into the answer; '
+                           'the project enables it with '
+                           'project.mcp.execute_debug'}
     return {'type': 'object', 'properties': properties,
             'required': ['playbook']}
 

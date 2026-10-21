@@ -153,6 +153,21 @@ class ResolveHostsTestCase(unittest.TestCase):
         self.assertEqual(hosts, ['web1', 'web2', 'web3'])
 
 
+FAILING_OUTPUT = '''\
+PLAY [web] *************************************************************
+
+TASK [Gather facts] ****************************************************
+ok: [web1]
+
+TASK [Install the package] *********************************************
+
+fatal: [web1]: FAILED! => {"changed": false, "msg": "No package matching 'apache3'"}
+
+PLAY RECAP *************************************************************
+web1 : ok=1 changed=0 failed=1
+'''
+
+
 class ExecuteTestCase(unittest.TestCase):
 
     def setUp(self):
@@ -163,7 +178,8 @@ class ExecuteTestCase(unittest.TestCase):
         self.context = ToolContext(1, threading.Event())
 
     def call_execute(self, check=True, resolved=('web1',),
-                     playbook='site', output='play recap\n'):
+                     playbook='site', output='play recap\n',
+                     returncode=0, arguments=None):
         from debops.mcp.tools.execute import _execute_playbook
         with mock.patch(
                 'debops.mcp.tools.execute.AnsiblePlaybookRunner') as runner, \
@@ -178,11 +194,64 @@ class ExecuteTestCase(unittest.TestCase):
                     'ansible-playbook', 'site.yml']
             inventory.return_value.unlock.return_value = True
             hooks.return_value = True
-            popen.return_value = make_process(output=output)
+            popen.return_value = make_process(returncode=returncode,
+                                              output=output)
             result = _execute_playbook(self.project, self.policy,
-                                       {'playbook': playbook},
+                                       dict({'playbook': playbook},
+                                            **(arguments or {})),
                                        self.context, check=check)
         return result, runner, inventory, hooks, popen
+
+    def test_debug_refused_by_default(self):
+        # The leak class: the verbosity prints task arguments — secrets
+        # included — into the answer, so the policy gates it
+        result, _r, _i, _h, _p = self.call_execute(
+                arguments={'debug': True})
+        self.assertTrue(result['isError'])
+        self.assertIn('execute_debug', result['content'][0]['text'])
+
+    def test_debug_run_payload(self):
+        self.policy.execute_debug = True
+        result, runner, _i, _h, popen = self.call_execute(
+                arguments={'debug': True})
+        self.assertFalse(result['isError'])
+        # -vv rides the runner's ansible arguments: the invocation and
+        # the result pair per task, without the connection chatter
+        self.assertIn('-vv', runner.call_args[1]['ansible_args'])
+        env = popen.call_args[1]['env']
+        self.assertEqual(env['ANSIBLE_DEBUG'], 'true')
+        self.assertEqual(env['ANSIBLE_KEEP_REMOTE_FILES'], '1')
+        self.assertIn('debug mode', result['content'][0]['text'])
+
+    def test_debug_failure_answer_carries_the_neighborhood(self):
+        self.policy.execute_debug = True
+        result, _r, _i, _h, _p = self.call_execute(
+                arguments={'debug': True}, returncode=2,
+                output=FAILING_OUTPUT)
+        text = result['content'][0]['text']
+        self.assertIn('## First failure', text)
+        self.assertIn('TASK [Install the package]', text)
+        self.assertIn('apache3', text)
+        # The full output still follows
+        self.assertIn('PLAY RECAP', text)
+
+    def test_failure_excerpt(self):
+        from debops.mcp.tools.execute import _failure_excerpt
+        excerpt = _failure_excerpt(FAILING_OUTPUT)
+        self.assertIn('TASK [Install the package]', excerpt)
+        self.assertIn('fatal: [web1]: FAILED!', excerpt)
+        self.assertIn('apache3', excerpt)
+        self.assertIsNone(_failure_excerpt('all quiet\nok: [web1]\n'))
+
+    def test_schema_hides_debug_until_the_policy_allows_it(self):
+        from debops.mcp.tools import execution_schema
+        schema = execution_schema(self.policy)
+        self.assertNotIn('debug', schema['properties'])
+        self.policy.execute_debug = True
+        schema = execution_schema(self.policy)
+        self.assertIn('debug', schema['properties'])
+        self.assertEqual(schema['properties']['debug']['type'],
+                         'boolean')
 
     def test_successful_check(self):
         result, _runner, inventory, hooks, popen = self.call_execute()
