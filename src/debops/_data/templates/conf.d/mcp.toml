@@ -45,6 +45,14 @@ execute_diff = false
 # the debug verbosity; even -v shows them). Off by default.
 #execute_debug = false
 
+# The run logs of the executions live in the user's cache directory
+# ($XDG_CACHE_HOME/debops/mcp/runs/), one directory per project view;
+# a diff or a debug run renders secrets into them, and the files are
+# private to the account. These knobs tune the pruning: how many logs
+# are kept per view, and the age in seconds after which one is dropped.
+#run_logs_keep = 10
+#run_logs_max_age = 604800
+
 # Glob allowlists of inventory host patterns the host-query and
 # the execution tools may touch; empty means every host is allowed.
 #ansible_hosts = []

@@ -233,19 +233,19 @@ TOOL_OUTPUT_SCHEMAS = {
         'playbooks': {'type': 'array', 'items': {'type': 'string'}},
         'hosts': {'type': 'array', 'items': {'type': 'string'}},
         'exitCode': {'type': 'integer'}, 'status': {'type': 'string'},
-        'log': {'type': 'string'},
+        'executionId': {'type': 'integer'}, 'log': {'type': 'string'},
         'recap': _RECAP_SCHEMA},
         'required': ['mode', 'playbooks', 'hosts', 'exitCode',
-                     'status']},
+                     'status', 'executionId']},
     'run': {'type': 'object', 'properties': {
         'mode': {'type': 'string'},
         'playbooks': {'type': 'array', 'items': {'type': 'string'}},
         'hosts': {'type': 'array', 'items': {'type': 'string'}},
         'exitCode': {'type': 'integer'}, 'status': {'type': 'string'},
-        'log': {'type': 'string'},
+        'executionId': {'type': 'integer'}, 'log': {'type': 'string'},
         'recap': _RECAP_SCHEMA},
         'required': ['mode', 'playbooks', 'hosts', 'exitCode',
-                     'status']},
+                     'status', 'executionId']},
 }
 
 
@@ -687,21 +687,16 @@ def _no_view_stub(entry):
                     NO_ACTIVE_VIEW),) + entry[4:]
 
 
-def _survival_note(detach):
+def _survival_note():
     """The note about an execution which outlives its client.
 
-    A detached execution survives the death of the server: the client
-    does not get the answer, but the run finishes and its log records
-    what happened. A daemon keeps the execution: the client collects
-    the answer by polling the task.
+    Every execution is detached from the server: the client does not
+    get the answer when the server dies, but the run finishes and its
+    log records what happened.
     """
-    if detach:
-        return (' A started execution survives the death of this '
-                'server: it is detached from it, and its output lands '
-                'in the run log. The answer is lost with the server.')
-    return (' A started execution survives the disconnect of the '
-            'client: the server keeps it, and the answer is collected '
-            'by polling the task.')
+    return (' A started execution survives the death of this server: '
+            'it is detached from it, and its output lands in the run '
+            'log. The answer is lost with the server.')
 
 
 def _execution_stub_entry(name, policy, execute_mode):
@@ -775,13 +770,6 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
     project = server.project
     policy = server.policy
     target = registry if registry is not None else server.tools
-
-    # A stdio server is spawned by its client, which may close (or be
-    # killed) while a playbook is still running: such an execution is
-    # detached from the server process and survives it. A daemon (the
-    # 'unix' transport) outlives its clients by design and finishes the
-    # work in flight when it is stopped.
-    detach = getattr(server, 'transport', None) == 'stdio'
 
     if collection_index_provider is None:
         collection_index_provider = make_galaxy_index_provider(project)
@@ -1020,16 +1008,17 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
             'or a list of targets (see the playbooks tool), run in '
             'order, and optional limit/tags. A check run of a '
             'project-local playbook asks the user first: its tasks '
-            'can execute commands even in check mode. The change is '
+            'can execute commands even in check mode. The result is '
+            'a point-in-time preview: the project or the inventory '
+            'can change between the check and the run. The change is '
             'complete when this call returns; a dependent call must '
             'wait for it (batched requests run concurrently).'
-            + _survival_note(detach),
+            + _survival_note(),
             execution_schema(policy),
             lambda arguments, context: tool_check(
                 project, policy, arguments, context,
                 enabled_check=enabled_check,
-                on_disabled=server.cancel_all,
-                detach=detach),
+                on_disabled=server.cancel_all),
             True, True, True))
     if execute_mode == 'all':
         tools.append((
@@ -1040,13 +1029,12 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
             'tool), run in order, and optional limit/tags. The change '
             'is complete when this call returns; a dependent call '
             'must wait for it (batched requests run concurrently).'
-            + _survival_note(detach),
+            + _survival_note(),
             execution_schema(policy),
             lambda arguments, context: tool_run(
                 project, policy, arguments, context,
                 enabled_check=enabled_check,
-                on_disabled=server.cancel_all,
-                detach=detach),
+                on_disabled=server.cancel_all),
             True, False, True))
     elif execute_mode == 'check':
         execution_stubs.add('run')

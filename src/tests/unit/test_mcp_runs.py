@@ -64,6 +64,40 @@ class RunsTestCase(unittest.TestCase):
         # ... while staying stable for the same project
         self.assertEqual(runs.project_key(one), runs.project_key(one))
 
+    def test_next_execution_id_scans_the_directory(self):
+        directory = os.path.join(self.tmpdir, 'runs')
+        os.makedirs(directory)
+        self.assertEqual(runs.next_execution_id(directory), 1)
+        for name in ('execution-1.log', 'execution-7.log',
+                     'execution-7.json', 'other.log'):
+            with open(os.path.join(directory, name), 'w'):
+                pass
+        self.assertEqual(runs.next_execution_id(directory), 8)
+
+    def test_new_log_ids_survive_a_server_restart(self):
+        # The ids come from the directory, so a new server process does
+        # not reuse the id of a run whose log still exists
+        project = FakeProject(os.path.join(self.tmpdir, 'project'))
+        first_id, first_path = runs.new_log(project)
+        with open(first_path, 'w'):
+            pass
+        second_id, second_path = runs.new_log(project)
+        self.assertEqual((first_id, second_id), (1, 2))
+        self.assertNotEqual(first_path, second_path)
+
+    def test_metadata_round_trip(self):
+        path = os.path.join(self.tmpdir, 'execution-1.log')
+        runs.write_metadata(path, {'executionId': 1, 'mode': 'run'})
+        self.assertEqual(runs.read_metadata(path),
+                         {'executionId': 1, 'mode': 'run'})
+        # Private, like the log itself
+        sidecar = os.path.join(self.tmpdir, 'execution-1.json')
+        self.assertEqual(os.stat(sidecar).st_mode & 0o777, 0o600)
+
+    def test_read_metadata_of_a_missing_sidecar(self):
+        self.assertIsNone(runs.read_metadata(
+                os.path.join(self.tmpdir, 'missing.log')))
+
     def test_project_key_sanitizes_the_name(self):
         project = FakeProject(self.tmpdir, name='my project!')
         key = runs.project_key(project)

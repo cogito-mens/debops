@@ -189,6 +189,31 @@ class McpConfigTemplateTestCase(unittest.TestCase):
                          policy.local_playbooks)
 
 
+class RunLogRetentionTestCase(unittest.TestCase):
+    """The run log retention knobs of the policy."""
+
+    def test_defaults(self):
+        policy = McpPolicy(FakeProject('/srv/projects/example'))
+        self.assertEqual(policy.run_logs_keep, 10)
+        self.assertEqual(policy.run_logs_max_age, 7 * 24 * 60 * 60)
+
+    def test_parsing(self):
+        project = FakeProject('/srv/projects/example', raw_config={
+                'project': {'mcp': {'run_logs_keep': 25,
+                                    'run_logs_max_age': 3600}}})
+        policy = McpPolicy(project)
+        self.assertEqual(policy.run_logs_keep, 25)
+        self.assertEqual(policy.run_logs_max_age, 3600)
+
+    def test_invalid_values_fall_back_to_the_defaults(self):
+        project = FakeProject('/srv/projects/example', raw_config={
+                'project': {'mcp': {'run_logs_keep': 'many',
+                                    'run_logs_max_age': None}}})
+        policy = McpPolicy(project)
+        self.assertEqual(policy.run_logs_keep, 10)
+        self.assertEqual(policy.run_logs_max_age, 7 * 24 * 60 * 60)
+
+
 class EnvFileDenyTestCase(unittest.TestCase):
 
     def _policy(self):

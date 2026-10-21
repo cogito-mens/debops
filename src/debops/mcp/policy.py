@@ -229,6 +229,18 @@ class McpPolicy(object):
             logger.notice('Playbook execution enabled: %s '
                           '(timeout %ss)', self.execute, self.execute_timeout)
 
+        # The run logs of the executions, kept in the user's cache
+        # directory: how many per project view, and for how long
+        try:
+            self.run_logs_keep = int(mcp_config.get('run_logs_keep', 10))
+        except (TypeError, ValueError):
+            self.run_logs_keep = 10
+        try:
+            self.run_logs_max_age = int(
+                    mcp_config.get('run_logs_max_age', 7 * 24 * 60 * 60))
+        except (TypeError, ValueError):
+            self.run_logs_max_age = 7 * 24 * 60 * 60
+
         # Minimum interval between git syncs, so that the tools cannot
         # be used to hammer the origin
         try:

@@ -50,12 +50,35 @@ class FakeProject(object):
 
 def make_process(returncode=0, output='play recap\n', poll=None):
     process = mock.Mock()
-    process.poll.side_effect = poll if poll is not None else [None, 0]
+    if poll is None:
+        # The default tolerates concurrent callers: the detached log
+        # reader polls too, so a side-effect list would be exhausted by
+        # the two consumers racing
+        calls = itertools.count()
+
+        def poll():
+            return 0 if next(calls) >= 2 else None
+    process.poll.side_effect = poll
     # The execution loop reads output incrementally from stdout
     process.stdout = io.StringIO(output)
     process.wait.return_value = None
     process.returncode = returncode
     return process
+
+
+def make_popen(output='play recap\n', returncode=0, poll=None):
+    """A Popen side effect whose 'child' writes the output into the
+    given stdout: the log file for a detached run, the pipe otherwise
+    (the pipe reader consumes the mock's own 'stdout' stream)."""
+    def popen(command, **kwargs):
+        stdout = kwargs.get('stdout')
+        process = make_process(returncode=returncode, output=output,
+                               poll=poll)
+        if stdout is not None and stdout is not subprocess.PIPE:
+            stdout.write(output)
+            stdout.flush()
+        return process
+    return popen
 
 
 def make_resolve_result(hosts=('web1',), returncode=0, stderr=''):
@@ -191,8 +214,7 @@ class ExecuteTestCase(unittest.TestCase):
 
     def call_execute(self, check=True, resolved=('web1',),
                      playbook='site', output='play recap\n',
-                     returncode=0, arguments=None, detach=False,
-                     poll=None):
+                     returncode=0, arguments=None):
         from debops.mcp.tools.execute import _execute_playbook
         with mock.patch(
                 'debops.mcp.tools.execute.AnsiblePlaybookRunner') as runner, \
@@ -207,13 +229,12 @@ class ExecuteTestCase(unittest.TestCase):
                     'ansible-playbook', 'site.yml']
             inventory.return_value.unlock.return_value = True
             hooks.return_value = True
-            popen.return_value = make_process(returncode=returncode,
-                                              output=output, poll=poll)
+            popen.side_effect = make_popen(output=output,
+                                           returncode=returncode)
             result = _execute_playbook(self.project, self.policy,
                                        dict({'playbook': playbook},
                                             **(arguments or {})),
-                                       self.context, check=check,
-                                       detach=detach)
+                                       self.context, check=check)
         return result, runner, inventory, hooks, popen
 
     def test_debug_refused_by_default(self):
@@ -285,10 +306,12 @@ class ExecuteTestCase(unittest.TestCase):
         self.assertEqual(check_schema(structured,
                                       TOOL_OUTPUT_SCHEMAS['check']),
                          [])
-        # The command is spawned without a shell, as a plain argv list
+        # The command runs inside the fixed wrapper, the playbook argv
+        # quoted into it
         popen.assert_called_once()
         command = popen.call_args[0][0]
-        self.assertEqual(command, ['ansible-playbook', 'site.yml'])
+        self.assertEqual(command[:2], ['/bin/sh', '-c'])
+        self.assertIn('ansible-playbook site.yml', command[2])
         self.assertEqual(popen.call_args[1]['cwd'], self.tmpdir)
         # Secrets are unlocked before and locked after
         inventory.return_value.unlock.assert_called_once()
@@ -346,10 +369,11 @@ class ExecuteTestCase(unittest.TestCase):
 
     def test_cancellation_is_logged(self):
         self.context.cancelled.set()
-        with self.assertLogs('debops.mcp.tools.execute',
-                             level='NOTICE') as recorded:
-            with self.assertRaises(RequestCancelled):
-                self.call_execute()
+        with mock.patch('debops.mcp.tools.execute.os.killpg'):
+            with self.assertLogs('debops.mcp.tools.execute',
+                                 level='NOTICE') as recorded:
+                with self.assertRaises(RequestCancelled):
+                    self.call_execute()
         self.assertTrue(any('cancelled by the client' in line
                             for line in recorded.output),
                         recorded.output)
@@ -564,9 +588,8 @@ class ExecuteTestCase(unittest.TestCase):
                            return_value=make_resolve_result()), \
                 mock.patch(
                 'debops.mcp.tools.execute.subprocess.Popen') as popen:
-            popen.return_value = make_process(returncode=2,
-                                              output='failed!\n',
-                                              poll=[0])
+            popen.side_effect = make_popen(output='failed!\n',
+                                           returncode=2)
             result = _execute_playbook(self.project, self.policy,
                                        {'playbook': 'site'}, self.context,
                                        check=False)
@@ -654,16 +677,20 @@ class ExecuteTestCase(unittest.TestCase):
                            return_value=True), \
                 mock.patch('debops.mcp.tools.execute.subprocess.run',
                            return_value=make_resolve_result()), \
+                mock.patch('debops.mcp.tools.execute.os.killpg') \
+                as killpg, \
                 mock.patch(
                 'debops.mcp.tools.execute.subprocess.Popen') as popen:
-            popen.return_value = make_process(returncode=-15,
-                                              poll=[None, None])
+            popen.return_value = make_process(returncode=-15)
             result = _execute_playbook(self.project, self.policy,
                                        {'playbook': 'site'}, self.context,
                                        check=True,
                                        enabled_check=lambda: False,
                                        on_disabled=on_disabled)
-        popen.return_value.terminate.assert_called_once()
+        # The detached run leads its own process group; the kill
+        # switch signals the group
+        killpg.assert_called_once_with(popen.return_value.pid,
+                                       signal.SIGTERM)
         on_disabled.assert_called_once()
         self.assertTrue(result['isError'])
         self.assertIn('kill switch', result['content'][0]['text'])
@@ -696,15 +723,17 @@ class ExecuteTestCase(unittest.TestCase):
                            return_value=True), \
                 mock.patch('debops.mcp.tools.execute.subprocess.run',
                            return_value=make_resolve_result()), \
+                mock.patch('debops.mcp.tools.execute.os.killpg') \
+                as killpg, \
                 mock.patch(
                 'debops.mcp.tools.execute.subprocess.Popen') as popen:
-            popen.return_value = make_process(returncode=-15,
-                                              poll=[None, None])
+            popen.return_value = make_process(returncode=-15)
             with self.assertRaises(RequestCancelled):
                 _execute_playbook(self.project, self.policy,
                                   {'playbook': 'site'}, self.context,
                                   check=True)
-        popen.return_value.terminate.assert_called_once()
+        killpg.assert_called_once_with(popen.return_value.pid,
+                                       signal.SIGTERM)
 
     def test_timeout_kills_the_process(self):
         from debops.mcp.tools.execute import _execute_playbook
@@ -718,14 +747,16 @@ class ExecuteTestCase(unittest.TestCase):
                            return_value=True), \
                 mock.patch('debops.mcp.tools.execute.subprocess.run',
                            return_value=make_resolve_result()), \
+                mock.patch('debops.mcp.tools.execute.os.killpg') \
+                as killpg, \
                 mock.patch(
                 'debops.mcp.tools.execute.subprocess.Popen') as popen:
-            popen.return_value = make_process(returncode=-9,
-                                              poll=[None, None])
+            popen.return_value = make_process(returncode=-9)
             result = _execute_playbook(project, policy,
                                        {'playbook': 'site'}, self.context,
                                        check=True)
-        popen.return_value.kill.assert_called_once()
+        killpg.assert_called_once_with(popen.return_value.pid,
+                                       signal.SIGKILL)
         self.assertTrue(result['isError'])
         self.assertIn('timed out', result['content'][0]['text'])
 
@@ -853,7 +884,7 @@ class ProgressTestCase(unittest.TestCase):
                            return_value=make_resolve_result()), \
                 mock.patch(
                 'debops.mcp.tools.execute.subprocess.Popen') as popen:
-            popen.return_value = make_process(output=output)
+            popen.side_effect = make_popen(output=output)
             return _execute_playbook(self.project, self.policy,
                                      {'playbook': 'site'}, context,
                                      check=True)
@@ -906,17 +937,6 @@ class ProgressTestCase(unittest.TestCase):
         self.assertIn('TASK [Say hello]', task.status_message)
         self.assertIn('--- log tail ---', task.status_message)
         self.assertIn('ok: [localhost]', task.status_message)
-
-
-def make_poll(calls_before_exit=3):
-    """A poll() side effect which tolerates concurrent callers: the
-    detached log reader polls too, so a list would be exhausted by the
-    two consumers racing."""
-    calls = itertools.count()
-
-    def poll():
-        return 0 if next(calls) >= calls_before_exit else None
-    return poll
 
 
 class DetachedCommandTestCase(unittest.TestCase):
@@ -1058,7 +1078,7 @@ class DetachedRunTestCase(unittest.TestCase):
 
 
 class DetachedExecutionTestCase(unittest.TestCase):
-    """The execution tools in the detached (harness-spawned) mode."""
+    """The execution tools: every run is detached from the server."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-exec-')
@@ -1068,7 +1088,7 @@ class DetachedExecutionTestCase(unittest.TestCase):
         self.policy = McpPolicy(self.project)
         self.context = ToolContext(1, threading.Event())
 
-    def call_detached(self, detach=True):
+    def call_detached(self, output='play recap\n', returncode=0):
         from debops.mcp.tools.execute import _execute_playbook
         with mock.patch(
                 'debops.mcp.tools.execute.AnsiblePlaybookRunner') as runner, \
@@ -1083,11 +1103,11 @@ class DetachedExecutionTestCase(unittest.TestCase):
                     'ansible-playbook', 'site.yml']
             inventory.return_value.unlock.return_value = True
             hooks.return_value = True
-            popen.return_value = make_process(poll=make_poll())
+            popen.side_effect = make_popen(output=output,
+                                           returncode=returncode)
             result = _execute_playbook(self.project, self.policy,
                                        {'playbook': 'site'},
-                                       self.context, check=True,
-                                       detach=detach)
+                                       self.context, check=True)
         return result, popen
 
     def run_logs(self):
@@ -1113,6 +1133,7 @@ class DetachedExecutionTestCase(unittest.TestCase):
         self.assertFalse(result['isError'])
         kwargs = popen.call_args[1]
         self.assertTrue(kwargs['start_new_session'])
+        self.assertEqual(kwargs['stdin'], subprocess.DEVNULL)
 
     def test_the_project_lock_rides_along(self):
         # The flock file descriptor is passed to the child, so the
@@ -1123,6 +1144,14 @@ class DetachedExecutionTestCase(unittest.TestCase):
         (fd,) = popen.call_args[1]['pass_fds']
         self.assertIsInstance(fd, int)
 
+    def test_the_child_output_is_unbuffered(self):
+        # The log file is tailed live; a block-buffered stdout would
+        # deliver the progress in chunks
+        result, popen = self.call_detached()
+        self.assertFalse(result['isError'])
+        env = popen.call_args[1]['env']
+        self.assertEqual(env['PYTHONUNBUFFERED'], '1')
+
     def test_the_answer_points_at_the_run_log(self):
         result, _p = self.call_detached()
         self.assertFalse(result['isError'])
@@ -1131,45 +1160,35 @@ class DetachedExecutionTestCase(unittest.TestCase):
         self.assertIn('log: ' + log, text)
         self.assertEqual(result['structuredContent']['log'], log)
 
-    def test_a_non_detached_run_keeps_the_plain_command(self):
-        result, popen = self.call_detached(detach=False)
+    def test_the_answer_carries_the_execution_id(self):
+        result, _p = self.call_detached()
         self.assertFalse(result['isError'])
-        self.assertEqual(popen.call_args[0][0],
-                         ['ansible-playbook', 'site.yml'])
-        kwargs = popen.call_args[1]
-        self.assertFalse(kwargs['start_new_session'])
-        self.assertEqual(kwargs['pass_fds'], ())
+        summary = result['structuredContent']
+        self.assertEqual(summary['executionId'], 1)
+        self.assertIn('execution: 1', result['content'][0]['text'])
 
+    def test_the_sidecar_records_the_run(self):
+        from debops.mcp import runs
+        result, _p = self.call_detached()
+        self.assertFalse(result['isError'])
+        metadata = runs.read_metadata(result['structuredContent']['log'])
+        self.assertEqual(metadata['executionId'], 1)
+        self.assertEqual(metadata['mode'], 'check')
+        self.assertEqual(metadata['playbooks'], ['site'])
+        self.assertEqual(metadata['hosts'], ['web1'])
+        self.assertEqual(metadata['exitCode'], 0)
+        self.assertEqual(metadata['status'], 'done')
+        self.assertIn('startedAt', metadata)
+        self.assertIn('finishedAt', metadata)
 
-class TransportStrategyTestCase(unittest.TestCase):
-    """The transport decides whether the executions detach: a stdio
-    server is harness-spawned and may die mid-run; a daemon drains."""
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-strategy-')
-        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
-        os.environ['XDG_CACHE_HOME'] = os.path.join(self.tmpdir, 'cache')
-        self.project = FakeProject(self.tmpdir)
-
-    def _detach_flag(self, transport):
-        policy = McpPolicy(self.project)
-        policy.execute = 'all'
-        server = McpServer(project=self.project, policy=policy,
-                           transport=transport)
-        register_project_tools(server, roles_path=self.tmpdir,
-                               collection_index_provider=lambda: {})
-        with mock.patch('debops.mcp.tools.tool_run') as tool_run:
-            tool_run.return_value = {'content': [], 'isError': False}
-            server.tools['run'].handler(
-                    {'playbook': 'site'},
-                    ToolContext(1, threading.Event()))
-        return tool_run.call_args[1]['detach']
-
-    def test_stdio_detaches_the_executions(self):
-        self.assertTrue(self._detach_flag('stdio'))
-
-    def test_a_unix_daemon_drains_instead(self):
-        self.assertFalse(self._detach_flag('unix'))
+    def test_the_ids_survive_a_server_restart(self):
+        # The ids come from the log directory, so a new server process
+        # does not reuse the id of a run whose log still exists
+        first, _p1 = self.call_detached()
+        second, _p2 = self.call_detached()
+        self.assertEqual(first['structuredContent']['executionId'], 1)
+        self.assertEqual(second['structuredContent']['executionId'], 2)
+        self.assertEqual(len(self.run_logs()), 2)
 
 
 if __name__ == '__main__':

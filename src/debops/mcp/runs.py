@@ -17,6 +17,7 @@ grow a directory of run logs), and the cache is the one place a user
 """
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -41,6 +42,9 @@ KEEP_LOGS = 10
 
 # The age at which a run log is pruned, in seconds
 MAX_LOG_AGE = 7 * 24 * 60 * 60
+
+# The log file name of an execution
+_LOG_NAME = re.compile(r'^execution-(\d+)\.log$')
 
 
 def _cache_base():
@@ -76,7 +80,7 @@ def project_key(project):
     return '{}-{}'.format(digest.hexdigest()[:8], name)
 
 
-def project_directory(project):
+def project_directory(project, keep=KEEP_LOGS, max_age=MAX_LOG_AGE):
     """The run log directory of a project, created if needed.
 
     The old logs are pruned on the way: the cache is not a place where
@@ -96,7 +100,7 @@ def project_directory(project):
         logger.warning('Cannot create the run log directory %s: %s',
                        path, errmsg)
         return None
-    prune(path)
+    prune(path, keep=keep, max_age=max_age)
     return path
 
 
@@ -107,6 +111,66 @@ def log_path(project, execution_id):
     if directory is None:
         return None
     return os.path.join(directory, 'execution-{}.log'.format(execution_id))
+
+
+def next_execution_id(directory):
+    """The next free execution id in a run log directory.
+
+    The ids come from a scan of the directory rather than a process
+    counter, so a restarted server does not reuse the id of a run whose
+    log still exists — a query for an old run must never return a
+    newer one. The caller holds the project's exclusive lock, which
+    makes the scan-and-create race-free.
+    """
+    highest = 0
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return 1
+    for name in names:
+        match = _LOG_NAME.match(name)
+        if match is not None:
+            highest = max(highest, int(match.group(1)))
+    return highest + 1
+
+
+def new_log(project, keep=KEEP_LOGS, max_age=MAX_LOG_AGE):
+    """The (id, path) of the log file for a new execution.
+
+    Returns (None, None) when the cache directory is not usable.
+    """
+    directory = project_directory(project, keep=keep, max_age=max_age)
+    if directory is None:
+        return None, None
+    execution_id = next_execution_id(directory)
+    return execution_id, os.path.join(
+            directory, 'execution-{}.log'.format(execution_id))
+
+
+def write_metadata(log_path, metadata):
+    """Write the sidecar metadata of an execution, atomically.
+
+    The sidecar lets a later session list and address the runs without
+    parsing the logs. The write is private, like the log itself.
+    """
+    path = os.path.splitext(log_path)[0] + '.json'
+    tmp = path + '.tmp'
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as fp:
+        os.fchmod(fp.fileno(), 0o600)
+        json.dump(metadata, fp, indent=2, sort_keys=True)
+        fp.write('\n')
+    os.rename(tmp, path)
+
+
+def read_metadata(log_path):
+    """The sidecar metadata of an execution, or None."""
+    path = os.path.splitext(log_path)[0] + '.json'
+    try:
+        with open(path, 'r', encoding='utf-8') as fp:
+            return json.load(fp)
+    except (OSError, ValueError):
+        return None
 
 
 def prune(directory, keep=KEEP_LOGS, max_age=MAX_LOG_AGE):

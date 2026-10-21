@@ -5,20 +5,19 @@
 """Tools which execute Ansible playbooks ('check' and 'run').
 
 Execution reuses the playbook runner for target resolution and command
-construction, then runs the command without a shell, serialized against
-other executions so that inventory (un)locking cannot race. Only a fixed
-set of ansible-playbook options is accepted: free-form arguments would
-be arbitrary code execution.
+construction; the command runs inside a fixed shell wrapper, every part
+shell-quoted, serialized against other executions so that inventory
+(un)locking cannot race. Only a fixed set of ansible-playbook options
+is accepted: free-form arguments would be arbitrary code execution.
 
 These tools run for a long time and against real infrastructure; they
 run with a request context so that clients can cancel them.
 
-A run outlives its server. On the stdio transport the server is spawned
-by the client, which may close (or be killed) while a playbook is still
-running; such an execution is detached from the server process, keeps
-the project lock, and writes its output to a run log in the cache
-directory. The log file is the record of the run when the server is
-gone.
+A run outlives its server: every execution is detached from the server
+process, keeps the project lock, and writes its output to a run log in
+the cache directory. A harness closing the stdio server's process
+group, or a daemon stop, does not take the run down; the log file is
+the record of the run when the server is gone.
 """
 
 import collections
@@ -36,6 +35,8 @@ import subprocess
 import sys
 import threading
 import time
+
+from datetime import datetime, timezone
 
 from ...ansible.inventory import AnsibleInventory
 from ...ansibleplaybookrunner import AnsiblePlaybookRunner
@@ -56,9 +57,15 @@ EXECUTE_OUTPUT_LIMIT = 128 * 1024
 # ansible-playbook process
 TERMINATION_GRACE = 5  # seconds
 
-# Every playbook execution gets a daemon-unique number, so the log lines
-# of a run can be correlated when clients overlap
+# Every playbook execution gets a unique number; the log directory is
+# the source of truth, this counter is the fallback when the cache is
+# not usable
 _EXECUTION_IDS = itertools.count(1)
+
+
+def _utcnow():
+    """The current time, as an ISO 8601 UTC timestamp."""
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 
 def _execution_label(execution_id, context):
@@ -562,7 +569,7 @@ def _task_status(header, tail):
 
 
 def _execute_playbook(project, policy, arguments, context, check,
-                      enabled_check=None, on_disabled=None, detach=False):
+                      enabled_check=None, on_disabled=None):
     mode = 'check' if check else 'run'
 
     try:
@@ -619,13 +626,18 @@ def _execute_playbook(project, policy, arguments, context, check,
             if gated is not None:
                 return gated
 
-        execution_id = next(_EXECUTION_IDS)
+        # The run log outlives the server: it is the record of the run
+        # when the client is gone before the answer arrives. The id
+        # comes from the log directory, so a restarted server does not
+        # reuse the id of a run whose log still exists
+        execution_id, log_path = runs.new_log(
+                project, keep=policy.run_logs_keep,
+                max_age=policy.run_logs_max_age)
+        if execution_id is None:
+            execution_id = next(_EXECUTION_IDS)
         logger.notice('Executing a playbook in %s mode: %s [%s]',
                       mode, ' '.join(command),
                       _execution_label(execution_id, context))
-        # The run log outlives the server: it is the record of the run
-        # when the client is gone before the answer arrives
-        log_path = runs.log_path(project, execution_id)
         if not run_hooks(project.path, 'pre-' + mode):
             logger.notice('Playbook execution %s aborted: the pre-%s '
                           'hook failed', execution_id, mode)
@@ -637,6 +649,9 @@ def _execute_playbook(project, policy, arguments, context, check,
             unlocked = inventory.unlock()
 
             env = mcp_environ(project)
+            # The child writes to a file, where stdout would be block
+            # buffered; the run log is tailed live, so it must not be
+            env['PYTHONUNBUFFERED'] = '1'
             if debug:
                 env['ANSIBLE_DEBUG'] = 'true'
                 # The module scripts stay on the host for manual
@@ -706,22 +721,33 @@ def _execute_playbook(project, policy, arguments, context, check,
                             _task_status(progress_line[0], tail))
 
             started = time.monotonic()
+            # The sidecar lets a later session list and address the
+            # runs without parsing the logs
+            metadata = {'executionId': execution_id, 'mode': mode,
+                        'playbooks': targets, 'hosts': resolved_hosts,
+                        'startedAt': _utcnow()}
+            if log_path is not None:
+                metadata['log'] = os.path.basename(log_path)
+                try:
+                    runs.write_metadata(log_path, metadata)
+                except OSError as errmsg:
+                    logger.warning('Cannot write the run metadata for '
+                                   'execution %s: %s', execution_id,
+                                   errmsg)
             # A detached execution keeps the project lock: the lock
             # belongs to the run, not to the server which started it
             lock_fd = current_lock_fd()
-            pass_fds = (lock_fd,) if (detach and lock_fd is not None) else ()
-            if detach:
-                # The wrapper carries the bounds and the finalization
-                # of the run; the playbook command itself stays the
-                # same
-                command = _detached_command(
-                        command, policy.execute_timeout,
-                        _finalize_command(project))
+            pass_fds = (lock_fd,) if lock_fd is not None else ()
+            # The wrapper carries the bounds and the finalization of
+            # the run; the playbook command itself stays the same
+            command = _detached_command(
+                    command, policy.execute_timeout,
+                    _finalize_command(project))
             output, returncode, status = run_cancellable(
                     command, env=env, cwd=project.path, context=context,
                     timeout=policy.execute_timeout, on_line=on_line,
                     enabled_check=enabled_check, on_disabled=on_disabled,
-                    log_path=log_path, pass_fds=pass_fds, detached=detach)
+                    log_path=log_path, pass_fds=pass_fds, detached=True)
             # The outcome completes the audit trail the start lines open
             ended = {
                 'done': 'finished',
@@ -733,6 +759,16 @@ def _execute_playbook(project, policy, arguments, context, check,
                           '(exit code %s, log %s)', execution_id, ended,
                           time.monotonic() - started, returncode,
                           log_path or '-')
+            if log_path is not None:
+                metadata['exitCode'] = returncode
+                metadata['status'] = status
+                metadata['finishedAt'] = _utcnow()
+                try:
+                    runs.write_metadata(log_path, metadata)
+                except OSError as errmsg:
+                    logger.warning('Cannot update the run metadata for '
+                                   'execution %s: %s', execution_id,
+                                   errmsg)
         finally:
             if unlocked:
                 inventory.lock()
@@ -740,12 +776,13 @@ def _execute_playbook(project, policy, arguments, context, check,
     run_hooks(project.path, 'post-' + mode,
               extra_env={'DEBOPS_RETURN_CODE': returncode})
 
-    header = '# debops {} {}\n\nexit code: {}\nhosts: {}\n\n'.format(
-            mode, ' '.join(targets), returncode,
+    header = '# debops {} {}\n\nexecution: {}\nexit code: {}\nhosts: {}\n'.format(
+            mode, ' '.join(targets), execution_id, returncode,
             ', '.join(resolved_hosts) if resolved_hosts else '(none)')
     if log_path is not None:
         # The log outlives the server; it is where the run is read
-        header += 'log: {}\n\n'.format(log_path)
+        header += 'log: {}\n'.format(log_path)
+    header += '\n'
     if debug:
         notes = ['debug mode (-vv, ANSIBLE_DEBUG, the remote module '
                  'scripts were kept on the hosts)']
@@ -759,7 +796,7 @@ def _execute_playbook(project, policy, arguments, context, check,
     # no failures, only the recap says whether anything changed
     summary = {'mode': mode, 'playbooks': targets,
                'hosts': resolved_hosts, 'exitCode': returncode,
-               'status': status}
+               'status': status, 'executionId': execution_id}
     if log_path is not None:
         summary['log'] = log_path
     recap = _parse_recap(output)
@@ -781,14 +818,14 @@ def _execute_playbook(project, policy, arguments, context, check,
 
 
 def tool_check(project, policy, arguments, context, enabled_check=None,
-               on_disabled=None, detach=False):
+               on_disabled=None):
     return _execute_playbook(project, policy, arguments, context,
                              check=True, enabled_check=enabled_check,
-                             on_disabled=on_disabled, detach=detach)
+                             on_disabled=on_disabled)
 
 
 def tool_run(project, policy, arguments, context, enabled_check=None,
-             on_disabled=None, detach=False):
+             on_disabled=None):
     return _execute_playbook(project, policy, arguments, context,
                              check=False, enabled_check=enabled_check,
-                             on_disabled=on_disabled, detach=detach)
+                             on_disabled=on_disabled)
