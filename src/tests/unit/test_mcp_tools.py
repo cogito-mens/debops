@@ -1262,8 +1262,8 @@ class ToolsTestCase(unittest.TestCase):
                           'role.argspec', 'role.defaults', 'role.files',
                           'role.handlers', 'role.info', 'role.tasks',
                           'role.templates', 'role.vars',
-                          'secret.paths', 'view.create', 'view.list',
-                          'view.switch'])
+                          'run', 'secret.paths', 'view.create',
+                          'view.list', 'view.switch'])
 
     def test_registration_into_a_staging_registry(self):
         # A reload builds the new surface aside and swaps it in whole;
@@ -1346,10 +1346,15 @@ class ToolsTestCase(unittest.TestCase):
                              tool['description'], tool['name'])
 
     def test_confirm_without_execution_is_consistent(self):
-        # 'run' is not registered at all; its confirm entry is inert
+        # 'run' is the policy stub; its confirm entry is dropped with
+        # it, so the refusal never carries the confirmation badge
         tools = self._tools_by_name({'execute': 'check',
                                      'confirm': ['run']})
-        self.assertNotIn('run', tools)
+        self.assertIn('run', tools)
+        self.assertIn('Currently disabled',
+                      tools['run']['description'])
+        self.assertNotIn('asks the user to confirm',
+                         tools['run']['description'])
         for tool in tools.values():
             self.assertNotIn('_meta', tool, tool['name'])
 
@@ -2063,6 +2068,53 @@ class ToolsTestCase(unittest.TestCase):
                         (lambda: index) if index is not None
                         else (lambda: self.collection_index)))
         return server
+
+    def _call(self, server, name, arguments=None):
+        return server.handle({
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                'params': {'_meta': REQUEST_META, 'name': name,
+                           'arguments': arguments or {}}})
+
+    def test_run_is_stubbed_in_check_mode(self):
+        # The default mode; the stub answers with the policy path
+        # instead of the model retry-looping over a missing tool
+        server = self._server_with_policy({})
+        self.assertIn('run', server.tools)
+        response = self._call(server, 'run', {'playbook': 'site'})
+        self.assertTrue(response['result']['isError'])
+        text = response['result']['content'][0]['text']
+        self.assertIn('disabled by the project policy', text)
+        self.assertIn('check-only', text)
+        self.assertIn('project.mcp.execute', text)
+        # The refusal never elicits: a direct error, no confirmation
+        # request and no badge on the entry
+        self.assertNotIn('input_required', str(response['result']))
+        entry = server.tools['run'].describe()
+        self.assertNotIn('confirm', json.dumps(entry.get('_meta', {})))
+        self.assertIn('Currently disabled', entry['description'])
+
+    def test_both_are_stubbed_with_execute_none(self):
+        server = self._server_with_policy({'execute': 'none'})
+        for name in ('check', 'run'):
+            self.assertIn(name, server.tools)
+            response = self._call(server, name, {'playbook': 'site'})
+            self.assertTrue(response['result']['isError'], name)
+            self.assertIn('execution is disabled',
+                          response['result']['content'][0]['text'], name)
+
+    def test_run_is_real_with_execute_all(self):
+        server = self._server_with_policy({'execute': 'all'})
+        description = server.tools['run'].describe()['description']
+        self.assertIn('changing the managed hosts', description)
+        self.assertNotIn('Currently disabled', description)
+
+    def test_the_alias_lands_on_the_stub(self):
+        server = self._server_with_policy({})
+        response = self._call(server, 'playbook.run',
+                              {'playbook': 'site'})
+        self.assertTrue(response['result']['isError'])
+        self.assertIn('check-only',
+                      response['result']['content'][0]['text'])
 
     def test_role_tools_search_project_first(self):
         response = self.call_tool('role.info', {'name': 'shadowrole'})

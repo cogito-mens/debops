@@ -733,14 +733,15 @@ class ExecutionGateTestCase(unittest.TestCase):
         return server.tools.keys()
 
     def test_check_is_registered_by_default(self):
+        # 'run' stays on the surface as the policy stub
         names = self.registered_tools({})
         self.assertIn('check', names)
-        self.assertNotIn('run', names)
+        self.assertIn('run', names)
 
-    def test_none_registers_nothing(self):
+    def test_none_registers_both_as_stubs(self):
         names = self.registered_tools({'execute': 'none'})
-        self.assertNotIn('check', names)
-        self.assertNotIn('run', names)
+        self.assertIn('check', names)
+        self.assertIn('run', names)
 
     def test_all_registers_both(self):
         names = self.registered_tools({'execute': 'all'})
@@ -750,9 +751,11 @@ class ExecutionGateTestCase(unittest.TestCase):
     def test_unknown_mode_falls_back_to_check(self):
         names = self.registered_tools({'execute': 'everything'})
         self.assertIn('check', names)
-        self.assertNotIn('run', names)
+        self.assertIn('run', names)
 
     def test_deny_list_still_applies(self):
+        # A deliberate removal, not a discoverability surface: the
+        # deny list removes even the stub
         names = self.registered_tools({'execute': 'all',
                                        'deny': ['run']})
         self.assertIn('check', names)

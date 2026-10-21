@@ -685,6 +685,29 @@ def _no_view_stub(entry):
                     NO_ACTIVE_VIEW),) + entry[4:]
 
 
+def _execution_stub_entry(name, policy, execute_mode):
+    """A disabled execution tool's entry: the real input schema, and
+    the handler answers with the policy path.
+
+    A missing tool makes agents retry-loop over a name they saw
+    referenced; a present-but-refused one teaches in one read.
+    """
+    if execute_mode == 'none':
+        reason = 'playbook execution is disabled in this project'
+    else:
+        reason = ('execution is check-only here ("project.mcp.execute: '
+                  'all" allows changing the hosts)')
+    description = ('Ansible playbook execution ({}). Currently '
+                   'disabled by the project policy.'.format(name))
+
+    def stub(arguments, context=None):
+        return _error_result('the "{}" tool is disabled by the project '
+                             'policy: {}.'.format(name, reason))
+
+    return (name, description, execution_schema(policy), stub,
+            False, True, False)
+
+
 def _register_tool(target, name, description, schema, handler,
                    output_schema=None, needs_context=False,
                    annotations=None, meta=None, self_confirms=False,
@@ -957,8 +980,11 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
     ]
 
     # Playbook execution is gated: 'check' mode by default, changes only
-    # with 'project.mcp.execute: all'
+    # with 'project.mcp.execute: all'. A gated-off tool stays registered
+    # as a stub which answers with the policy path — a missing tool
+    # makes agents retry-loop, a refused one teaches
     execute_mode = policy.execute if policy is not None else 'check'
+    execution_stubs = set()
     if execute_mode in ('check', 'all'):
         tools.append((
             'check',
@@ -992,6 +1018,14 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                 enabled_check=enabled_check,
                 on_disabled=server.cancel_all),
             True, False, True))
+    elif execute_mode == 'check':
+        execution_stubs.add('run')
+        tools.append(_execution_stub_entry('run', policy, execute_mode))
+    else:
+        execution_stubs.update(('check', 'run'))
+        tools.append(_execution_stub_entry('check', policy,
+                                           execute_mode))
+        tools.append(_execution_stub_entry('run', policy, execute_mode))
 
     # Host queries change nothing, so they are registered wherever
     # execution is allowed at all
@@ -1244,9 +1278,11 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                  else entry for entry in tools]
 
     # Tools the policy gates on user confirmation carry the marker and
-    # say so in their description; an ungated tool never mentions it
+    # say so in their description; an ungated tool never mentions it.
+    # The execution stubs neither gate nor badge — they never ask
     confirm = set(policy.confirm) if policy is not None else set()
     confirm |= custom_names
+    confirm -= execution_stubs
 
     _register_entries(target, tools, policy, confirm=confirm,
                       project=project)

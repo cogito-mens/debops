@@ -530,8 +530,8 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
                              "role.defaults", "role.files",
                              "role.handlers", "role.info", "role.tasks",
                              "role.templates", "role.vars",
-                             "secret.paths", "view.create", "view.list",
-                             "view.switch"]
+                             "run", "secret.paths", "view.create",
+                             "view.list", "view.switch"]
 
 
 def test_role_defaults_via_stdio(run_debops, mcp_env, project_dir):
