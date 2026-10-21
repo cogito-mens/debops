@@ -7,6 +7,12 @@
 Each tool is a closure over the project and the policy, registered with
 the server at startup. Tool logic errors are reported in the result with
 'isError', not as JSON-RPC errors, per the MCP specification.
+
+A tool which declares an output schema must make its 'structuredContent'
+self-sufficient: the answer as data, not metadata pointing at the text.
+A harness may show the model only the structured content of such a tool
+(OpenCode does), so anything the model needs has to be there. The text
+is the human rendering of the same answer.
 """
 
 from .collections import (docs_collection_provider,
