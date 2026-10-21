@@ -276,6 +276,7 @@ class SweepTestCase(unittest.TestCase):
                 raw={'project': {'git': {'auto_commit': True}}})
         self.policy = type('Policy', (), {
             'view_root': os.path.join(self.tmpdir, 'ansible'),
+            'view_lock': False,
         })()
 
     def git(self, *args):
@@ -320,6 +321,19 @@ class SweepTestCase(unittest.TestCase):
         self.assertNotIn('operator.txt', show)
         self.assertIn('operator.txt',
                       self.git('status', '--porcelain'))
+
+    def test_status_reports_the_pending_paths(self):
+        from debops.mcp.tools.project import tool_project_status
+        self.project.view = 'system'
+        with open(os.path.join(self.tmpdir, 'operator.txt'), 'w') as fp:
+            fp.write('pending\n')
+        result = tool_project_status(self.project, self.policy, {})
+        self.assertEqual(result['structuredContent']['pendingChanges'],
+                         ['operator.txt'])
+        self.assertEqual(result['structuredContent']
+                         ['pendingChangesCount'], 1)
+        self.assertIn('Pending changes (1): operator.txt',
+                      result['content'][0]['text'])
 
 
 if __name__ == '__main__':

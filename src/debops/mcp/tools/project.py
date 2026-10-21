@@ -6,7 +6,7 @@
 
 import os
 
-from .common import text_result
+from .common import dirty_paths, text_result
 
 
 def tool_project_status(project, policy, arguments):
@@ -48,6 +48,13 @@ def tool_project_status(project, policy, arguments):
         'secrets': secrets,
         'encryption': encryption,
     }
+    # The pending working-tree changes are the honest state: the tool
+    # commits are scoped, so an operator's edits stay pending and
+    # visible instead of riding along into someone else's commit
+    pending = dirty_paths(project)
+    if pending is not None:
+        structured['pendingChanges'] = sorted(pending)[:50]
+        structured['pendingChangesCount'] = len(pending)
     lines = [
             'Project: {}'.format(project.name),
             'Path: {}'.format(project.path),
@@ -68,4 +75,12 @@ def tool_project_status(project, policy, arguments):
     lines.append('Inventory: {}'.format(inventory))
     lines.append('Secrets: {}'.format(secrets))
     lines.append('Encryption: {}'.format(encryption))
+    if pending is not None:
+        if pending:
+            shown = sorted(pending)[:50]
+            lines.append('Pending changes ({}): {}{}'.format(
+                    len(pending), ', '.join(shown),
+                    ', …' if len(pending) > 50 else ''))
+        else:
+            lines.append('Pending changes: none')
     return text_result('\n'.join(lines), structured=structured)

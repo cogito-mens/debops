@@ -446,7 +446,7 @@ def project_flock(project, policy, exclusive):
         fp.close()
 
 
-def _dirty_paths(project):
+def dirty_paths(project):
     """The working-tree paths with pending changes (git porcelain).
 
     None when the repository cannot be read — a non-git project has
@@ -486,7 +486,7 @@ def exclusive_project(project, policy, note='', paths=None):
     check_free_space(policy, project)
     with PROJECT_LOCK.write():
         with project_flock(project, policy, exclusive=True):
-            before = None if paths is not None else _dirty_paths(project)
+            before = None if paths is not None else dirty_paths(project)
             try:
                 yield
             finally:
@@ -495,7 +495,7 @@ def exclusive_project(project, policy, note='', paths=None):
                 try:
                     commit_paths = paths
                     if commit_paths is None and before is not None:
-                        after = _dirty_paths(project)
+                        after = dirty_paths(project)
                         commit_paths = sorted(set(after) - set(before))
                     if commit_paths:
                         project.auto_commit(
