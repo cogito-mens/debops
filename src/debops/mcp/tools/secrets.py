@@ -41,9 +41,12 @@ def tool_secret_paths(project, policy, arguments):
 
     secret_root = os.path.join(policy.view_root, 'secret')
     if not os.path.isdir(secret_root):
+        # An empty list is the structured answer, so that a harness
+        # which shows only the structured side sees it
         return text_result('no secrets directory in this view '
                            '({})'.format(os.path.relpath(
-                                   secret_root, project.path)))
+                                   secret_root, project.path)),
+                           structured=[])
 
     # Listing requires unlocked secrets; unlock them only if they are
     # not already unlocked, and lock again only in that case. The

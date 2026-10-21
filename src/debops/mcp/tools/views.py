@@ -52,11 +52,11 @@ def tool_view_list(project, policy, arguments):
                     project.path, 'ansible', 'views', name)),
         })
     active = project.view if policy.view_root is not None else None
+    data = {'active': active, 'locked': policy.view_lock,
+            'views': views}
 
     if output_format != 'text':
-        return document_result({
-            'active': active, 'locked': policy.view_lock,
-            'views': views}, output_format)
+        return document_result(data, output_format)
 
     lines = ['# Infrastructure views']
     if active is None:
@@ -78,7 +78,9 @@ def tool_view_list(project, policy, arguments):
         if marks:
             line += ' — {}'.format(', '.join(marks))
         lines.append(line)
-    return text_result('\n'.join(lines) + '\n')
+    # The structured content rides the text rendering: a harness may
+    # show only the structured side of a schema'd tool
+    return text_result('\n'.join(lines) + '\n', structured=data)
 
 
 def _secrets_unlocked(project):

@@ -84,6 +84,19 @@ class ViewsTestCase(unittest.TestCase):
         self.assertEqual(data['active'], 'system')
         self.assertFalse(data['locked'])
 
+    def test_list_text_carries_the_structured_content(self):
+        # The default text answer is what a client gets; a harness may
+        # show only the structured side of a schema'd tool
+        from tests.unit._helpers import check_schema
+        from debops.mcp.tools import TOOL_OUTPUT_SCHEMAS
+        result = tool_view_list(self.project, self.policy, {})
+        data = result['structuredContent']
+        self.assertEqual(check_schema(
+                data, TOOL_OUTPUT_SCHEMAS['view.list']), [])
+        self.assertEqual(data['active'], 'system')
+        self.assertEqual([entry['name'] for entry in data['views']],
+                         ['system', 'web'])
+
     def test_list_reports_the_lock(self):
         self.policy.view_lock = True
         result = tool_view_list(self.project, self.policy, {})

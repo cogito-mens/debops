@@ -1165,6 +1165,30 @@ class ToolsTestCase(unittest.TestCase):
         self.assertEqual([entry['target'] for entry in entries],
                          ['testns.testcoll/install'])
 
+    def test_every_schema_declaring_tool_answers_structured(self):
+        """A harness may surface only the structured content of a tool
+        with an output schema: every non-error answer of such a tool
+        must carry conforming structured content. Error answers need
+        none — the fixture drives several tools only that far."""
+        from tests.unit._helpers import check_schema
+        from debops.mcp.tools import TOOL_OUTPUT_SCHEMAS
+        # Driven positively in their own suites (test_mcp_execute,
+        # test_mcp_hosts); the network and git-remotes tools the
+        # fixture cannot drive to a success at all
+        unreachable_here = {'check', 'run', 'ansible.ping',
+                            'keyring.fetch', 'project.pull',
+                            'project.push', 'inventory.spec'}
+        for name, schema in sorted(TOOL_OUTPUT_SCHEMAS.items()):
+            if name in unreachable_here:
+                continue
+            result = self.call_tool(name)['result']
+            if result.get('isError'):
+                continue
+            self.assertIn('structuredContent', result, name)
+            self.assertEqual(
+                    check_schema(result['structuredContent'], schema),
+                    [], name)
+
     def test_structured_project_status(self):
         data = self._check_structured('project.status')
         self.assertEqual(data['name'], 'project')
