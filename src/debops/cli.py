@@ -19,7 +19,9 @@ from .mcp.tools import (register_documentation_tools,
                         register_project_tools)
 from .mcp.tools.collections import BUNDLED_COLLECTIONS_ROOT
 from .mcp.tools.roles import COLLECTION_ROLES, project_role_paths
+from .mcp.tools.playbooks import COLLECTION_PLAYBOOKS
 from .mcp.role_skills import RoleSkillSource
+from .mcp.playbook_skills import PlaybookSkillSource
 from .mcp import client as mcp_client
 from .mcp.client import UnixClient
 from .mcp.transport import StdioTransport, UnixSocketTransport
@@ -408,11 +410,14 @@ class Interpreter(object):
 
         if docs_mode:
             policy = McpPolicy.for_documentation()
+            role_skills = RoleSkillSource([COLLECTION_ROLES])
+            playbook_skills = PlaybookSkillSource(
+                    COLLECTION_PLAYBOOKS, role_skills, execution=False)
+            role_skills.playbooks = playbook_skills
             server = McpServer(
                     project=None, policy=policy,
                     skills=SkillLibrary(
-                            sources=[RoleSkillSource(
-                                    [COLLECTION_ROLES])]),
+                            sources=[role_skills, playbook_skills]),
                     prompts=PromptLibrary(
                             package_path=os.path.join(
                                     DEBOPS_PACKAGE_DATA, 'prompts')),
@@ -472,12 +477,18 @@ class Interpreter(object):
             roles_paths = project_role_paths(project)
             if policy.bundled_content:
                 roles_paths.append(COLLECTION_ROLES)
+            role_skills = RoleSkillSource(roles_paths)
+            playbook_skills = PlaybookSkillSource(
+                    COLLECTION_PLAYBOOKS if policy.bundled_content
+                    else None, role_skills)
+            role_skills.playbooks = playbook_skills
             server = McpServer(project=project, policy=policy,
                                skills=SkillLibrary(
                                    project_path=(os.path.join(project_content,
                                                               'skills')
                                                  if project_content else None),
-                                   sources=[RoleSkillSource(roles_paths)]),
+                                   sources=[role_skills,
+                                            playbook_skills]),
                                prompts=prompts, killswitch=killswitch,
                                transport='unix' if args.socket
                                else 'stdio',
@@ -886,10 +897,14 @@ class Interpreter(object):
     def do_mcp_skills(self, args):
         self._mcp_refuse_if_disabled()
         # Skills are shipped with the package and do not depend on
-        # a project directory; the generated role briefs cover the
-        # bundled collection, the same as in the documentation mode
-        library = SkillLibrary(sources=[RoleSkillSource(
-                [COLLECTION_ROLES])])
+        # a project directory; the generated role and playbook briefs
+        # cover the bundled collection, the same as in the
+        # documentation mode
+        role_skills = RoleSkillSource([COLLECTION_ROLES])
+        playbook_skills = PlaybookSkillSource(
+                COLLECTION_PLAYBOOKS, role_skills, execution=False)
+        role_skills.playbooks = playbook_skills
+        library = SkillLibrary(sources=[role_skills, playbook_skills])
         if args.skill:
             target = args.skill
             if '.' not in target.rsplit('/', 1)[-1]:

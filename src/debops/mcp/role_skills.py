@@ -54,7 +54,7 @@ overview and the documentation link, `role.defaults` for the inventory
 variables, `role.tasks` for the mechanics, `role.argspec` when the role
 declares one, `role.templates` and `role.files` for the shipped files.
 Playbooks apply the role — find them with `playbook.list`, preview with
-`playbook.info`.
+`playbook.info`.{playbooks_block}
 '''
 
 
@@ -69,6 +69,10 @@ class RoleSkillSource(object):
 
     def __init__(self, roles_paths):
         self.roles_paths = list(roles_paths)
+        # The playbook brief source, when one is wired in after
+        # construction; consulted at render time, so the cross-links
+        # never form a construction cycle
+        self.playbooks = None
         self._cache = {'at': 0.0, 'roles': None}
 
     def _roles(self):
@@ -89,6 +93,19 @@ class RoleSkillSource(object):
         self._cache['at'] = time.time()
         self._cache['roles'] = roles
         return roles
+
+    def role_directory(self, role):
+        """The visible directory of a role, or None."""
+        return self._roles().get(role)
+
+    def role_description(self, role):
+        """The role's galaxy_info description, or None when absent."""
+        directory = self._roles().get(role)
+        if directory is None:
+            return None
+        description = str(self._meta(directory).get('description')
+                          or '').strip()
+        return description or None
 
     def _meta(self, directory):
         """The role's galaxy_info metadata; empty when unreadable."""
@@ -114,9 +131,21 @@ class RoleSkillSource(object):
         info = self._meta(directory)
         description = self._description(role, info)
         skill_name = role.replace('_', '-')
+        playbooks_block = ''
+        if self.playbooks is not None:
+            uris = self.playbooks.uris_for(role)
+            if uris:
+                links = []
+                for uri in uris:
+                    links.append('`{}/`'.format(
+                            uri[:-len('/SKILL.md')]))
+                playbooks_block = ('\n\nThe playbook skill{}: {}'
+                                   .format('s' if len(uris) > 1 else '',
+                                           ', '.join(links)))
         return _BRIEF.format(skill_name=skill_name, role=role,
                              description=description,
-                             paragraph=description)
+                             paragraph=description,
+                             playbooks_block=playbooks_block)
 
     def _entry(self, role, directory):
         skill_name = role.replace('_', '-')
