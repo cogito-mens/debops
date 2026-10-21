@@ -75,7 +75,9 @@ class UnixClient(object):
         except socket.timeout:
             raise TimeoutError('no response within {} seconds'
                                .format(self._timeout))
-        except ConnectionResetError:
+        except (ConnectionResetError, BrokenPipeError):
+            # The server closed the connection without a response; a
+            # fast close can already break the write
             raise EOFError('the server closed the connection without '
                            'a response')
         if data is None:
@@ -200,6 +202,7 @@ TOOL_CALL_EXAMPLES = {
     'execution.list': [''],
     'execution.output': ['id=3 kind=changed',
                          'id=last pattern="^fatal" context=5'],
+    'execution.purge': ['older_than=86400'],
     'ansible.doc': ['plugin=ansible.builtin.service',
                     'type=lookup plugin=debops.debops.dpkg_divert'],
     'ansible.ping': ['hosts=webservers', 'hosts=all become=true'],
