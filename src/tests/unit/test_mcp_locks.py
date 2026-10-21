@@ -117,6 +117,20 @@ class FlockTestCase(unittest.TestCase):
                                    exclusive=True):
                     pass
 
+    def test_contention_is_a_tool_level_error(self):
+        # The contention is an expected, retryable condition: a
+        # dedicated exception lets the registration layer report it as
+        # a result rather than an internal error
+        from debops.mcp.tools.common import ProjectLockedError
+        with project_flock(self.project, self.policy, exclusive=True):
+            with self.assertRaises(ProjectLockedError) as caught:
+                with project_flock(self.project, self.policy,
+                                   exclusive=True):
+                    pass
+        self.assertIsInstance(caught.exception, RuntimeError)
+        self.assertIn('another process is working',
+                      str(caught.exception))
+
     def test_shared_locks_compose(self):
         with project_flock(self.project, self.policy, exclusive=False):
             with project_flock(self.project, self.policy,

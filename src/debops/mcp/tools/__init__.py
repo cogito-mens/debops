@@ -28,7 +28,8 @@ from .overrides import tool_overrides_write
 from .hosts import tool_ansible_facts, tool_ansible_ping
 from .playbooks import (COLLECTION_PLAYBOOKS, tool_playbook_info,
                         tool_playbooks)
-from .common import ProjectResourceError, shared_project
+from .common import (ProjectLockedError, ProjectResourceError,
+                     shared_project)
 from .common import error_result as _error_result
 from .project import tool_project_status
 from .roles import (COLLECTION_ROLES, project_role_paths, tool_role_argspec,
@@ -358,11 +359,12 @@ def _wrap_shared_lock(project, policy, handler):
 
 
 def _wrap_resource_errors(handler):
-    """Turn a pre-start refusal (disk full, ...) into a tool error."""
+    """Turn a pre-start refusal (disk full, a locked project) into a
+    tool error: these are expected conditions, not internal faults."""
     def wrapped(arguments, *rest):
         try:
             return handler(arguments, *rest)
-        except ProjectResourceError as errmsg:
+        except (ProjectResourceError, ProjectLockedError) as errmsg:
             return _error_result(str(errmsg))
     return wrapped
 

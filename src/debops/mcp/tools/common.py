@@ -398,6 +398,15 @@ def _project_lock_path(project, policy):
 _LOCK_STATE = threading.local()
 
 
+class ProjectLockedError(RuntimeError):
+    """The project is locked by another process (a run in flight).
+
+    A RuntimeError subclass: the contention is an expected, retryable
+    condition, so the tools report it as a result, not an internal
+    error.
+    """
+
+
 def current_lock_fd():
     """The file descriptor of the project lock held by this thread."""
     return getattr(_LOCK_STATE, 'fd', None)
@@ -421,8 +430,9 @@ def project_flock(project, policy, exclusive):
         try:
             fcntl.flock(fp.fileno(), mode)
         except BlockingIOError:
-            raise RuntimeError('another process is working on this '
-                               'project ({} is locked)'.format(path))
+            raise ProjectLockedError(
+                    'another process is working on this project '
+                    '({} is locked)'.format(path))
         previous = getattr(_LOCK_STATE, 'fd', None)
         _LOCK_STATE.fd = fp.fileno()
         try:

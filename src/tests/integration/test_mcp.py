@@ -849,6 +849,128 @@ def test_detached_run_survives_the_death_of_the_server(
         server.wait(timeout=10)
 
 
+def test_an_orphaned_run_keeps_the_project_locked(
+        run_debops, mcp_env, project_dir, tmp_path, debops_source_dir):
+    """A run which outlived its server still holds the project lock:
+    a new server must refuse to mutate the project — collections,
+    environment, files — until the orphaned run has finished."""
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    confd = project_dir / ".debops" / "conf.d"
+    confd.mkdir(parents=True, exist_ok=True)
+    (confd / "mcp-test.toml").write_text(
+            "[project.mcp]\nconfirm_required = false\nexecute = \"all\"\n")
+    # The write tools require a git-tracked project
+    subprocess.run(["git", "init", "-q"], cwd=str(project_dir),
+                   env=dict(os.environ, **mcp_env), check=True)
+
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+    playbooks = project_dir / "ansible" / "playbooks"
+    playbooks.mkdir(parents=True)
+    (playbooks / "custom.yml").write_text("""---
+- name: Slow play
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Take some time
+      ansible.builtin.command: sleep 5
+""")
+
+    # Server A starts a run and is then killed with its whole process
+    # group (the harness scenario); the detached run survives
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+            [debops_source_dir, env.get("PYTHONPATH", "")]).rstrip(
+                    os.pathsep)
+    env.update(mcp_env)
+    server_a = subprocess.Popen(
+            [sys.executable, "-m", "debops", "mcp", "serve"],
+            cwd=str(project_dir), env=env,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True,
+            start_new_session=True)
+    log = None
+    try:
+        request = json.dumps({
+            "jsonrpc": "2.0", "id": 1,
+            "method": "tools/call",
+            "params": {"_meta": REQUEST_META, "name": "run",
+                       "arguments": {"playbook": "custom"}},
+        }) + "\n"
+        server_a.stdin.write(request)
+        server_a.stdin.flush()
+
+        runs_dir = tmp_path / "xdg-cache" / "debops" / "mcp" / "runs"
+        for _ in range(400):
+            logs = list(runs_dir.glob("*/execution-1.log"))
+            if logs and logs[0].stat().st_size > 0:
+                log = logs[0]
+                break
+            time.sleep(0.05)
+        assert log is not None, "the run log never appeared"
+
+        os.killpg(server_a.pid, signal.SIGKILL)
+        server_a.wait(timeout=10)
+
+        # A new server on the same project: the mutation tools refuse
+        # while the orphaned run holds the lock
+        server_b = _LiveServer(project_dir, mcp_env, debops_source_dir)
+        try:
+            refused = server_b.call("environment.set",
+                                    {"name": "MCP_TEST", "value": "1"})
+            assert refused["result"]["isError"] is True
+            assert "another process is working on this project" in \
+                refused["result"]["content"][0]["text"]
+
+            # The listing reports the run without an outcome yet
+            listing = server_b.call("execution.list", {})
+            (entry,) = listing["result"]["structuredContent"]
+            assert entry["id"] == 1
+            assert "exitCode" not in entry
+
+            # The orphan finishes; the lock releases with its finalize
+            deadline = time.monotonic() + 90
+            while "debops-mcp: the execution finished" \
+                    not in log.read_text():
+                assert time.monotonic() < deadline, \
+                    "the orphaned run never finalized"
+                time.sleep(0.2)
+
+            # Now the mutation goes through (the first attempt may race
+            # the wrapper's exit by a moment; poll)
+            deadline = time.monotonic() + 15
+            while True:
+                allowed = server_b.call(
+                        "environment.set",
+                        {"name": "MCP_TEST", "value": "1"})
+                if not allowed["result"]["isError"]:
+                    break
+                assert time.monotonic() < deadline, \
+                    allowed["result"]["content"][0]["text"]
+                time.sleep(0.2)
+
+            # The execution ids span the two server processes
+            later = server_b.call("check", {"playbook": "custom"})
+            assert later["result"]["isError"] is False
+            assert later["result"]["structuredContent"][
+                "executionId"] == 2
+        finally:
+            server_b.stop()
+    finally:
+        try:
+            os.killpg(server_a.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        server_a.wait(timeout=10)
+
+
 def test_execution_output_answers_what_changed(run_debops, mcp_env,
                                                project_dir,
                                                debops_source_dir):
