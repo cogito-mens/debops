@@ -137,6 +137,50 @@ class BuildArgsTestCase(unittest.TestCase):
         self.assertEqual(args, ['site', '--limit', 'web', '--tags', 'a,b',
                                 '--skip-tags', 'c'])
 
+    def test_the_verification_flags(self):
+        for option, flag in (
+                ('syntax_check', '--syntax-check'),
+                ('list_hosts', '--list-hosts'),
+                ('list_tags', '--list-tags'),
+                ('list_tasks', '--list-tasks'),
+                ('force_handlers', '--force-handlers'),
+                ('flush_cache', '--flush-cache')):
+            args = _build_ansible_args({'playbook': 'site',
+                                        option: True}, check=False)
+            self.assertEqual(args, ['site', flag], option)
+
+    def test_a_false_verification_flag_stays_off(self):
+        args = _build_ansible_args({'playbook': 'site',
+                                    'syntax_check': False}, check=False)
+        self.assertEqual(args, ['site'])
+
+    def test_the_verification_flags_take_no_values(self):
+        with self.assertRaises(ValueError) as context:
+            _build_ansible_args({'playbook': 'site',
+                                 'syntax_check': 'yes'}, check=False)
+        self.assertIn('is a flag', str(context.exception))
+
+    def test_the_valued_opt_in_options(self):
+        args = _build_ansible_args(
+                {'playbook': 'site', 'forks': 10,
+                 'start_at_task': 'resume from here'}, check=False)
+        self.assertEqual(args, ['site', '--forks', '10',
+                                '--start-at-task', 'resume from here'])
+
+    def test_forks_must_be_a_positive_integer(self):
+        for bad in (0, -3, 'many'):
+            with self.assertRaises(ValueError, msg=bad):
+                _build_ansible_args({'playbook': 'site', 'forks': bad},
+                                    check=False)
+
+    def test_options_outside_the_policy_are_refused(self):
+        with self.assertRaises(ValueError) as context:
+            _build_ansible_args({'playbook': 'site', 'forks': 10},
+                                check=False,
+                                allowed_options=('limit',))
+        self.assertIn('disabled by the project policy',
+                      str(context.exception))
+
     def test_rejects_control_characters(self):
         with self.assertRaises(ValueError):
             _build_ansible_args({'playbook': 'site', 'limit': 'a\nb'},
@@ -287,6 +331,26 @@ class ExecuteTestCase(unittest.TestCase):
         self.assertIn('debug', schema['properties'])
         self.assertEqual(schema['properties']['debug']['type'],
                          'boolean')
+
+    def test_schema_lists_the_verification_options_by_default(self):
+        from debops.mcp.tools import execution_schema
+        schema = execution_schema(self.policy)
+        for option in ('syntax_check', 'list_hosts', 'list_tags',
+                       'list_tasks'):
+            self.assertIn(option, schema['properties'], option)
+            self.assertEqual(schema['properties'][option]['type'],
+                             'boolean', option)
+        # The opt-in shaping options stay hidden until the policy
+        # names them
+        self.assertNotIn('forks', schema['properties'])
+
+    def test_schema_shows_the_opt_in_options_when_allowed(self):
+        from debops.mcp.tools import execution_schema
+        self.policy.execute_options = sorted(
+                self.policy.execute_options) + ['forks']
+        schema = execution_schema(self.policy)
+        self.assertEqual(schema['properties']['forks']['type'],
+                         'integer')
 
     def test_successful_check(self):
         result, _runner, inventory, hooks, popen = self.call_execute()

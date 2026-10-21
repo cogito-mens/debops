@@ -1009,6 +1009,57 @@ def test_an_orphaned_run_keeps_the_project_locked(
         server_a.wait(timeout=10)
 
 
+def test_check_verifies_a_playbook_without_running_it(
+        run_debops, mcp_env, project_dir, debops_source_dir):
+    """The write→verify→fix loop: the model checks a playbook it wrote
+    through ansible-playbook itself, inside the confinement — instead
+    of running ansible-playbook locally, off the record."""
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+    disable_confirm_gate(project_dir)
+
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+    playbooks = project_dir / "ansible" / "playbooks"
+    playbooks.mkdir(parents=True)
+    (playbooks / "broken.yml").write_text(
+            "- name: Broken\n  hosts: localhost\n  tasks: nope\n")
+    (playbooks / "good.yml").write_text("""---
+- name: Good play
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Works
+      ansible.builtin.debug:
+        msg: fine
+""")
+
+    server = _LiveServer(project_dir, mcp_env, debops_source_dir)
+    try:
+        # The broken playbook answers with its parse error
+        result = server.call("check", {"playbook": "broken",
+                                       "syntax_check": True})
+        assert result["result"]["isError"] is True
+        assert "ERROR" in result["result"]["content"][0]["text"]
+
+        # The good one parses clean, and lists its tasks without
+        # running anything
+        result = server.call("check", {"playbook": "good",
+                                       "syntax_check": True})
+        assert result["result"]["isError"] is False
+        assert "exit code: 0" in result["result"]["content"][0]["text"]
+        result = server.call("check", {"playbook": "good",
+                                       "list_tasks": True})
+        assert result["result"]["isError"] is False
+        assert "Works" in result["result"]["content"][0]["text"]
+    finally:
+        server.stop()
+
+
 def test_execution_log_holds_exactly_one_execution(
         run_debops, mcp_env, project_dir, debops_source_dir):
     """A playbook list runs each playbook as its own invocation; the

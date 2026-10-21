@@ -95,7 +95,17 @@ def is_denied_component(part):
 
 # ansible-playbook options the execution tools may pass through;
 # 'project.mcp.execute_options' restricts the set
-EXECUTE_OPTIONS = ('limit', 'tags', 'skip_tags')
+# The ansible-playbook options an execution may carry. The default
+# set is the safe one: the pattern narrowers and the verification
+# modes, which never touch the hosts beyond the check itself. The
+# rest are opt-in — the project policy must name them explicitly.
+EXECUTE_OPTIONS = ('limit', 'tags', 'skip_tags', 'syntax_check',
+                   'list_hosts', 'list_tags', 'list_tasks',
+                   'forks', 'force_handlers', 'flush_cache',
+                   'start_at_task')
+
+DEFAULT_EXECUTE_OPTIONS = ('limit', 'tags', 'skip_tags', 'syntax_check',
+                           'list_hosts', 'list_tags', 'list_tasks')
 
 # Spellings which no normalization rule can produce: the short flags
 EXECUTE_OPTION_ALIASES = {'-l': 'limit', '-t': 'tags'}
@@ -422,7 +432,7 @@ class McpPolicy(object):
 
         options = mcp_config.get('execute_options')
         if options is None:
-            options = EXECUTE_OPTIONS
+            options = DEFAULT_EXECUTE_OPTIONS
         self.execute_options = []
         for option in options:
             canonical = _canonical_execute_option(option)
@@ -432,9 +442,15 @@ class McpPolicy(object):
                 continue
             if canonical not in self.execute_options:
                 self.execute_options.append(canonical)
-        if set(self.execute_options) != set(EXECUTE_OPTIONS):
-            logger.notice('Execution options restricted by policy: %s',
-                          ', '.join(self.execute_options) or '(none)')
+        extra = [option for option in self.execute_options
+                 if option not in DEFAULT_EXECUTE_OPTIONS]
+        missing = [option for option in DEFAULT_EXECUTE_OPTIONS
+                   if option not in self.execute_options]
+        if extra or missing:
+            logger.notice('Execution options set by policy: %s%s',
+                          ', '.join(self.execute_options) or '(none)',
+                          ' (opted in: {})'.format(', '.join(extra))
+                          if extra else '')
 
     def is_tool_allowed(self, name):
         """Check if a tool may be exposed; the deny list wins."""

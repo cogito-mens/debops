@@ -54,9 +54,30 @@ from ..server import Tool
 # The schema shared by the execution tools, with options the project
 # policy disabled filtered out, so agents never see what they cannot use
 OPTION_DESCRIPTIONS = {
-    'limit': 'Limit execution to hosts, --limit style',
-    'tags': 'Only run tagged tasks, --tags style',
-    'skip_tags': 'Skip tagged tasks, --skip-tags style',
+    # The pattern narrowers
+    'limit': ('string', 'Limit execution to hosts, --limit style'),
+    'tags': ('string', 'Only run tagged tasks, --tags style'),
+    'skip_tags': ('string', 'Skip tagged tasks, --skip-tags style'),
+    # The verification modes: ansible parses or lists and exits;
+    # nothing runs and no host is contacted
+    'syntax_check': ('boolean', 'Parse the playbook and report the '
+                     'syntax, without running anything'),
+    'list_hosts': ('boolean', 'List the affected hosts, without '
+                   'running anything'),
+    'list_tags': ('boolean', "List the playbook's tags, without "
+                  'running anything'),
+    'list_tasks': ('boolean', "List the playbook's tasks, without "
+                   'running anything'),
+    # The opt-in execution shaping: off unless the project policy names
+    # them in project.mcp.execute_options
+    'forks': ('integer', 'The number of parallel processes, --forks '
+              'style'),
+    'force_handlers': ('boolean', 'Run the pending handlers '
+                       'immediately, --force-handlers style'),
+    'flush_cache': ('boolean', 'Flush the local fact cache first, '
+                    '--flush-cache style'),
+    'start_at_task': ('string', 'Start the playbook at the named task, '
+                      'skipping the earlier ones'),
 }
 
 
@@ -72,9 +93,10 @@ def execution_schema(policy):
                      'targets (run in order), e.g. "service/nginx" or '
                      '["service/nginx", "site"]'},
     }
-    for option, description in OPTION_DESCRIPTIONS.items():
+    for option, (option_type, description) in \
+            OPTION_DESCRIPTIONS.items():
         if option in allowed:
-            properties[option] = {'type': 'string',
+            properties[option] = {'type': option_type,
                                   'description': description}
     if policy is None or policy.execute_debug:
         properties['debug'] = {
@@ -1054,7 +1076,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
             'in '
             'order, and optional limit/tags. A check run of a '
             'project-local playbook asks the user first: its tasks '
-            'can execute commands even in check mode. The result is '
+            'can execute commands even in check mode. To verify a '
+            'playbook without running anything, pass syntax_check or '
+            'list_tasks. The result is '
             'a point-in-time preview: the project or the inventory '
             'can change between the check and the run. The change is '
             'complete when this call returns; a dependent call must '

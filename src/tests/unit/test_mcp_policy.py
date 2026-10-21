@@ -228,6 +228,47 @@ class ExecuteTimeoutTestCase(unittest.TestCase):
         self.assertEqual(McpPolicy(project).execute_timeout, 3600)
 
 
+class ExecuteOptionsTestCase(unittest.TestCase):
+    """The execution options: the safe set by default, the shaping
+    ones by explicit opt-in."""
+
+    def test_the_default_set_is_the_safe_one(self):
+        policy = McpPolicy(FakeProject('/srv/projects/example'))
+        self.assertEqual(sorted(policy.execute_options),
+                         ['limit', 'list_hosts', 'list_tags',
+                          'list_tasks', 'skip_tags', 'syntax_check',
+                          'tags'])
+
+    def test_the_shaping_options_are_off_by_default(self):
+        policy = McpPolicy(FakeProject('/srv/projects/example'))
+        for option in ('forks', 'force_handlers', 'flush_cache',
+                       'start_at_task'):
+            self.assertNotIn(option, policy.execute_options)
+
+    def test_the_opt_in_options_by_policy(self):
+        project = FakeProject('/srv/projects/example', raw_config={
+                'project': {'mcp': {'execute_options':
+                                    ['limit', 'forks']}}})
+        policy = McpPolicy(project)
+        self.assertEqual(sorted(policy.execute_options),
+                         ['forks', 'limit'])
+
+    def test_the_flag_spellings_canonicalize(self):
+        project = FakeProject('/srv/projects/example', raw_config={
+                'project': {'mcp': {'execute_options':
+                                    ['-l', '--list-tasks']}}})
+        policy = McpPolicy(project)
+        self.assertEqual(sorted(policy.execute_options),
+                         ['limit', 'list_tasks'])
+
+    def test_an_unknown_option_is_dropped(self):
+        project = FakeProject('/srv/projects/example', raw_config={
+                'project': {'mcp': {'execute_options':
+                                    ['limit', '--background']}}})
+        policy = McpPolicy(project)
+        self.assertEqual(policy.execute_options, ['limit'])
+
+
 class EnvFileDenyTestCase(unittest.TestCase):
 
     def _policy(self):

@@ -31,8 +31,19 @@ execute = "check"
 # 0 means no limit (the run still ends when the client cancels it).
 execute_timeout = 3600
 
-# The ansible-playbook options an execution may pass through.
-execute_options = ["limit", "tags", "skip-tags"]
+# The ansible-playbook options an execution may pass through. The
+# default set is the safe one: the pattern narrowers plus the
+# verification modes, which parse or list and exit without executing
+# anything or contacting the hosts.
+execute_options = ["limit", "tags", "skip-tags", "syntax-check",
+                   "list-hosts", "list-tags", "list-tasks"]
+
+# The execution-shaping options are opt-in — name them explicitly:
+# "forks" (a parallel-process count), "force-handlers" (run pending
+# handlers immediately), "flush-cache" (flush the local fact cache
+# first) and "start-at-task" (skip everything before the named task).
+#execute_options = ["limit", "tags", "skip-tags", "syntax-check",
+#                   "list-hosts", "list-tags", "list-tasks", "forks"]
 
 # Whether check-mode runs include '--diff'. The diff renders the files
 # a template task would write — secrets included — into the tool

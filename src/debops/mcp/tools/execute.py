@@ -247,9 +247,19 @@ PROGRESS_INTERVAL = 0.5  # seconds
 # carries the tail of the run log, which a polling client reads
 STATUS_INTERVAL = 2  # seconds
 
-# ansible-playbook options the tools accept, mapped to their flags
-ALLOWED_OPTIONS = {'limit': '--limit', 'tags': '--tags',
-                   'skip_tags': '--skip-tags'}
+# ansible-playbook options the tools accept, mapped to their flags.
+# The boolean ones are the verification modes — ansible exits without
+# executing — plus the execution-shaping switches; the valued ones
+# take an argument. The policy's execute_options narrows this ceiling
+BOOLEAN_OPTIONS = {'syntax_check': '--syntax-check',
+                   'list_hosts': '--list-hosts',
+                   'list_tags': '--list-tags',
+                   'list_tasks': '--list-tasks',
+                   'force_handlers': '--force-handlers',
+                   'flush_cache': '--flush-cache'}
+VALUED_OPTIONS = {'limit': '--limit', 'tags': '--tags',
+                  'skip_tags': '--skip-tags', 'forks': '--forks',
+                  'start_at_task': '--start-at-task'}
 
 
 def _playbook_targets(arguments):
@@ -294,16 +304,43 @@ def _build_ansible_args(arguments, check, allowed_options=EXECUTE_OPTIONS,
     renders the files a template task would write, secrets included,
     into the tool result. The debugging verbosity (-vv, gated by
     project.mcp.execute_debug upstream) is the same class of opt-in.
+
+    The boolean verification options turn the call into a static check:
+    ansible parses or lists and exits without executing or contacting
+    the inventory hosts.
     """
     args = _playbook_targets(arguments)
-    for option, flag in ALLOWED_OPTIONS.items():
+    for option, flag in BOOLEAN_OPTIONS.items():
+        value = arguments.get(option)
+        if value is None:
+            continue
+        if not isinstance(value, bool):
+            raise ValueError('the "{}" option is a flag; pass true'
+                             .format(option))
+        if not value:
+            continue
+        if option not in allowed_options:
+            raise ValueError('the "{}" option is disabled by the project '
+                             'policy'.format(option))
+        args.append(flag)
+    for option, flag in VALUED_OPTIONS.items():
         value = arguments.get(option)
         if value is None:
             continue
         if option not in allowed_options:
             raise ValueError('the "{}" option is disabled by the project '
                              'policy'.format(option))
-        value = str(value)
+        if option == 'forks':
+            try:
+                value = int(value)
+                if value < 1:
+                    raise ValueError()
+            except (TypeError, ValueError):
+                raise ValueError('the "forks" option must be a positive '
+                                 'integer')
+            value = str(value)
+        else:
+            value = str(value)
         if not value or '\n' in value or '\r' in value:
             raise ValueError('invalid value for "{}": {!r}'.format(
                     option, value))
@@ -724,15 +761,28 @@ def _execute_playbook(project, policy, arguments, context, check,
 
             # Resolve the affected hosts before running: the inventory
             # is the security boundary, and the resolution is the audit
-            # trail and the policy enforcement point
-            try:
-                resolved_hosts = resolve_hosts(env, project.path, command)
-            except (ValueError, subprocess.TimeoutExpired,
-                    FileNotFoundError) as errmsg:
-                logger.notice('Playbook execution %s aborted: %s',
-                              execution_id, errmsg)
-                return error_result('cannot resolve the affected hosts: '
-                                    + str(errmsg))
+            # trail and the policy enforcement point. A verification
+            # mode never executes and never contacts a host — a syntax
+            # check of a broken playbook must answer with the parse
+            # error, not with a resolution failure — so only
+            # '--list-hosts' still has a host answer to resolve
+            verify_only = any(arguments.get(option) for option in
+                              ('syntax_check', 'list_tags', 'list_tasks'))
+            if verify_only and not arguments.get('list_hosts'):
+                resolved_hosts = []
+                logger.notice('The execution is a verification only; '
+                              'no host is contacted [execution %s]',
+                              execution_id)
+            else:
+                try:
+                    resolved_hosts = resolve_hosts(env, project.path,
+                                                   command)
+                except (ValueError, subprocess.TimeoutExpired,
+                        FileNotFoundError) as errmsg:
+                    logger.notice('Playbook execution %s aborted: %s',
+                                  execution_id, errmsg)
+                    return error_result('cannot resolve the affected '
+                                        'hosts: ' + str(errmsg))
             rejected = [host for host in resolved_hosts
                         if policy.execute_hosts
                         and not any(fnmatch.fnmatch(host, allowed)
