@@ -13,13 +13,14 @@ from debops.mcp.tools.common import (ReadWriteLock,
                                      shared_project)
 import os
 import shutil
+import subprocess
 import tempfile
 import threading
 import time
 import unittest
 
 
-def _auto_commit_noop(self, message=None):
+def _auto_commit_noop(self, message=None, paths=None):
     pass
 
 
@@ -203,17 +204,37 @@ class ProjectLockTestCase(unittest.TestCase):
             'path': self.tmpdir, 'name': 'project',
             'project_type': 'legacy', 'view': 'system',
             'config': type('Config', (), {'raw': {}})(),
-            'auto_commit': lambda self, message=None: calls.append(message),
+            'auto_commit': lambda self, message=None, paths=None:
+                calls.append((message, paths)),
         })()
         policy = type('Policy', (), {
             'view_root': os.path.join(self.tmpdir, 'ansible'),
         })()
+        with exclusive_project(project, policy, note='run site',
+                               paths=['site.yml']):
+            pass
+        self.assertEqual(calls, [('DebOps MCP: run site', ['site.yml'])])
+
+    def test_nothing_dirty_means_no_commit(self):
+        calls = []
+        project = type('Project', (), {
+            'path': self.tmpdir, 'name': 'project',
+            'project_type': 'legacy', 'view': 'system',
+            'config': type('Config', (), {'raw': {}})(),
+            'auto_commit': lambda self, message=None, paths=None:
+                calls.append((message, paths)),
+        })()
+        policy = type('Policy', (), {
+            'view_root': os.path.join(self.tmpdir, 'ansible'),
+        })()
+        # Undeclared paths and no repository to read: the delta is
+        # empty and the commit never fires
         with exclusive_project(project, policy, note='run site'):
             pass
-        self.assertEqual(calls, ['DebOps MCP: run site'])
+        self.assertEqual(calls, [])
 
     def test_a_failed_auto_commit_does_not_mask_the_outcome(self):
-        def raising(self, message=None):
+        def raising(self, message=None, paths=None):
             raise RuntimeError('disk full mid-commit')
 
         project = type('Project', (), {
@@ -227,12 +248,78 @@ class ProjectLockTestCase(unittest.TestCase):
         })()
         with self.assertLogs('debops.mcp.tools.common', level='WARNING') \
                 as recorded:
-            with exclusive_project(project, policy, note='run site'):
+            with exclusive_project(project, policy, note='run site',
+                                   paths=['site.yml']):
                 outcome = 'the work result'
         # The operation's own outcome stands; the failure is logged
         self.assertEqual(outcome, 'the work result')
         self.assertTrue(any('Auto-commit' in line
                             for line in recorded.output))
+
+
+class SweepTestCase(unittest.TestCase):
+    """The tool commits are scoped to what the call touched."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-sweep-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        self.env = dict(os.environ, GIT_CONFIG_NOSYSTEM='1',
+                        GIT_AUTHOR_NAME='Test',
+                        GIT_AUTHOR_EMAIL='test@example.org',
+                        GIT_COMMITTER_NAME='Test',
+                        GIT_COMMITTER_EMAIL='test@example.org')
+        subprocess.run(['git', 'init', '-q'], cwd=self.tmpdir,
+                       env=self.env, check=True)
+        from tests.unit.test_projectdir import make_project_at
+        self.project = make_project_at(
+                self.tmpdir,
+                raw={'project': {'git': {'auto_commit': True}}})
+        self.policy = type('Policy', (), {
+            'view_root': os.path.join(self.tmpdir, 'ansible'),
+        })()
+
+    def git(self, *args):
+        return subprocess.run(['git'] + list(args), cwd=self.tmpdir,
+                              env=self.env, check=True,
+                              capture_output=True, text=True).stdout
+
+    def test_a_write_commits_only_its_own_path(self):
+        from debops.mcp.tools.common import commit_or_report
+        with open(os.path.join(self.tmpdir, 'operator.txt'), 'w') as fp:
+            fp.write('the operator edited this\n')
+        with open(os.path.join(self.tmpdir, 'ours.txt'), 'w') as fp:
+            fp.write('the tool wrote this\n')
+        with exclusive_project(self.project, self.policy,
+                               note='file.write ours.txt',
+                               paths=['ours.txt']):
+            outcome = commit_or_report(
+                    self.project, 'file.write ours.txt', 'created',
+                    paths=['ours.txt'])
+            self.assertIsNone(outcome)
+        show = self.git('show', '--stat', '--format=%s')
+        self.assertIn('ours.txt', show)
+        self.assertNotIn('operator.txt', show)
+        # The operator's pending change stays pending
+        self.assertIn('operator.txt',
+                      self.git('status', '--porcelain'))
+
+    def test_the_dirty_delta_commits_what_the_block_created(self):
+        # The custom-tool case: no declared paths, so the exit commits
+        # the paths which became dirty during the block — a run which
+        # creates a tree — and nothing the operator left pending
+        with open(os.path.join(self.tmpdir, 'operator.txt'), 'w') as fp:
+            fp.write('the operator edited this\n')
+        with exclusive_project(self.project, self.policy,
+                               note='run site'):
+            os.makedirs(os.path.join(self.tmpdir, 'secret', 'created'))
+            with open(os.path.join(self.tmpdir, 'secret', 'created',
+                                   'key'), 'w') as fp:
+                fp.write('the run created this\n')
+        show = self.git('show', '--stat', '--format=%s')
+        self.assertIn('secret/created/key', show)
+        self.assertNotIn('operator.txt', show)
+        self.assertIn('operator.txt',
+                      self.git('status', '--porcelain'))
 
 
 if __name__ == '__main__':

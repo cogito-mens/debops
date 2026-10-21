@@ -237,13 +237,16 @@ def document_result(value, output_format):
         return error_result(str(errmsg))
 
 
-def commit_or_report(project, note, outcome):
+def commit_or_report(project, note, outcome, paths=None):
     """Commit with MCP provenance; on failure, an error result saying
     the change is not recorded. None on success. The commit is part of
     the write contract: an explicit, attributable record of the change.
+
+    'paths' scopes the commit to what the call touched; an operator's
+    unrelated pending changes never ride along.
     """
     try:
-        project.commit(message='DebOps MCP: ' + note)
+        project.commit(message='DebOps MCP: ' + note, paths=paths)
     except Exception as errmsg:
         return error_result('{}, but the commit failed: {} (the '
                             'change is not recorded in git)'
@@ -443,12 +446,39 @@ def project_flock(project, policy, exclusive):
         fp.close()
 
 
+def _dirty_paths(project):
+    """The working-tree paths with pending changes (git porcelain).
+
+    None when the repository cannot be read — a non-git project has
+    nothing to commit either way.
+    """
+    try:
+        with project._closing_repo() as repo:
+            output = repo.git.status('--porcelain')
+    except Exception:
+        return None
+    paths = []
+    for line in output.splitlines():
+        # 'XY path' or 'XY old -> new'
+        entry = line[3:] if len(line) > 3 else ''
+        if ' -> ' in entry:
+            entry = entry.split(' -> ', 1)[1]
+        if entry:
+            paths.append(entry)
+    return paths
+
+
 @contextlib.contextmanager
-def exclusive_project(project, policy, note=''):
+def exclusive_project(project, policy, note='', paths=None):
     """Hold the in-process write lock and the cross-process exclusive
-    lock, in that order. On exit, pending changes are committed (when
-    the project has automatic commits enabled, which is the default),
-    so the tree stays clean by construction.
+    lock, in that order. On exit, the block's own changes are
+    committed (when the project has automatic commits enabled, which
+    is the default), so the record stays accurate by construction.
+
+    The commit is scoped: exactly the declared 'paths', or — when the
+    block cannot know them ahead of time (a custom tool) — the paths
+    which became dirty during the block. An operator's unrelated
+    pending changes never ride along.
 
     The operation is refused before it starts when the filesystem is
     nearly full.
@@ -456,15 +486,22 @@ def exclusive_project(project, policy, note=''):
     check_free_space(policy, project)
     with PROJECT_LOCK.write():
         with project_flock(project, policy, exclusive=True):
+            before = None if paths is not None else _dirty_paths(project)
             try:
                 yield
             finally:
                 # A failed ambient commit must not mask the
                 # operation's own outcome
                 try:
-                    project.auto_commit(message='DebOps MCP: ' + note
-                                        if note else
-                                        'DebOps MCP operation')
+                    commit_paths = paths
+                    if commit_paths is None and before is not None:
+                        after = _dirty_paths(project)
+                        commit_paths = sorted(set(after) - set(before))
+                    if commit_paths:
+                        project.auto_commit(
+                                message='DebOps MCP: ' + note
+                                if note else 'DebOps MCP operation',
+                                paths=commit_paths)
                 except Exception:
                     logger.warning('Auto-commit after %s failed',
                                    note or 'the operation',

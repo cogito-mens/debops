@@ -210,7 +210,9 @@ def _write_environment(project, policy, arguments, secret):
 
     note = '{} {}'.format('environment.set' if value is not None
                           else 'environment.unset', name)
-    with exclusive_project(project, policy, note=note):
+    # The tokens file is never committed — declare no paths for it
+    with exclusive_project(project, policy, note=note,
+                           paths=[] if secret else [path]):
         old_text = ''
         if os.path.isfile(path):
             with open(path) as fp:
@@ -234,7 +236,8 @@ def _write_environment(project, policy, arguments, secret):
             # The tracked file is committed with provenance, like any
             # write; the tokens file never is
             commit_error = commit_or_report(
-                    project, note, 'the environment was written')
+                    project, note, 'the environment was written',
+                    paths=[path])
             if commit_error is not None:
                 return commit_error
 

@@ -28,7 +28,7 @@ import time
 import unittest
 
 
-def _auto_commit_noop(self, message=None):
+def _auto_commit_noop(self, message=None, paths=None):
     pass
 
 
@@ -44,7 +44,7 @@ class FakeProject(object):
             'raw': raw_config or {},
         })()
 
-    def auto_commit(self, message=None):
+    def auto_commit(self, message=None, paths=None):
         pass
 
 

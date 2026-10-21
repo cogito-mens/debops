@@ -165,7 +165,9 @@ def tool_view_create(project, policy, arguments):
     if name in project.config.raw.get('views', {}):
         return error_result('view already exists: {}'.format(name))
 
-    with exclusive_project(project, policy, note='view.create ' + name):
+    with exclusive_project(project, policy, note='view.create ' + name,
+                           paths=[os.path.join(project.path, 'ansible',
+                                               'views', name)]):
         try:
             project.mkview(name)
         except (ValueError, OSError) as errmsg:

@@ -31,7 +31,7 @@ PUSH_DONE = {'action': 'push', 'pushed': True, 'commits': ['Add a thing']}
 PUSH_CLEAN = {'action': 'push', 'pushed': False, 'commits': []}
 
 
-def _auto_commit_noop(self, message=None):
+def _auto_commit_noop(self, message=None, paths=None):
     pass
 
 

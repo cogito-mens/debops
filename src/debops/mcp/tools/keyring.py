@@ -294,12 +294,14 @@ def tool_keyring_fetch(project, policy, arguments, context):
     filename = '0x{}.asc'.format(fingerprint)
     path = confine_under(_keyring_dir(project), filename)
     with exclusive_project(project, policy,
-                           note='keyring.fetch ' + filename):
+                           note='keyring.fetch ' + filename,
+                           paths=[path]):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w') as fp:
             fp.write(armored)
         # The commit is part of the tool's contract, as for file.write
-        project.commit(message='DebOps MCP: keyring.fetch ' + filename)
+        project.commit(message='DebOps MCP: keyring.fetch ' + filename,
+                       paths=[path])
 
     lines = ['# Key fetched into the keyring', '',
              'fingerprint: {}'.format(format_fingerprint(fingerprint)),

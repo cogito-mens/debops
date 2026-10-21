@@ -215,8 +215,11 @@ def tool_collection_require(project, policy, arguments, context,
         return refused
 
     requirements = _requirements_path(project)
+    content_paths = [requirements, _lock_path(project),
+                     _collections_content(project)]
     with exclusive_project(project, policy,
-                           note='collection.require ' + name):
+                           note='collection.require ' + name,
+                           paths=content_paths):
         try:
             if os.path.isfile(requirements):
                 text = _read_text(requirements)
@@ -245,7 +248,7 @@ def tool_collection_require(project, policy, arguments, context,
         # even when the install fails, and the failure is reported
         commit_error = commit_or_report(
                 project, 'collection.require ' + name,
-                'the requirement was written')
+                'the requirement was written', paths=content_paths)
         if commit_error is not None:
             return commit_error
 
@@ -272,8 +275,10 @@ def tool_collection_remove(project, policy, arguments):
         return refused
 
     removed = []
+    touched = [_requirements_path(project), _lock_path(project)]
     with exclusive_project(project, policy,
-                           note='collection.remove ' + name):
+                           note='collection.remove ' + name,
+                           paths=touched):
         for path in (_requirements_path(project), _lock_path(project)):
             if not os.path.isfile(path):
                 continue
@@ -293,10 +298,13 @@ def tool_collection_remove(project, policy, arguments):
         if os.path.isdir(collection_dir):
             shutil.rmtree(collection_dir)
             removed.append(name.replace('.', '/') + '/')
+            touched.append(collection_dir)
         for entry in os.listdir(base) if os.path.isdir(base) else []:
             if entry.startswith(name + '-') and entry.endswith('.info'):
-                os.unlink(confine_under(base, entry))
+                info_path = confine_under(base, entry)
+                os.unlink(info_path)
                 removed.append(entry)
+                touched.append(info_path)
         # A namespace left empty by the removal goes away too
         namespace_dir = os.path.join(base, namespace)
         if os.path.isdir(namespace_dir) and not os.listdir(namespace_dir):
@@ -307,7 +315,7 @@ def tool_collection_remove(project, policy, arguments):
                                'installed\n'.format(name))
         commit_error = commit_or_report(
                 project, 'collection.remove ' + name,
-                'the collection was removed')
+                'the collection was removed', paths=touched)
         if commit_error is not None:
             return commit_error
 
@@ -319,7 +327,9 @@ def tool_collection_remove(project, policy, arguments):
 def tool_collection_sync(project, policy, arguments, context,
                          enabled_check=None, on_disabled=None):
     """Install the committed collection requirements."""
-    with exclusive_project(project, policy, note='collection.sync'):
+    with exclusive_project(project, policy, note='collection.sync',
+                           paths=[_collections_content(project),
+                                  _lock_path(project)]):
         try:
             output = _galaxy_install(
                     project, context, enabled_check=enabled_check,

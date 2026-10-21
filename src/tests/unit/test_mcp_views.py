@@ -24,7 +24,7 @@ REQUEST_META = {
 }
 
 
-def _auto_commit_noop(self, message=None):
+def _auto_commit_noop(self, message=None, paths=None):
     pass
 
 
@@ -38,7 +38,7 @@ class ViewsTestCase(unittest.TestCase):
         os.makedirs(os.path.join(self.tmpdir, 'ansible', 'views', 'web'))
         self.commits = []
 
-        def _record_commit(instance, message=None):
+        def _record_commit(instance, message=None, paths=None):
             self.commits.append(message)
 
         def _mkview(instance, view):

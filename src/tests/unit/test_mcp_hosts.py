@@ -39,7 +39,7 @@ def make_process(returncode=0, output='', poll=None):
     return process
 
 
-def _auto_commit_noop(self, message=None):
+def _auto_commit_noop(self, message=None, paths=None):
     pass
 
 

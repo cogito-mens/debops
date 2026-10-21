@@ -20,7 +20,7 @@ import threading
 import unittest
 
 
-def _auto_commit_noop(self, message=None):
+def _auto_commit_noop(self, message=None, paths=None):
     pass
 
 

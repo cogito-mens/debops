@@ -440,7 +440,7 @@ def _write_committed(project, policy, path, display, content, mode,
     change is committed.
     """
     size = len(content.encode('utf-8'))
-    with exclusive_project(project, policy, note=note):
+    with exclusive_project(project, policy, note=note, paths=[path]):
         if os.path.lexists(path) and not os.path.isfile(path):
             return error_result('not a regular file: ' + display)
         old_content = None
@@ -473,7 +473,8 @@ def _write_committed(project, policy, path, display, content, mode,
         # record of the change. When it fails, the change has landed
         # but is NOT recorded — the result must say so
         commit_error = commit_or_report(
-                project, note, '{}: {}'.format(outcome, display))
+                project, note, '{}: {}'.format(outcome, display),
+                paths=[path])
         if commit_error is not None:
             return commit_error
         if after is not None:
@@ -526,7 +527,8 @@ def tool_file_delete(project, policy, arguments, server=None):
                             'policy (project.mcp.project_content)')
 
     with exclusive_project(project, policy,
-                           note='file.delete ' + view_relative):
+                           note='file.delete ' + view_relative,
+                           paths=[path]):
         if not os.path.lexists(path):
             return error_result('file not found: ' + view_relative)
         if not os.path.isfile(path):
@@ -541,7 +543,7 @@ def tool_file_delete(project, policy, arguments, server=None):
         # when it fails the file is gone but NOT recorded in git
         commit_error = commit_or_report(
                 project, 'file.delete ' + view_relative,
-                'deleted: {}'.format(view_relative))
+                'deleted: {}'.format(view_relative), paths=[path])
         if commit_error is not None:
             return commit_error
         return text_result('deleted: {}'.format(view_relative))
@@ -675,9 +677,12 @@ def tool_inventory_spec(project, policy, arguments):
                 overwrite=overwrite, keep=keep)
         if result['written'] or result['removed']:
             # The commit is part of the tool's contract, as for
-            # file.write; when it fails the changes are NOT recorded
+            # file.write; when it fails the changes are NOT recorded.
+            # Scoped to the paths the spec touched
+            touched = result['written'] + result['removed']
             try:
-                project.commit(message='DebOps MCP: inventory.spec')
+                project.commit(message='DebOps MCP: inventory.spec',
+                               paths=touched)
             except Exception as errmsg:
                 report_text, _structured = _inventory_spec_report(
                         result, inventory.path, dry_run=False)

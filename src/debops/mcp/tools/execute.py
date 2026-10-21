@@ -685,6 +685,10 @@ def _execute_playbook(project, policy, arguments, context, check,
                             'debug run prints task arguments — secrets '
                             'included — into the answer')
 
+    # A run can create entire directory trees in the project (the
+    # 'secret' role's storage, resources/, ...). No declared paths:
+    # the exit commit records what became dirty during the run, and an
+    # operator's earlier pending changes stay out of it
     with exclusive_project(project, policy,
                            note='{} {}'.format(mode, ' '.join(targets))):
         try:

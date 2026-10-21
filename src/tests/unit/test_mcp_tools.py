@@ -255,7 +255,7 @@ COLLECTION_PLAYBOOK = '''---
 '''
 
 
-def _auto_commit_noop(self, message=None):
+def _auto_commit_noop(self, message=None, paths=None):
     pass
 
 
@@ -276,7 +276,7 @@ class ViewWriteTestCase(unittest.TestCase):
         # The tool commits explicitly; the stub records the messages
         self.commits = []
 
-        def _record_commit(instance, message=None):
+        def _record_commit(instance, message=None, paths=None):
             self.commits.append(message)
 
         self.project = type('Project', (), {
@@ -419,7 +419,7 @@ class ViewWriteTestCase(unittest.TestCase):
         # recorded, with the caller's outcome in front
         from debops.mcp.tools.common import commit_or_report
 
-        def _fail(self, message=None):
+        def _fail(self, message=None, paths=None):
             raise RuntimeError('disk ate it')
 
         project = type('Project', (), {'commit': _fail})()
@@ -432,7 +432,7 @@ class ViewWriteTestCase(unittest.TestCase):
         self.assertIn('not recorded in git', text)
 
         quiet = type('Project', (), {'commit': staticmethod(
-                lambda message=None: None)})()
+                lambda message=None, paths=None: None)})()
         self.assertIsNone(commit_or_report(quiet, 'noop', 'nothing'))
 
     def test_directory_is_not_a_file(self):
@@ -735,7 +735,7 @@ class OverridesWriteTestCase(unittest.TestCase):
                        check=True)
         self.commits = []
 
-        def _record_commit(instance, message=None):
+        def _record_commit(instance, message=None, paths=None):
             self.commits.append(message)
 
         self.project = type('Project', (), {
@@ -828,7 +828,7 @@ class InventorySpecTestCase(unittest.TestCase):
         os.makedirs(self.inventory_dir)
         self.commits = []
 
-        def _record_commit(instance, message=None):
+        def _record_commit(instance, message=None, paths=None):
             self.commits.append(message)
 
         self.spec_policy = {'enabled': True, 'max_version': 3,

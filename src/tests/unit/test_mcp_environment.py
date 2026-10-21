@@ -19,7 +19,7 @@ import unittest
 from unittest import mock
 
 
-def _auto_commit_noop(self, message=None):
+def _auto_commit_noop(self, message=None, paths=None):
     pass
 
 
@@ -130,7 +130,7 @@ class EnvironmentWriteTestCase(unittest.TestCase):
                        check=True)
         self.commits = []
 
-        def _record_commit(instance, message=None):
+        def _record_commit(instance, message=None, paths=None):
             self.commits.append(message)
 
         self.project = type('Project', (), {
