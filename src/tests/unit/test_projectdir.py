@@ -557,6 +557,86 @@ def test_commit_on_an_unborn_branch(tmp_path):
     assert log.stdout.strip() == "automatic commit"
 
 
+def _git_env():
+    return dict(os.environ, GIT_CONFIG_NOSYSTEM="1",
+                GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="test@example.org",
+                GIT_COMMITTER_NAME="Test",
+                GIT_COMMITTER_EMAIL="test@example.org")
+
+
+def test_commit_with_paths_stages_only_those(tmp_path):
+    # The partial commit records exactly the named paths; the
+    # operator's pending and pre-staged changes stay pending
+    env = _git_env()
+    subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), env=env,
+                   check=True)
+    (tmp_path / "base.txt").write_text("base\n")
+    subprocess.run(["git", "add", "base.txt"], cwd=str(tmp_path),
+                   env=env, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=str(tmp_path),
+                   env=env, check=True)
+    project = make_project_at(tmp_path)
+    (tmp_path / "operator.txt").write_text("pending\n")
+    (tmp_path / "staged.txt").write_text("pre-staged\n")
+    subprocess.run(["git", "add", "staged.txt"], cwd=str(tmp_path),
+                   env=env, check=True)
+    (tmp_path / "ours.txt").write_text("the tool wrote this\n")
+
+    project.commit(message="DebOps MCP: file.write ours.txt",
+                   paths=["ours.txt"])
+
+    show = subprocess.run(["git", "show", "--stat", "--format=%s"],
+                          cwd=str(tmp_path), env=env, capture_output=True,
+                          text=True)
+    assert "ours.txt" in show.stdout
+    assert "operator.txt" not in show.stdout
+    assert "staged.txt" not in show.stdout
+    status = subprocess.run(["git", "status", "--porcelain"],
+                            cwd=str(tmp_path), env=env,
+                            capture_output=True, text=True)
+    assert "operator.txt" in status.stdout
+    assert "staged.txt" in status.stdout
+
+
+def test_commit_with_paths_on_an_unborn_branch(tmp_path):
+    # A pathspec commit does not work on an unborn branch; the index
+    # then holds only our paths by construction
+    env = _git_env()
+    subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), env=env,
+                   check=True)
+    project = make_project_at(tmp_path)
+    (tmp_path / "ours.txt").write_text("the tool wrote this\n")
+    (tmp_path / "other.txt").write_text("not ours\n")
+
+    project.commit(message="DebOps MCP: file.write ours.txt",
+                   paths=["ours.txt"])
+
+    files = subprocess.run(["git", "ls-files"], cwd=str(tmp_path),
+                           env=env, capture_output=True, text=True)
+    assert "ours.txt" in files.stdout
+    assert "other.txt" not in files.stdout
+
+
+def test_commit_with_paths_is_a_noop_when_they_are_clean(tmp_path):
+    env = _git_env()
+    subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), env=env,
+                   check=True)
+    (tmp_path / "clean.txt").write_text("clean\n")
+    subprocess.run(["git", "add", "clean.txt"], cwd=str(tmp_path),
+                   env=env, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=str(tmp_path),
+                   env=env, check=True)
+    project = make_project_at(tmp_path)
+
+    project.commit(message="DebOps MCP: file.write clean.txt",
+                   paths=["clean.txt"])
+
+    log = subprocess.run(["git", "log", "--format=%s"],
+                         cwd=str(tmp_path), env=env, capture_output=True,
+                         text=True)
+    assert log.stdout.strip() == "init"
+
+
 @pytest.mark.skipif(platform.system() != "Linux",
                     reason="helper processes are listed via ps")
 def test_commit_closes_git_helper_processes(tmp_path):

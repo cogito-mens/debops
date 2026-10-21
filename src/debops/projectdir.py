@@ -1620,19 +1620,24 @@ class ProjectDir(object):
                   file=self._status_stream())
         return True
 
-    def auto_commit(self, message=None):
+    def auto_commit(self, message=None, paths=None):
         """Commit the current changes if automatic commits are enabled.
 
         A no-op when the 'project.git.auto_commit' configuration option is
         disabled or missing; commit() itself takes care of non-git
-        directories and empty changes.
+        directories and empty changes. With 'paths', only the current
+        state of those paths is committed.
         """
         try:
             if self.config.raw['project']['git']['auto_commit']:
-                if message is None:
-                    self.commit()
+                if paths is None:
+                    # The legacy call shape, unchanged
+                    if message is None:
+                        self.commit()
+                    else:
+                        self.commit(message=message)
                 else:
-                    self.commit(message=message)
+                    self.commit(message=message, paths=paths)
         except KeyError:
             # The configuration option might not exist at this time
             pass
@@ -1654,9 +1659,15 @@ class ProjectDir(object):
             if close is not None:
                 close()
 
-    def commit(self, interactive=False, message=None):
+    def commit(self, interactive=False, message=None, paths=None):
         """Commit the current contents of the project directory to the git
-        repository automatically."""
+        repository automatically.
+
+        With 'paths' the commit is partial: only the current state of
+        those paths is recorded, and unrelated changes in the working
+        tree or the index stay pending. Without it the whole tree is
+        committed, as the CLI has always done.
+        """
         if not self._is_git_repo(self.path):
             return
 
@@ -1664,6 +1675,56 @@ class ProjectDir(object):
 
         logger.debug('Detected git repository in project directory')
         with self._closing_repo() as repo:
+            if paths is not None:
+                # The partial commit: stage exactly these paths, then
+                # commit exactly them, so an operator's pending or
+                # pre-staged changes never ride along
+                relpaths = [os.path.relpath(path, self.path)
+                            if os.path.isabs(path) else path
+                            for path in paths]
+                # A path which neither exists nor is tracked has no
+                # place in a pathspec; a deleted file is tracked and
+                # belongs
+                relpaths = [path for path in relpaths
+                            if os.path.lexists(os.path.join(
+                                    self.path, path))
+                            or repo.git.ls_files('--', path)]
+                if not relpaths or not repo.git.status(
+                        '--porcelain', '--', *relpaths):
+                    logger.debug('No changes in the named paths, '
+                                 'nothing to commit')
+                else:
+                    repo.git.add('--', *relpaths)
+                    if message is None:
+                        try:
+                            message = (self.config.raw['project']
+                                       ['git']['auto_commit_message'])
+                        except KeyError:
+                            logger.warning('Issue in DebOps '
+                                           'configuration, unstaging '
+                                           'changes in git index')
+                            repo.git.reset('--', *relpaths)
+                            if interactive:
+                                print('The "project.git.'
+                                      'auto_commit_message" option is '
+                                      'not defined. Not committing '
+                                      'any changes.')
+                    if message is not None:
+                        logger.debug('New changes detected in the named '
+                                     'paths, committing')
+                        if repo.head.is_valid():
+                            repo.git.commit('-m', message, '--',
+                                            *relpaths)
+                        else:
+                            # A pathspec commit does not work on an
+                            # unborn branch; the index holds only our
+                            # paths by construction
+                            repo.git.commit('-m', message)
+                        logger.debug('New changes committed in git '
+                                     'repository')
+                run_hooks(self.path, 'post-commit')
+                return
+
             repo.git.add(all=True)
 
             # Check if there are any differences between the current HEAD
