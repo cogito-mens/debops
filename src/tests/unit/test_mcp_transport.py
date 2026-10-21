@@ -12,6 +12,7 @@ from debops.mcp import rpc
 from debops.mcp.server import McpServer
 from debops.mcp.transport import (StdioTransport, UnixSocketTransport,
                                   ping_unix)
+from tests.unit._helpers import wait_for_socket
 import json
 import os
 import shutil
@@ -103,13 +104,7 @@ class UnixSocketTransportTestCase(unittest.TestCase):
                 target=self.transport.serve, args=(self.server,),
                 daemon=True)
         self.thread.start()
-        for _ in range(500):
-            if os.path.exists(self.path):
-                break
-            time.sleep(0.01)
-        else:
-            self.fail('the server socket did not appear within 5 '
-                      'seconds: ' + self.path)
+        wait_for_socket(self.path)
         self.addCleanup(self._stop_server)
 
     def _stop_server(self):
@@ -168,11 +163,7 @@ class UnixSocketTransportTestCase(unittest.TestCase):
                                   daemon=True)
         thread.start()
         try:
-            for _ in range(500):
-                if os.path.exists(path):
-                    break
-                time.sleep(0.01)
-
+            wait_for_socket(path)
             connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             connection.connect(path)
             connection.sendall(json.dumps({
@@ -214,11 +205,7 @@ class UnixSocketTransportTestCase(unittest.TestCase):
                                   daemon=True)
         thread.start()
         try:
-            for _ in range(500):
-                if os.path.exists(path):
-                    break
-                time.sleep(0.01)
-
+            wait_for_socket(path)
             connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             connection.connect(path)
             connection.sendall(json.dumps({
@@ -332,10 +319,7 @@ class UnixSocketTransportTestCase(unittest.TestCase):
                                   daemon=True)
         thread.start()
         try:
-            for _ in range(500):
-                if os.path.exists(path):
-                    break
-                time.sleep(0.01)
+            wait_for_socket(path)
             with self.assertRaises(EOFError):
                 ping_unix(path)
         finally:
@@ -368,11 +352,7 @@ class UnixSocketTransportTestCase(unittest.TestCase):
                                   daemon=True)
         thread.start()
         try:
-            for _ in range(500):
-                if os.path.exists(path):
-                    break
-                time.sleep(0.01)
-
+            wait_for_socket(path)
             connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             connection.connect(path)
             connection.sendall(make_discover_request(1).encode('utf-8')
@@ -461,11 +441,7 @@ class SocketDrainTestCase(unittest.TestCase):
         thread = threading.Thread(target=transport.serve, args=(server,),
                                   daemon=True)
         thread.start()
-        for _ in range(500):
-            if os.path.exists(path):
-                break
-            time.sleep(0.01)
-
+        wait_for_socket(path)
         from debops.mcp.client import UnixClient
         client = UnixClient(path, timeout=15)
         answers = []

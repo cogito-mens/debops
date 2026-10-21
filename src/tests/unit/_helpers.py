@@ -4,6 +4,31 @@
 
 """Helpers shared by the MCP unit tests (not a test module)."""
 
+import socket
+import time
+
+
+def wait_for_socket(path, timeout=5):
+    """Wait until the socket at 'path' accepts a connection.
+
+    The socket file exists from bind(2), which precedes listen(2);
+    polling for the file and then connecting loses that window under
+    load (ECONNREFUSED). Probe the connection instead.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.connect(path)
+        except (ConnectionRefusedError, FileNotFoundError):
+            probe.close()
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.01)
+        else:
+            probe.close()
+            return
+
 
 def check_schema(data, schema, path='$'):
     """A tiny JSON Schema checker for the subset the tools use.

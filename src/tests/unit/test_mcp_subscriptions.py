@@ -11,6 +11,7 @@ dependencies.
 from debops.mcp.server import McpServer, PROTOCOL_VERSION
 from debops.mcp.transport import UnixSocketTransport
 from debops.mcp import rpc
+from tests.unit._helpers import wait_for_socket
 import json
 import os
 import shutil
@@ -42,10 +43,7 @@ class SubscriptionStreamTestCase(unittest.TestCase):
                 target=self.transport.serve, args=(self.server,),
                 daemon=True)
         self.thread.start()
-        for _ in range(500):
-            if os.path.exists(self.path):
-                break
-            time.sleep(0.01)
+        wait_for_socket(self.path)
         self.addCleanup(self._stop_server)
 
     def _stop_server(self):
