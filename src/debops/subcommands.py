@@ -507,6 +507,13 @@ Commands:
                             metavar='COUNT',
                             help='maximum number of concurrent connections '
                                  '(default: %(default)s)')
+        parser.add_argument('--log', nargs='?', const='', default=None,
+                            metavar='PATH',
+                            help='the server audit log (startup, tool '
+                                 'calls and their outcomes): appended to '
+                                 'PATH, or to the syslog (the journal) '
+                                 'when PATH is omitted; a harness swallows '
+                                 'the server\'s stderr')
         self.args = parser.parse_args(self.args[3:])
 
         if self.args.docs and self.args.view is not None:

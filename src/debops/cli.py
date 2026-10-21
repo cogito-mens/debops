@@ -32,6 +32,7 @@ from xdg.BaseDirectory import xdg_config_home
 import contextlib
 import json
 import logging
+from logging.handlers import SysLogHandler
 import platform
 import getpass
 import shutil
@@ -367,6 +368,35 @@ class Interpreter(object):
                 docs_mode = True
 
         set_process_name('debops-mcp')
+        if args.log is not None:
+            # A harness swallows the server's stderr; the audit channel
+            # goes to a file of its own, or to the syslog (the journal
+            # under systemd). The logger itself must emit at NOTICE for
+            # either to see the audit lines
+            debops_log = logging.getLogger('debops')
+            if args.log:
+                try:
+                    log_handler = logging.FileHandler(os.path.abspath(
+                            os.path.expanduser(args.log)))
+                except OSError as errmsg:
+                    print('Error: cannot open the log file: {}'
+                          .format(errmsg), file=sys.stderr)
+                    sys.exit(1)
+                log_handler.setFormatter(logging.Formatter(
+                        '%(asctime)s %(levelname)s %(message)s'))
+                debops_log.addHandler(log_handler)
+            else:
+                log_handler = next(
+                        (handler for handler in debops_log.handlers
+                         if isinstance(handler, SysLogHandler)), None)
+                if log_handler is None:
+                    print('Error: no syslog handler is configured',
+                          file=sys.stderr)
+                    sys.exit(1)
+            log_handler.setLevel(logging.NOTICE)
+            debops_log.setLevel(min(
+                    debops_log.getEffectiveLevel() or logging.NOTICE,
+                    logging.NOTICE))
         logger.notice('Interpreter: %s (%s %s)', sys.executable,
                       platform.python_implementation(),
                       platform.python_version())

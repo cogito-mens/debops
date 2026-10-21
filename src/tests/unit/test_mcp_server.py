@@ -302,6 +302,38 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('unknown tool: playbook.run',
                       response['error']['data']['details'])
 
+    def test_tool_calls_are_audited(self):
+        server = McpServer()
+        server.register_tool(
+                'write', 'Write', {'type': 'object'},
+                lambda arguments: {'content': [{'type': 'text',
+                                                'text': 'wrote'}],
+                                   'isError': False})
+        with self.assertLogs('debops.mcp.server', level='NOTICE') as logs:
+            server.handle(make_request(
+                    'tools/call',
+                    params={'name': 'write',
+                            'arguments': {'content': 'SECRET-CANARY'}}))
+        (line,) = [line for line in logs.output if 'Tool write(' in line]
+        # The keys are logged, the values never
+        self.assertIn('content', line)
+        self.assertNotIn('SECRET-CANARY', line)
+        self.assertIn('-> ok', line)
+
+    def test_the_audit_line_marks_errors(self):
+        server = McpServer()
+        server.register_tool(
+                'broken', 'Broken', {'type': 'object'},
+                lambda arguments: {'content': [{'type': 'text',
+                                                'text': 'nope'}],
+                                   'isError': True})
+        with self.assertLogs('debops.mcp.server', level='NOTICE') as logs:
+            server.handle(make_request(
+                    'tools/call', params={'name': 'broken',
+                                          'arguments': {}}))
+        (line,) = [line for line in logs.output if 'Tool broken(' in line]
+        self.assertIn('-> error', line)
+
     def test_registered_tool_listed_and_called(self):
         server = McpServer()
 

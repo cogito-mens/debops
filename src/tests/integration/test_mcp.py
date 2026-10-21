@@ -208,6 +208,35 @@ def test_serve_docs_rejects_view(run_debops, mcp_env, project_dir):
     assert "--docs" in result.stderr
 
 
+def test_serve_log_file(run_debops, mcp_env, project_dir):
+    # A harness swallows the server's stderr; the audit log is the file
+    log_path = project_dir.parent / "server.log"
+    request = json.dumps({
+        "jsonrpc": "2.0", "id": 1,
+        "method": "tools/call",
+        "params": {"_meta": REQUEST_META, "name": "project.status",
+                   "arguments": {}},
+    }) + "\n"
+    result = run_debops("mcp", "serve", "--log", str(log_path),
+                        cwd=str(project_dir), env=mcp_env,
+                        input_text=request)
+    assert result.returncode == 0
+    content = log_path.read_text()
+    assert "Serving project" in content
+    assert "Tool project.status() -> ok" in content
+    # A tool error is an audit line, not silence
+    request = json.dumps({
+        "jsonrpc": "2.0", "id": 1,
+        "method": "tools/call",
+        "params": {"_meta": REQUEST_META, "name": "project.read",
+                   "arguments": {"path": "nosuch.yml"}},
+    }) + "\n"
+    result = run_debops("mcp", "serve", "--log", str(log_path),
+                        cwd=str(project_dir), env=mcp_env,
+                        input_text=request)
+    assert "Tool project.read(path) -> error" in log_path.read_text()
+
+
 def _hook_canary(hook_dir, marker):
     """An executable hook which leaves a marker file when it fires."""
     hook_dir.mkdir(parents=True)

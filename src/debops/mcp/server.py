@@ -748,12 +748,20 @@ class McpServer(object):
                      name, sorted(arguments))
         gated = self._confirmation_gate(tool, arguments, params, context)
         if gated is not None:
+            logger.notice('Tool %s(%s) -> gated', name,
+                          ','.join(sorted(arguments)))
             return gated
         if (tool.task_eligible
                 and self._client_supports(context, TASKS_EXTENSION)):
+            logger.notice('Tool %s(%s) -> task', name,
+                          ','.join(sorted(arguments)))
             return self._start_task(tool, arguments, params, context)
         if not tool.needs_context:
-            return tool.handler(arguments)
+            result = tool.handler(arguments)
+            logger.notice('Tool %s(%s) -> %s', name,
+                          ','.join(sorted(arguments)),
+                          'error' if result.get('isError') else 'ok')
+            return result
 
         request_id = context.request_id
         cancel_event = threading.Event()
@@ -768,7 +776,11 @@ class McpServer(object):
                     peer_pid=context.peer_pid,
                     client_capabilities=context.client_capabilities,
                     input_responses=params.get('inputResponses'))
-            return tool.handler(arguments, tool_context)
+            result = tool.handler(arguments, tool_context)
+            logger.notice('Tool %s(%s) -> %s', name,
+                          ','.join(sorted(arguments)),
+                          'error' if result.get('isError') else 'ok')
+            return result
         finally:
             if request_id is not None:
                 with self._active_lock:
