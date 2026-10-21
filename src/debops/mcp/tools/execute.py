@@ -12,6 +12,13 @@ be arbitrary code execution.
 
 These tools run for a long time and against real infrastructure; they
 run with a request context so that clients can cancel them.
+
+A run outlives its server. On the stdio transport the server is spawned
+by the client, which may close (or be killed) while a playbook is still
+running; such an execution is detached from the server process, keeps
+the project lock, and writes its output to a run log in the cache
+directory. The log file is the record of the run when the server is
+gone.
 """
 
 import collections
@@ -22,18 +29,23 @@ import itertools
 import logging
 import os
 import re
+import shlex
+import shutil
+import signal
 import subprocess
+import sys
 import threading
 import time
 
 from ...ansible.inventory import AnsibleInventory
 from ...ansibleplaybookrunner import AnsiblePlaybookRunner
 from ...hooks import run_hooks
+from .. import runs
 from ..policy import EXECUTE_OPTIONS
 from ..server import RequestCancelled
 
-from .common import (confirmation_flow, error_result, exclusive_project,
-                     mcp_environ, text_result)
+from .common import (confirmation_flow, current_lock_fd, error_result,
+                     exclusive_project, mcp_environ, text_result)
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +175,10 @@ def _parse_recap(output):
 # Minimum interval between progress notifications
 PROGRESS_INTERVAL = 0.5  # seconds
 
+# Minimum interval between the task status refreshes; the status
+# carries the tail of the run log, which a polling client reads
+STATUS_INTERVAL = 2  # seconds
+
 # ansible-playbook options the tools accept, mapped to their flags
 ALLOWED_OPTIONS = {'limit': '--limit', 'tags': '--tags',
                    'skip_tags': '--skip-tags'}
@@ -237,6 +253,57 @@ def _build_ansible_args(arguments, check, allowed_options=EXECUTE_OPTIONS,
     return args
 
 
+def _shell_command(command):
+    """A command as a shell line, with every part quoted."""
+    return ' '.join(shlex.quote(str(part)) for part in command)
+
+
+def _finalize_command(project):
+    """The command which finalizes the project after a detached run.
+
+    The server locks the secrets and commits the pending changes when
+    the execution returns; a run which outlived its server needs the
+    same, and the 'project lock' command does both.
+    """
+    command = [sys.executable, '-m', 'debops', 'project', 'lock']
+    if project.view:
+        command.extend(['--view', project.view])
+    command.append(project.path)
+    return command
+
+
+def _detached_command(command, timeout, finalize=None):
+    """The command of a detached execution.
+
+    The execution leads its own process group, so the death of the
+    server (or the harness which spawned it) does not reach it. Two
+    wrappers ride along:
+
+    - 'timeout' bounds the run even when no server is left to enforce
+      the timeout,
+    - the finalize command commits the project and locks the secrets
+      again, which the server would have done when it returned.
+    """
+    if shutil.which('timeout') is None:
+        logger.warning('The "timeout" command is not available; a '
+                       'detached execution is not bounded by the server')
+        script = _shell_command(command)
+    else:
+        script = 'timeout -k {} {} {}'.format(
+                TERMINATION_GRACE, int(timeout), _shell_command(command))
+    lines = [script]
+    if finalize is not None:
+        lines.append('rc=$?')
+        lines.append('{} || echo "debops-mcp: the finalize failed"'
+                     .format(_shell_command(finalize)))
+        lines.append('echo "debops-mcp: the execution finished with '
+                     'exit code $rc"')
+        lines.append('exit $rc')
+    else:
+        lines.append('exit $?')
+    return ['/bin/sh', '-c', '\n'.join(lines)]
+
+
 def resolve_hosts(env, cwd, command, timeout=30):
     """Resolve the host pattern of an ansible command to concrete hosts.
 
@@ -278,75 +345,188 @@ def resolve_hosts(env, cwd, command, timeout=30):
 
 
 def run_cancellable(command, env, cwd, context, timeout, on_line=None,
-                    enabled_check=None, on_disabled=None, input_data=None):
+                    enabled_check=None, on_disabled=None, input_data=None,
+                    log_path=None, pass_fds=None, detached=False):
     """Run a command with cancellation, a timeout and capped output.
 
     Returns (output, returncode, status) where status is one of 'done',
-    'cancelled', 'timeout' or 'disabled'. Only the last
-    EXECUTE_OUTPUT_LIMIT bytes of combined output are kept. on_line is
-    called with each output line as it arrives (progress reporting).
-    'input_data' is written to the command's standard input.
+    'cancelled', 'timeout' or 'disabled'. The output kept in memory is
+    bounded to the last 4096 lines; the returned text is further
+    truncated to the last EXECUTE_OUTPUT_LIMIT bytes. on_line is called
+    with each output line as it arrives (progress reporting); its
+    failures are logged and never break the run. 'input_data' is
+    written to the command's standard input.
+
+    With 'log_path' the output is written to that file as well; the
+    file outlives the server, so a detached execution keeps its record.
+    A detached execution writes to the file directly (a pipe to a dead
+    server would kill the run on the next write) and the progress
+    lines are read back from the file. 'pass_fds' are inherited by the
+    child, so that the project lock outlives the server with the run.
     """
-    process = subprocess.Popen(
-            command, env=env, cwd=cwd,
-            stdin=(subprocess.PIPE if input_data is not None else None),
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            universal_newlines=True, bufsize=1)
-
-    # A reader thread consumes the output as it comes; the buffer is
-    # bounded so that long runs use constant memory
     output_lines = collections.deque(maxlen=4096)
+    log_file = None
+    stdout = subprocess.PIPE
+    stdin = subprocess.PIPE if input_data is not None else None
+    if log_path is not None:
+        log_file = open(log_path, 'w', encoding='utf-8')
+        if detached:
+            # The child writes to the log file itself; the file is the
+            # only channel which survives the server
+            stdout = log_file
+    if detached and input_data is None:
+        # The child outlives the server; it must not inherit the
+        # server's stdin, which is the protocol channel
+        stdin = subprocess.DEVNULL
+    try:
+        process = subprocess.Popen(
+                command, env=env, cwd=cwd,
+                stdin=stdin,
+                stdout=stdout, stderr=subprocess.STDOUT,
+                universal_newlines=True, bufsize=1,
+                pass_fds=tuple(pass_fds or ()),
+                start_new_session=detached)
+    except Exception:
+        if log_file is not None:
+            log_file.close()
+            log_file = None
+        raise
+    finally:
+        if log_file is not None and stdout is log_file:
+            # The child has its own copy of the descriptor
+            log_file.close()
+            log_file = None
 
-    def read_output():
-        for line in process.stdout:
-            output_lines.append(line)
-            if on_line is not None:
-                on_line(line)
+    def report(line):
+        """Feed a line to the progress callback.
 
-    reader = threading.Thread(target=read_output, daemon=True)
-    reader.start()
-
-    if input_data is not None:
+        The callback reports progress; a failure in it must not kill
+        the reader thread, which the run depends on (the pipe is
+        drained only while the reader lives).
+        """
+        if on_line is None:
+            return
         try:
-            process.stdin.write(input_data)
-            process.stdin.close()
-        except (BrokenPipeError, OSError):
-            # The command exited without reading its input
-            pass
+            on_line(line)
+        except Exception:
+            logger.debug('The progress callback failed', exc_info=True)
+
+    if detached and log_path is not None:
+        def read_output():
+            """Follow the log file the child writes to."""
+            pending = ''
+            with open(log_path, 'r', encoding='utf-8',
+                      errors='replace') as fp:
+                while True:
+                    chunk = fp.read(65536)
+                    if not chunk:
+                        if process.poll() is None:
+                            # The child is still running; wait for more
+                            time.sleep(0.1)
+                            continue
+                        # The child is gone; one more read catches what
+                        # it wrote before it exited
+                        chunk = fp.read(65536)
+                        if not chunk:
+                            break
+                    pending += chunk
+                    lines = pending.split('\n')
+                    pending = lines.pop()
+                    for line in lines:
+                        report(line)
+            if pending:
+                report(pending)
+    else:
+        def read_output():
+            for line in process.stdout:
+                output_lines.append(line)
+                if log_file is not None:
+                    try:
+                        log_file.write(line)
+                        log_file.flush()
+                    except ValueError:
+                        # Closed at the teardown with the reader still
+                        # alive (an orphaned grandchild holds the pipe)
+                        pass
+                report(line)
+
+    def signal_process(sig):
+        """Signal the execution, or its whole group when it is
+        detached.
+
+        A detached execution leads its own process group, so the signal
+        has to reach the group: the wrapper and the playbook below it
+        must go together.
+        """
+        if detached:
+            try:
+                os.killpg(process.pid, sig)
+            except OSError:
+                pass
+        elif sig == signal.SIGKILL:
+            process.kill()
+        else:
+            process.terminate()
 
     deadline = time.monotonic() + timeout
     cancelled = False
     timed_out = False
     disabled = False
-    while process.poll() is None:
-        if enabled_check is not None and not enabled_check():
-            # The kill switch flipped mid-run
-            disabled = True
-            logger.warning('MCP functionality disabled mid-run; '
-                           'terminating the execution')
-            if on_disabled is not None:
-                on_disabled()
-            process.terminate()
-            break
-        if context.cancelled.is_set():
-            cancelled = True
-            process.terminate()
-            break
-        if time.monotonic() > deadline:
-            timed_out = True
-            process.kill()
-            break
-        time.sleep(0.2)
+    reader = threading.Thread(target=read_output, daemon=True)
     try:
-        process.wait(timeout=TERMINATION_GRACE)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
-    reader.join(timeout=TERMINATION_GRACE)
-    output = ''.join(output_lines)
-    if len(output) > EXECUTE_OUTPUT_LIMIT:
-        output = ('… (earlier output truncated)\n'
-                  + output[-EXECUTE_OUTPUT_LIMIT:])
+        reader.start()
+
+        if input_data is not None:
+            try:
+                process.stdin.write(input_data)
+                process.stdin.close()
+            except (BrokenPipeError, OSError):
+                # The command exited without reading its input
+                pass
+
+        while process.poll() is None:
+            if enabled_check is not None and not enabled_check():
+                # The kill switch flipped mid-run
+                disabled = True
+                logger.warning('MCP functionality disabled mid-run; '
+                               'terminating the execution')
+                if on_disabled is not None:
+                    on_disabled()
+                signal_process(signal.SIGTERM)
+                break
+            if context.cancelled.is_set():
+                cancelled = True
+                signal_process(signal.SIGTERM)
+                break
+            if time.monotonic() > deadline:
+                timed_out = True
+                signal_process(signal.SIGKILL)
+                break
+            time.sleep(0.2)
+        try:
+            process.wait(timeout=TERMINATION_GRACE)
+        except subprocess.TimeoutExpired:
+            signal_process(signal.SIGKILL)
+            process.wait()
+        reader.join(timeout=TERMINATION_GRACE)
+    finally:
+        if log_file is not None:
+            log_file.close()
+    if detached and log_path is not None:
+        # The log file is the record of the run; the pipe never carried
+        # it
+        output = runs.read_tail(log_path, EXECUTE_OUTPUT_LIMIT)
+        try:
+            truncated = os.path.getsize(log_path) > EXECUTE_OUTPUT_LIMIT
+        except OSError:
+            truncated = False
+        if truncated:
+            output = ('… (earlier output truncated)\n' + output)
+    else:
+        output = ''.join(output_lines)
+        if len(output) > EXECUTE_OUTPUT_LIMIT:
+            output = ('… (earlier output truncated)\n'
+                      + output[-EXECUTE_OUTPUT_LIMIT:])
     if disabled:
         status = 'disabled'
     elif cancelled:
@@ -358,8 +538,26 @@ def run_cancellable(command, env, cwd, context, timeout, on_line=None,
     return output, process.returncode, status
 
 
+def _task_status(header, tail):
+    """The status message of a running execution: the current task and
+    the tail of the run log.
+
+    The task status is what a polling client sees; the tail tells it
+    what the run has printed so far, which the progress notifications
+    do not carry.
+    """
+    parts = []
+    if header:
+        parts.append(header)
+    text = runs.status_tail(tail)
+    if text:
+        parts.append('--- log tail ---')
+        parts.append(text)
+    return '\n'.join(parts)
+
+
 def _execute_playbook(project, policy, arguments, context, check,
-                      enabled_check=None, on_disabled=None):
+                      enabled_check=None, on_disabled=None, detach=False):
     mode = 'check' if check else 'run'
 
     try:
@@ -420,6 +618,9 @@ def _execute_playbook(project, policy, arguments, context, check,
         logger.notice('Executing a playbook in %s mode: %s [%s]',
                       mode, ' '.join(command),
                       _execution_label(execution_id, context))
+        # The run log outlives the server: it is the record of the run
+        # when the client is gone before the answer arrives
+        log_path = runs.log_path(project, execution_id)
         if not run_hooks(project.path, 'pre-' + mode):
             logger.notice('Playbook execution %s aborted: the pre-%s '
                           'hook failed', execution_id, mode)
@@ -476,22 +677,46 @@ def _execute_playbook(project, policy, arguments, context, check,
             # Play and task headers become progress notifications
             progress_counter = itertools.count(1)
             last_progress = [0.0]
+            # The tail of the run log; a polling client sees it in the
+            # task status, where the progress notifications do not reach
+            tail = collections.deque(maxlen=runs.TAIL_LINES)
+            last_status = [0.0]
+            progress_line = [None]
 
             def on_line(line):
+                tail.append(line)
+                now = time.monotonic()
                 if (_PLAY_HEADER.match(line)
                         or _TASK_HEADER.match(line)):
-                    now = time.monotonic()
                     if now - last_progress[0] >= PROGRESS_INTERVAL:
                         last_progress[0] = now
+                        progress_line[0] = line.rstrip()
                         context.progress(
                                 line.rstrip(),
                                 progress=next(progress_counter))
+                if (context.task is not None
+                        and now - last_status[0] >= STATUS_INTERVAL):
+                    last_status[0] = now
+                    context.task.set_status_message(
+                            _task_status(progress_line[0], tail))
 
             started = time.monotonic()
+            # A detached execution keeps the project lock: the lock
+            # belongs to the run, not to the server which started it
+            lock_fd = current_lock_fd()
+            pass_fds = (lock_fd,) if (detach and lock_fd is not None) else ()
+            if detach:
+                # The wrapper carries the bounds and the finalization
+                # of the run; the playbook command itself stays the
+                # same
+                command = _detached_command(
+                        command, policy.execute_timeout,
+                        _finalize_command(project))
             output, returncode, status = run_cancellable(
                     command, env=env, cwd=project.path, context=context,
                     timeout=policy.execute_timeout, on_line=on_line,
-                    enabled_check=enabled_check, on_disabled=on_disabled)
+                    enabled_check=enabled_check, on_disabled=on_disabled,
+                    log_path=log_path, pass_fds=pass_fds, detached=detach)
             # The outcome completes the audit trail the start lines open
             ended = {
                 'done': 'finished',
@@ -500,8 +725,9 @@ def _execute_playbook(project, policy, arguments, context, check,
                 'disabled': 'terminated: the kill switch was flipped',
             }[status]
             logger.notice('Playbook execution %s %s after %.0f s '
-                          '(exit code %s)', execution_id, ended,
-                          time.monotonic() - started, returncode)
+                          '(exit code %s, log %s)', execution_id, ended,
+                          time.monotonic() - started, returncode,
+                          log_path or '-')
         finally:
             if unlocked:
                 inventory.lock()
@@ -512,6 +738,9 @@ def _execute_playbook(project, policy, arguments, context, check,
     header = '# debops {} {}\n\nexit code: {}\nhosts: {}\n\n'.format(
             mode, ' '.join(targets), returncode,
             ', '.join(resolved_hosts) if resolved_hosts else '(none)')
+    if log_path is not None:
+        # The log outlives the server; it is where the run is read
+        header += 'log: {}\n\n'.format(log_path)
     if debug:
         notes = ['debug mode (-vv, ANSIBLE_DEBUG, the remote module '
                  'scripts were kept on the hosts)']
@@ -526,6 +755,8 @@ def _execute_playbook(project, policy, arguments, context, check,
     summary = {'mode': mode, 'playbooks': targets,
                'hosts': resolved_hosts, 'exitCode': returncode,
                'status': status}
+    if log_path is not None:
+        summary['log'] = log_path
     recap = _parse_recap(output)
     if recap:
         summary['recap'] = recap
@@ -545,14 +776,14 @@ def _execute_playbook(project, policy, arguments, context, check,
 
 
 def tool_check(project, policy, arguments, context, enabled_check=None,
-               on_disabled=None):
+               on_disabled=None, detach=False):
     return _execute_playbook(project, policy, arguments, context,
                              check=True, enabled_check=enabled_check,
-                             on_disabled=on_disabled)
+                             on_disabled=on_disabled, detach=detach)
 
 
 def tool_run(project, policy, arguments, context, enabled_check=None,
-             on_disabled=None):
+             on_disabled=None, detach=False):
     return _execute_playbook(project, policy, arguments, context,
                              check=False, enabled_check=enabled_check,
-                             on_disabled=on_disabled)
+                             on_disabled=on_disabled, detach=detach)

@@ -37,15 +37,19 @@ def project_dir(tmp_path):
 
 
 @pytest.fixture
-def mcp_env(debops_env):
+def mcp_env(debops_env, tmp_path):
     """A hermetic environment for the debops subprocess.
 
     An ANSIBLE_CONFIG left in the ambient environment (for example by
     the shell the tests were started from) makes ProjectDir redirect
     the project path to its parent directory. Neutralize the variable
-    so the subprocess uses the project directory it is given.
+    so the subprocess uses the project directory it is given. The run
+    logs go to the XDG cache directory, which is confined here too.
     """
-    return dict(debops_env, ANSIBLE_CONFIG="")
+    cache_home = tmp_path / "xdg-cache"
+    cache_home.mkdir()
+    return dict(debops_env, ANSIBLE_CONFIG="",
+                XDG_CACHE_HOME=str(cache_home))
 
 
 # The per-request "_meta" fields the specification requires
@@ -732,6 +736,113 @@ def test_check_tool_runs_a_playbook_in_check_mode(run_debops, mcp_env,
     assert response["result"]["isError"] is False
     assert "exit code: 0" in text
     assert "hello from mcp" in text
+
+
+def test_detached_run_survives_the_death_of_the_server(
+        run_debops, mcp_env, project_dir, tmp_path, debops_source_dir):
+    """The harness case: the client (or its session) dies mid-run.
+
+    A stdio server is a child of its client; when the harness goes
+    away it shoots the whole process group. The playbook is detached
+    from the server, so it completes anyway and its run log records
+    the outcome.
+    """
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+    confd = project_dir / ".debops" / "conf.d"
+    confd.mkdir(parents=True, exist_ok=True)
+    (confd / "mcp-test.toml").write_text(
+            "[project.mcp]\nconfirm_required = false\nexecute = \"all\"\n")
+
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+    playbooks = project_dir / "ansible" / "playbooks"
+    playbooks.mkdir(parents=True)
+    (playbooks / "custom.yml").write_text("""---
+- name: Slow play
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Take some time
+      ansible.builtin.command: sleep 5
+    - name: Report the survival
+      ansible.builtin.debug:
+        msg: survived the harness
+""")
+
+    # The server is its own session leader, as when a harness spawns
+    # it; killing the group then models the harness dying
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+            [debops_source_dir, env.get("PYTHONPATH", "")]).rstrip(
+                    os.pathsep)
+    env.update(mcp_env)
+    server = subprocess.Popen(
+            [sys.executable, "-m", "debops", "mcp", "serve"],
+            cwd=str(project_dir), env=env,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True,
+            start_new_session=True)
+    try:
+        request = json.dumps({
+            "jsonrpc": "2.0", "id": 1,
+            "method": "tools/call",
+            "params": {"_meta": REQUEST_META, "name": "run",
+                       "arguments": {"playbook": "custom"}},
+        }) + "\n"
+        server.stdin.write(request)
+        server.stdin.flush()
+
+        # Wait for the run to start: its log file appears and grows
+        runs_dir = (tmp_path / "xdg-cache" / "debops" / "mcp" / "runs")
+        log = None
+        for _ in range(400):
+            if log is None or not log.exists():
+                logs = sorted(runs_dir.glob("*/execution-*.log"),
+                              key=lambda path: path.stat().st_mtime) \
+                        if runs_dir.exists() else []
+                if logs:
+                    log = logs[-1]
+            if log is not None and log.exists() \
+                    and log.stat().st_size > 0:
+                break
+            time.sleep(0.05)
+        assert log is not None and log.exists() and \
+            log.stat().st_size > 0, "the run log never appeared"
+
+        # The harness is shot: the channel closes and the whole
+        # process group is killed, before the playbook has finished
+        server.stdin.close()
+        os.killpg(server.pid, signal.SIGKILL)
+        server.wait(timeout=10)
+        assert server.returncode == -signal.SIGKILL
+
+        # The detached run completes anyway, and the log is the record
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
+            text = log.read_text()
+            if "debops-mcp: the execution finished" in text:
+                break
+            time.sleep(0.2)
+        else:
+            pytest.fail("the detached run never finalized; the log:\n"
+                        + log.read_text())
+        text = log.read_text()
+        assert "survived the harness" in text
+        assert "PLAY RECAP" in text
+        # The finalization ran: the project was committed and locked
+        # again by the wrapper, in place of the dead server
+        assert "the finalize failed" not in text
+    finally:
+        try:
+            os.killpg(server.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        server.wait(timeout=10)
 
 
 def test_check_runs_multiple_playbooks_in_order(run_debops, mcp_env,

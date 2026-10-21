@@ -16,9 +16,11 @@ from debops.mcp.tools.execute import _build_ansible_args
 from unittest import mock
 import contextlib
 import io
+import itertools
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -173,13 +175,24 @@ class ExecuteTestCase(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-exec-')
         self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        # The run logs live in the cache directory; keep them in the
+        # test's temporary tree
+        os.environ['XDG_CACHE_HOME'] = os.path.join(self.tmpdir, 'cache')
         self.project = FakeProject(self.tmpdir)
         self.policy = McpPolicy(self.project)
         self.context = ToolContext(1, threading.Event())
 
+    def run_logs(self):
+        """The run log files the test's executions wrote."""
+        import glob
+        return glob.glob(os.path.join(
+                os.environ['XDG_CACHE_HOME'], 'debops', 'mcp', 'runs',
+                '*', 'execution-*.log'))
+
     def call_execute(self, check=True, resolved=('web1',),
                      playbook='site', output='play recap\n',
-                     returncode=0, arguments=None):
+                     returncode=0, arguments=None, detach=False,
+                     poll=None):
         from debops.mcp.tools.execute import _execute_playbook
         with mock.patch(
                 'debops.mcp.tools.execute.AnsiblePlaybookRunner') as runner, \
@@ -195,11 +208,12 @@ class ExecuteTestCase(unittest.TestCase):
             inventory.return_value.unlock.return_value = True
             hooks.return_value = True
             popen.return_value = make_process(returncode=returncode,
-                                              output=output)
+                                              output=output, poll=poll)
             result = _execute_playbook(self.project, self.policy,
                                        dict({'playbook': playbook},
                                             **(arguments or {})),
-                                       self.context, check=check)
+                                       self.context, check=check,
+                                       detach=detach)
         return result, runner, inventory, hooks, popen
 
     def test_debug_refused_by_default(self):
@@ -824,6 +838,7 @@ class ProgressTestCase(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-progress-')
         self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        os.environ['XDG_CACHE_HOME'] = os.path.join(self.tmpdir, 'cache')
         self.project = FakeProject(self.tmpdir)
         self.policy = McpPolicy(self.project)
 
@@ -878,6 +893,280 @@ class ProgressTestCase(unittest.TestCase):
         text = result['content'][0]['text']
         self.assertIn('earlier output truncated', text)
         self.assertLess(len(text), 150000)
+
+    def test_task_status_message_carries_the_log_tail(self):
+        # A polling client reads the task status; the progress
+        # notifications never reach it, so the status carries the tail
+        # of the run log
+        from debops.mcp.tasks import Task
+        task = Task(60000)
+        context = ToolContext(1, threading.Event(), task=task)
+        with mock.patch('debops.mcp.tools.execute.STATUS_INTERVAL', 0):
+            self.run_with_context(context)
+        self.assertIn('TASK [Say hello]', task.status_message)
+        self.assertIn('--- log tail ---', task.status_message)
+        self.assertIn('ok: [localhost]', task.status_message)
+
+
+def make_poll(calls_before_exit=3):
+    """A poll() side effect which tolerates concurrent callers: the
+    detached log reader polls too, so a list would be exhausted by the
+    two consumers racing."""
+    calls = itertools.count()
+
+    def poll():
+        return 0 if next(calls) >= calls_before_exit else None
+    return poll
+
+
+class DetachedCommandTestCase(unittest.TestCase):
+    """The wrapper which carries a detached execution."""
+
+    def test_bounds_the_run_with_timeout(self):
+        from debops.mcp.tools.execute import _detached_command
+        command = _detached_command(['ansible-playbook', 'site.yml'], 3600)
+        self.assertEqual(command[:2], ['/bin/sh', '-c'])
+        script = command[2]
+        self.assertIn('timeout -k 5 3600 ansible-playbook site.yml',
+                      script)
+        self.assertTrue(script.rstrip().endswith('exit $?'))
+
+    def test_quotes_the_arguments(self):
+        from debops.mcp.tools.execute import _detached_command
+        command = _detached_command(
+                ['ansible-playbook', 'my playbook.yml', '$(id)'], 60)
+        script = command[2]
+        self.assertIn("'my playbook.yml'", script)
+        self.assertIn("'$(id)'", script)
+
+    def test_finalize_preserves_the_exit_code(self):
+        from debops.mcp.tools.execute import _detached_command
+        command = _detached_command(
+                ['ansible-playbook', 'site.yml'], 60,
+                finalize=['debops', 'project', 'lock', '/srv/project'])
+        lines = command[2].splitlines()
+        self.assertEqual(lines[1], 'rc=$?')
+        # A failing finalize must not mask the exit code of the run
+        self.assertIn('debops project lock /srv/project ||', lines[2])
+        self.assertIn('exit code $rc', lines[3])
+        self.assertEqual(lines[4], 'exit $rc')
+
+    def test_finalize_targets_the_project_and_its_view(self):
+        from debops.mcp.tools.execute import _finalize_command
+        project = FakeProject('/srv/myproject')
+        command = _finalize_command(project)
+        self.assertEqual(command[1:5], ['-m', 'debops', 'project', 'lock'])
+        self.assertIn('--view', command)
+        self.assertIn('system', command)
+        self.assertEqual(command[-1], '/srv/myproject')
+
+
+class DetachedRunTestCase(unittest.TestCase):
+    """A detached execution with a real child process."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-detach-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        self.context = ToolContext(1, threading.Event())
+
+    def test_the_output_lands_in_the_log_file(self):
+        from debops.mcp.tools.execute import run_cancellable
+        log = os.path.join(self.tmpdir, 'run.log')
+        output, returncode, status = run_cancellable(
+                ['/bin/sh', '-c', 'echo hello; echo world'],
+                env=dict(os.environ), cwd=self.tmpdir,
+                context=self.context, timeout=30,
+                log_path=log, detached=True)
+        self.assertEqual(status, 'done')
+        self.assertEqual(returncode, 0)
+        self.assertEqual(output, 'hello\nworld\n')
+        with open(log) as fp:
+            self.assertEqual(fp.read(), 'hello\nworld\n')
+
+    def test_the_progress_lines_come_back_from_the_log_file(self):
+        from debops.mcp.tools.execute import run_cancellable
+        log = os.path.join(self.tmpdir, 'run.log')
+        seen = []
+        run_cancellable(
+                ['/bin/sh', '-c', 'echo one; echo two'],
+                env=dict(os.environ), cwd=self.tmpdir,
+                context=self.context, timeout=30, on_line=seen.append,
+                log_path=log, detached=True)
+        self.assertEqual(seen, ['one', 'two'])
+
+    def test_cancel_signals_the_process_group(self):
+        from debops.mcp.tools.execute import run_cancellable
+        process = make_process(returncode=-15)
+        self.context.cancelled.set()
+        with mock.patch(
+                'debops.mcp.tools.execute.subprocess.Popen',
+                return_value=process), \
+                mock.patch('debops.mcp.tools.execute.os.killpg') as killpg:
+            _output, _rc, status = run_cancellable(
+                    ['sleep', '60'], env={}, cwd=self.tmpdir,
+                    context=self.context, timeout=30, detached=True)
+        killpg.assert_called_once_with(process.pid, signal.SIGTERM)
+        self.assertEqual(status, 'cancelled')
+
+    def test_cancel_terminates_a_non_detached_process(self):
+        from debops.mcp.tools.execute import run_cancellable
+        process = make_process(returncode=-15)
+        self.context.cancelled.set()
+        with mock.patch(
+                'debops.mcp.tools.execute.subprocess.Popen',
+                return_value=process), \
+                mock.patch('debops.mcp.tools.execute.os.killpg') as killpg:
+            _output, _rc, status = run_cancellable(
+                    ['sleep', '60'], env={}, cwd=self.tmpdir,
+                    context=self.context, timeout=30, detached=False)
+        killpg.assert_not_called()
+        process.terminate.assert_called_once_with()
+        self.assertEqual(status, 'cancelled')
+
+    def test_timeout_kills_the_detached_process_group(self):
+        from debops.mcp.tools.execute import run_cancellable
+        process = make_process(returncode=-9, poll=[None, 0])
+        with mock.patch(
+                'debops.mcp.tools.execute.subprocess.Popen',
+                return_value=process), \
+                mock.patch('debops.mcp.tools.execute.os.killpg') as killpg:
+            _output, _rc, status = run_cancellable(
+                    ['sleep', '60'], env={}, cwd=self.tmpdir,
+                    context=self.context, timeout=0, detached=True)
+        killpg.assert_called_once_with(process.pid, signal.SIGKILL)
+        self.assertEqual(status, 'timeout')
+
+    def test_cancel_kills_the_whole_detached_tree(self):
+        # A real run: the grandchild writes the marker only when it
+        # survives the cancellation, which the group kill must prevent
+        from debops.mcp.tools.execute import run_cancellable
+        log = os.path.join(self.tmpdir, 'run.log')
+        marker = os.path.join(self.tmpdir, 'survived')
+        threading.Timer(0.3, self.context.cancelled.set).start()
+        _output, _rc, status = run_cancellable(
+                ['/bin/sh', '-c',
+                 '(sleep 1; touch {}) & sleep 60'.format(marker)],
+                env=dict(os.environ), cwd=self.tmpdir,
+                context=self.context, timeout=120,
+                log_path=log, detached=True)
+        self.assertEqual(status, 'cancelled')
+        time.sleep(1.5)
+        self.assertFalse(os.path.exists(marker))
+
+
+class DetachedExecutionTestCase(unittest.TestCase):
+    """The execution tools in the detached (harness-spawned) mode."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-exec-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        os.environ['XDG_CACHE_HOME'] = os.path.join(self.tmpdir, 'cache')
+        self.project = FakeProject(self.tmpdir)
+        self.policy = McpPolicy(self.project)
+        self.context = ToolContext(1, threading.Event())
+
+    def call_detached(self, detach=True):
+        from debops.mcp.tools.execute import _execute_playbook
+        with mock.patch(
+                'debops.mcp.tools.execute.AnsiblePlaybookRunner') as runner, \
+                mock.patch(
+                'debops.mcp.tools.execute.AnsibleInventory') as inventory, \
+                mock.patch('debops.mcp.tools.execute.run_hooks') as hooks, \
+                mock.patch('debops.mcp.tools.execute.subprocess.run',
+                           return_value=make_resolve_result(('web1',))), \
+                mock.patch(
+                'debops.mcp.tools.execute.subprocess.Popen') as popen:
+            runner.return_value.command.return_value = [
+                    'ansible-playbook', 'site.yml']
+            inventory.return_value.unlock.return_value = True
+            hooks.return_value = True
+            popen.return_value = make_process(poll=make_poll())
+            result = _execute_playbook(self.project, self.policy,
+                                       {'playbook': 'site'},
+                                       self.context, check=True,
+                                       detach=detach)
+        return result, popen
+
+    def run_logs(self):
+        import glob
+        return glob.glob(os.path.join(
+                os.environ['XDG_CACHE_HOME'], 'debops', 'mcp', 'runs',
+                '*', 'execution-*.log'))
+
+    def test_the_command_is_wrapped_and_detached(self):
+        result, popen = self.call_detached()
+        self.assertFalse(result['isError'])
+        command = popen.call_args[0][0]
+        self.assertEqual(command[:2], ['/bin/sh', '-c'])
+        script = command[2]
+        self.assertIn('timeout -k 5 3600 ansible-playbook site.yml',
+                      script)
+        self.assertIn('-m debops', script)
+        self.assertIn('project lock', script)
+        self.assertIn('--view system', script)
+
+    def test_the_child_leads_its_own_session(self):
+        result, popen = self.call_detached()
+        self.assertFalse(result['isError'])
+        kwargs = popen.call_args[1]
+        self.assertTrue(kwargs['start_new_session'])
+
+    def test_the_project_lock_rides_along(self):
+        # The flock file descriptor is passed to the child, so the
+        # project stays locked for as long as the run, not for as long
+        # as the server
+        result, popen = self.call_detached()
+        self.assertFalse(result['isError'])
+        (fd,) = popen.call_args[1]['pass_fds']
+        self.assertIsInstance(fd, int)
+
+    def test_the_answer_points_at_the_run_log(self):
+        result, _p = self.call_detached()
+        self.assertFalse(result['isError'])
+        text = result['content'][0]['text']
+        (log,) = self.run_logs()
+        self.assertIn('log: ' + log, text)
+        self.assertEqual(result['structuredContent']['log'], log)
+
+    def test_a_non_detached_run_keeps_the_plain_command(self):
+        result, popen = self.call_detached(detach=False)
+        self.assertFalse(result['isError'])
+        self.assertEqual(popen.call_args[0][0],
+                         ['ansible-playbook', 'site.yml'])
+        kwargs = popen.call_args[1]
+        self.assertFalse(kwargs['start_new_session'])
+        self.assertEqual(kwargs['pass_fds'], ())
+
+
+class TransportStrategyTestCase(unittest.TestCase):
+    """The transport decides whether the executions detach: a stdio
+    server is harness-spawned and may die mid-run; a daemon drains."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-strategy-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        os.environ['XDG_CACHE_HOME'] = os.path.join(self.tmpdir, 'cache')
+        self.project = FakeProject(self.tmpdir)
+
+    def _detach_flag(self, transport):
+        policy = McpPolicy(self.project)
+        policy.execute = 'all'
+        server = McpServer(project=self.project, policy=policy,
+                           transport=transport)
+        register_project_tools(server, roles_path=self.tmpdir,
+                               collection_index_provider=lambda: {})
+        with mock.patch('debops.mcp.tools.tool_run') as tool_run:
+            tool_run.return_value = {'content': [], 'isError': False}
+            server.tools['run'].handler(
+                    {'playbook': 'site'},
+                    ToolContext(1, threading.Event()))
+        return tool_run.call_args[1]['detach']
+
+    def test_stdio_detaches_the_executions(self):
+        self.assertTrue(self._detach_flag('stdio'))
+
+    def test_a_unix_daemon_drains_instead(self):
+        self.assertFalse(self._detach_flag('unix'))
 
 
 if __name__ == '__main__':

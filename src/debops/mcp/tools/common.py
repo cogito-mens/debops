@@ -391,6 +391,18 @@ def _project_lock_path(project, policy):
     return os.path.join(project.path, '.mcp.lock')
 
 
+# The lock file descriptor held by this thread. A child process may
+# inherit it, so that the lock outlives the server when an execution is
+# detached: the lock belongs to the run, not to the process which
+# started it
+_LOCK_STATE = threading.local()
+
+
+def current_lock_fd():
+    """The file descriptor of the project lock held by this thread."""
+    return getattr(_LOCK_STATE, 'fd', None)
+
+
 @contextlib.contextmanager
 def project_flock(project, policy, exclusive):
     """Hold an flock(2) on the project's lock file.
@@ -411,7 +423,12 @@ def project_flock(project, policy, exclusive):
         except BlockingIOError:
             raise RuntimeError('another process is working on this '
                                'project ({} is locked)'.format(path))
-        yield
+        previous = getattr(_LOCK_STATE, 'fd', None)
+        _LOCK_STATE.fd = fp.fileno()
+        try:
+            yield fp
+        finally:
+            _LOCK_STATE.fd = previous
     finally:
         fp.close()
 

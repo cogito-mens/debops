@@ -15,6 +15,7 @@ from debops.mcp.transport import (StdioTransport, UnixSocketTransport,
 import json
 import os
 import shutil
+import signal
 import socket
 import stat
 import tempfile
@@ -387,6 +388,106 @@ class UnixSocketTransportTestCase(unittest.TestCase):
         finally:
             transport.shutdown()
             thread.join(timeout=5)
+
+
+class SigtermTestCase(unittest.TestCase):
+    """SIGTERM winds the server down; it is not an abort."""
+
+    def test_the_handler_leaves_the_read_loop(self):
+        from debops.mcp.transport import _Terminate, _raise_terminate
+        with self.assertRaises(_Terminate):
+            _raise_terminate(signal.SIGTERM, None)
+
+
+class DrainTestCase(unittest.TestCase):
+    """A shutdown waits for the work in flight."""
+
+    def test_an_idle_server_drains_immediately(self):
+        server = McpServer()
+        self.assertTrue(server.drain(timeout=1))
+
+    def test_drain_waits_for_the_active_requests(self):
+        server = McpServer()
+        with server._active_lock:
+            server._active_requests[1] = threading.Event()
+
+        def finish():
+            time.sleep(0.3)
+            with server._active_lock:
+                server._active_requests.pop(1)
+
+        threading.Thread(target=finish).start()
+        started = time.monotonic()
+        self.assertTrue(server.drain(timeout=5))
+        self.assertGreaterEqual(time.monotonic() - started, 0.2)
+
+    def test_drain_times_out(self):
+        server = McpServer()
+        with server._active_lock:
+            server._active_requests[1] = threading.Event()
+        self.assertFalse(server.drain(timeout=0.2))
+
+    def test_drain_does_not_wait_for_subscriptions(self):
+        # A subscription stream is long-lived by design; it is
+        # cancelled after the drain instead of holding it back
+        server = McpServer()
+        server._subscribe(1, {'resourcesListChanged': True})
+        with server._active_lock:
+            server._active_requests[1] = threading.Event()
+        self.assertTrue(server.drain(timeout=1))
+
+
+class SocketDrainTestCase(unittest.TestCase):
+    """A daemon which is stopped finishes the work in flight."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-drain-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+
+    def test_shutdown_delivers_the_in_flight_answer(self):
+        release = threading.Event()
+
+        def slow_handler(arguments, context=None):
+            release.wait(10)
+            return {'content': [{'type': 'text', 'text': 'done'}],
+                    'isError': False}
+
+        server = McpServer()
+        server.register_tool('slow.tool', 'Blocks until released',
+                             {'type': 'object'}, slow_handler,
+                             needs_context=True)
+        path = os.path.join(self.tmpdir, 'drain.sock')
+        transport = UnixSocketTransport(path)
+        thread = threading.Thread(target=transport.serve, args=(server,),
+                                  daemon=True)
+        thread.start()
+        for _ in range(500):
+            if os.path.exists(path):
+                break
+            time.sleep(0.01)
+
+        from debops.mcp.client import UnixClient
+        client = UnixClient(path, timeout=15)
+        answers = []
+        caller = threading.Thread(
+                target=lambda: answers.append(
+                        client.request('tools/call',
+                                       {'name': 'slow.tool',
+                                        'arguments': {}})))
+        caller.start()
+        try:
+            # The request is in flight when the stop arrives
+            time.sleep(0.3)
+            transport.shutdown()
+            release.set()
+            thread.join(timeout=10)
+            caller.join(timeout=10)
+        finally:
+            release.set()
+            transport.shutdown()
+        self.assertFalse(thread.is_alive())
+        (answer,) = answers
+        self.assertEqual(answer['result']['content'][0]['text'], 'done')
 
 
 if __name__ == '__main__':

@@ -16,6 +16,7 @@ import logging
 import os
 import queue
 import threading
+import time
 
 from . import rpc
 from .skills import SKILL_URI_PREFIX, SKILLS_EXTENSION
@@ -106,6 +107,8 @@ def _confirmation_message(tool_name, arguments):
                    .format(arguments.get('playbook', '?')))
         if arguments.get('limit'):
             message += ' Limited to: {}.'.format(arguments['limit'])
+        message += (' The run continues to completion even if this '
+                    'session closes; its output lands in the run log.')
         return message
     if tool_name == 'project.push':
         return ("Push the project's committed history to its git origin?")
@@ -368,6 +371,29 @@ class McpServer(object):
             events = list(self._active_requests.values())
         for event in events:
             event.set()
+
+    def drain(self, timeout=60):
+        """Wait for the in-flight requests to finish.
+
+        A shutdown is a lifecycle event, not an abort: the work in
+        flight is given the chance to finish. Subscription streams do
+        not hold the shutdown back — they are long-lived by design and
+        are cancelled afterwards like any other leftover. Returns
+        whether the server went idle within the timeout.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._active_lock:
+                active = set(self._active_requests)
+            with self._subscriptions_lock:
+                active -= set(self._subscriptions)
+            if not active:
+                return True
+            if time.monotonic() >= deadline:
+                logger.warning('The in-flight requests did not finish '
+                               'within %s seconds', timeout)
+                return False
+            time.sleep(0.1)
 
     def switch_view(self, view):
         """Switch the active infrastructure view.

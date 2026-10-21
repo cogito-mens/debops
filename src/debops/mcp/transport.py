@@ -30,6 +30,10 @@ from . import rpc
 
 logger = logging.getLogger(__name__)
 
+# How long a shutting down daemon waits for the work in flight; the
+# service manager's stop timeout is the real bound
+SHUTDOWN_DRAIN_TIMEOUT = 60  # seconds
+
 
 def get_peer_credentials(connection):
     """Return the (pid, uid, gid) of the process on the other end of a
@@ -71,6 +75,19 @@ def _write_response(server, writer, write_lock, data, peer_pid=None,
         pass
 
 
+class _Terminate(Exception):
+    """The server was asked to stop (SIGTERM)."""
+
+
+def _raise_terminate(signum, frame):
+    """The SIGTERM handler: leave the read loop and wind down.
+
+    A SIGTERM is a lifecycle event, not an abort: the in-flight
+    requests are finished before the server exits.
+    """
+    raise _Terminate()
+
+
 class StdioTransport(object):
     """Serve MCP requests on stdin/stdout.
 
@@ -87,6 +104,12 @@ class StdioTransport(object):
         # On stdio the client is the parent process
         peer_pid = os.getppid()
         dead = threading.Event()
+        # A SIGTERM winds the server down gracefully; a SIGINT stays
+        # abortive (the operator asked for an immediate stop)
+        previous_sigterm = None
+        if threading.current_thread() is threading.main_thread():
+            previous_sigterm = signal.getsignal(signal.SIGTERM)
+            signal.signal(signal.SIGTERM, _raise_terminate)
         if on_ready is not None:
             on_ready()
         try:
@@ -106,6 +129,9 @@ class StdioTransport(object):
                         daemon=True)
                 thread.start()
                 workers.append(thread)
+        except _Terminate:
+            logger.notice('MCP server stopping on SIGTERM; the in-flight '
+                          'requests are finished first')
         except KeyboardInterrupt:
             # Interrupt: cancel in-flight requests and wind down
             server.cancel_all()
@@ -117,6 +143,8 @@ class StdioTransport(object):
                 worker.join(timeout=remaining)
             raise
         finally:
+            if previous_sigterm is not None:
+                signal.signal(signal.SIGTERM, previous_sigterm)
             # Long-lived streams (subscriptions) end with the channel
             if on_stop is not None:
                 on_stop()
@@ -222,8 +250,11 @@ class UnixSocketTransport(object):
             if previous_sigterm is not None:
                 signal.signal(signal.SIGTERM, previous_sigterm)
             listener.close()
-            # Shutting down: cancel in-flight requests; their tools
-            # terminate promptly
+            # Shutting down: a service stop is a lifecycle event, not
+            # an abort. The work in flight is finished first (the
+            # service manager's stop timeout is the bound); what is
+            # still running after that is cancelled
+            server.drain(timeout=SHUTDOWN_DRAIN_TIMEOUT)
             server.cancel_all()
             try:
                 os.unlink(self.path)
