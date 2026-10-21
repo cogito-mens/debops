@@ -1253,6 +1253,7 @@ class ToolsTestCase(unittest.TestCase):
                           'collection.sync', 'config.get',
                           'environment.list',
                           'environment.set', 'environment.unset',
+                          'execution.list', 'execution.output',
                           'file.delete', 'file.write',
                           'inventory.query',
                           'inventory.spec', 'keyring.fetch',
@@ -2257,6 +2258,16 @@ class DocumentationModeTestCase(unittest.TestCase):
         self.assertIn('error', response)
         self.assertIn('unknown tool: project.read',
                       response['error']['data']['details'])
+
+    def test_execution_tools_are_not_registered(self):
+        # The execution family is project-bound: there are no runs to
+        # inspect without a project
+        for name in ('check', 'run', 'execution.list',
+                     'execution.output'):
+            response = self.call_tool(name, {})
+            self.assertIn('error', response, name)
+            self.assertIn('unknown tool: ' + name,
+                          response['error']['data']['details'])
 
     def test_aliases_dangle_without_the_canonical_tool(self):
         # The alias table is registered, but the documentation mode has

@@ -173,6 +173,44 @@ def read_metadata(log_path):
         return None
 
 
+def directory_path(project):
+    """The run log directory of a project view, without creating it."""
+    return os.path.join(cache_root(), project_key(project))
+
+
+def list_logs(project):
+    """The (id, path) pairs of the run logs of a project view, by id."""
+    directory = directory_path(project)
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return []
+    entries = []
+    for name in names:
+        match = _LOG_NAME.match(name)
+        if match is not None:
+            entries.append((int(match.group(1)),
+                            os.path.join(directory, name)))
+    entries.sort()
+    return entries
+
+
+def execution_log(project, execution_id):
+    """The (id, path) of an existing run log, or (None, None).
+
+    The id is an integer, or 'last' for the newest run.
+    """
+    entries = list_logs(project)
+    if not entries:
+        return None, None
+    if execution_id == 'last':
+        return entries[-1]
+    for entry_id, path in entries:
+        if entry_id == execution_id:
+            return entry_id, path
+    return None, None
+
+
 def prune(directory, keep=KEEP_LOGS, max_age=MAX_LOG_AGE):
     """Drop the run logs which are too old or beyond the kept count."""
 

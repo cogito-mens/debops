@@ -17,6 +17,7 @@ from .custom import discover_custom_tools, make_custom_tool
 from .environment import (tool_environment_list, tool_environment_set,
                           tool_environment_unset)
 from .execute import tool_check, tool_run
+from .executions import tool_execution_list, tool_execution_output
 from .files import (tool_config_get, tool_inventory_query,
                     tool_inventory_spec, tool_project_files,
                     tool_project_read, tool_file_delete, tool_file_write)
@@ -246,6 +247,25 @@ TOOL_OUTPUT_SCHEMAS = {
         'recap': _RECAP_SCHEMA},
         'required': ['mode', 'playbooks', 'hosts', 'exitCode',
                      'status', 'executionId']},
+    'execution.list': {'type': 'array', 'items': {
+        'type': 'object', 'properties': {
+            'id': {'type': 'integer'}, 'log': {'type': 'string'},
+            'mode': {'type': 'string'},
+            'playbooks': {'type': 'array', 'items': {'type': 'string'}},
+            'hosts': {'type': 'array', 'items': {'type': 'string'}},
+            'startedAt': {'type': 'string'},
+            'finishedAt': {'type': 'string'},
+            'exitCode': {'type': 'integer'},
+            'status': {'type': 'string'},
+            'logBytes': {'type': 'integer'}},
+        'required': ['id', 'log']}},
+    'execution.output': {'type': 'object', 'properties': {
+        'executionId': {'type': 'integer'}, 'query': {'type': 'string'},
+        'matched': {'type': 'integer'}, 'returned': {'type': 'integer'},
+        'truncated': {'type': 'boolean'},
+        'degraded': {'type': 'boolean'}},
+        'required': ['executionId', 'query', 'matched', 'returned',
+                     'truncated']},
 }
 
 
@@ -278,6 +298,9 @@ TOOL_ANNOTATIONS = {
     # Host queries reach out over SSH but change nothing
     'ansible.ping': {'readOnlyHint': True},
     'ansible.facts': {'readOnlyHint': True},
+    # The run logs are read from the cache; the project is untouched
+    'execution.list': _READ_ONLY,
+    'execution.output': _READ_ONLY,
     # Plugin documentation is a local read
     'ansible.doc': _READ_ONLY,
     # Secrets are mounted and unmounted; the project may be committed
@@ -673,6 +696,7 @@ def _apply_aliases(server):
 VIEW_BOUND_TOOLS = frozenset((
     'file.write', 'file.delete', 'inventory.query', 'inventory.spec',
     'secret.paths', 'check', 'run', 'ansible.ping', 'ansible.facts',
+    'execution.list', 'execution.output',
 ))
 
 
@@ -1044,6 +1068,53 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
         tools.append(_execution_stub_entry('check', policy,
                                            execute_mode))
         tools.append(_execution_stub_entry('run', policy, execute_mode))
+
+    # The run logs stay queryable whatever the execution gate says: a
+    # log written while execution was allowed is read back even after
+    # the gate closes
+    tools.extend([
+        ('execution.list',
+         'List the playbook executions of the active project view, '
+         'oldest first: id, mode, playbooks, hosts, exit code, log '
+         'size, timestamps. Use an id with the execution.output tool '
+         'to inspect that run without re-executing anything.',
+         {'type': 'object', 'properties': {},
+          'additionalProperties': False},
+         lambda arguments: tool_execution_list(project, policy,
+                                               arguments)),
+        ('execution.output',
+         'Read the output of one playbook execution from its run log; '
+         'the full log is kept on disk, this tool answers questions '
+         'about it without re-running anything. Kinds: "changed" (the '
+         'tasks which changed something, with their per-host changed '
+         'lines), "failed", "unreachable", "recap", "warnings", '
+         '"tail" (the default). Or a free regex in "pattern", with '
+         '"context" lines of surroundings — that is how to pull a '
+         'diff block. Results are capped ("max_lines", default 200); '
+         'a truncation marker says when to narrow the query. Works on '
+         'a run which is still going.',
+         {'type': 'object', 'properties': {
+             'id': {'type': ['integer', 'string'],
+                    'description': 'The execution id, from a check/run '
+                    'result or execution.list; "last" (the default) '
+                    'for the newest run'},
+             'kind': {'type': 'string',
+                      'enum': ['changed', 'failed', 'unreachable',
+                               'recap', 'warnings', 'tail'],
+                      'description': 'The canned query (default: '
+                      '"tail")'},
+             'pattern': {'type': 'string',
+                         'description': 'A regular expression matched '
+                         'against the log lines (instead of "kind")'},
+             'context': {'type': 'integer',
+                         'description': 'Lines of context around each '
+                         'pattern match (default 3)'},
+             'max_lines': {'type': 'integer',
+                           'description': 'The most lines to return '
+                           '(default 200, at most 1000)'}},
+          'additionalProperties': False},
+         lambda arguments: tool_execution_output(project, policy,
+                                                 arguments))])
 
     # Host queries change nothing, so they are registered wherever
     # execution is allowed at all

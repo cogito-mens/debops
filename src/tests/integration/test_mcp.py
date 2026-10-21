@@ -292,13 +292,16 @@ class _LiveServer:
     """
 
     def __init__(self, project_dir, env, source_dir, serve_args=()):
-        env = dict(env)
-        env["PYTHONPATH"] = os.pathsep.join(
-                [source_dir, env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+        run_env = os.environ.copy()
+        if env:
+            run_env.update(env)
+        run_env["PYTHONPATH"] = os.pathsep.join(
+                [source_dir, run_env.get("PYTHONPATH", "")]).rstrip(
+                        os.pathsep)
         self.process = subprocess.Popen(
                 [sys.executable, "-m", "debops", "mcp", "serve",
                  *serve_args],
-                cwd=str(project_dir), env=env, stdin=subprocess.PIPE,
+                cwd=str(project_dir), env=run_env, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 text=True)
         self._counter = 0
@@ -524,6 +527,7 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
                              "collection.sync", "config.get",
                              "environment.list",
                              "environment.set", "environment.unset",
+                             "execution.list", "execution.output",
                              "file.delete", "file.write",
                              "inventory.query",
                              "inventory.spec", "keyring.fetch",
@@ -843,6 +847,66 @@ def test_detached_run_survives_the_death_of_the_server(
         except (ProcessLookupError, PermissionError):
             pass
         server.wait(timeout=10)
+
+
+def test_execution_output_answers_what_changed(run_debops, mcp_env,
+                                               project_dir,
+                                               debops_source_dir):
+    """The drill-down after a run: which tasks changed, on which hosts
+    — without re-executing anything."""
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+    disable_confirm_gate(project_dir)
+
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+    playbooks = project_dir / "ansible" / "playbooks"
+    playbooks.mkdir(parents=True)
+    (playbooks / "custom.yml").write_text("""---
+- name: Test play
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Say hello
+      ansible.builtin.debug:
+        msg: hello from mcp
+    - name: Pretend to change something
+      ansible.builtin.command: /bin/true
+      check_mode: false
+      changed_when: true
+""")
+
+    server = _LiveServer(project_dir, mcp_env, debops_source_dir)
+    try:
+        result = server.call("check", {"playbook": "custom"})
+        assert result["result"]["isError"] is False, \
+            result["result"]["content"][0]["text"]
+        text = result["result"]["content"][0]["text"]
+        assert "exit code: 0" in text
+        execution_id = result["result"]["structuredContent"][
+            "executionId"]
+
+        # The drill-down query: the changed tasks with their hosts
+        answer = server.call("execution.output",
+                             {"id": execution_id, "kind": "changed"})
+        assert answer["result"]["isError"] is False
+        text = answer["result"]["content"][0]["text"]
+        assert "Pretend to change something" in text
+        assert "changed: [localhost]" in text
+        assert "Say hello" not in text
+
+        # The listing addresses the run afterwards
+        listing = server.call("execution.list", {})
+        (entry,) = listing["result"]["structuredContent"]
+        assert entry["id"] == execution_id
+        assert entry["mode"] == "check"
+        assert entry["exitCode"] == 0
+    finally:
+        server.stop()
 
 
 def test_check_runs_multiple_playbooks_in_order(run_debops, mcp_env,
