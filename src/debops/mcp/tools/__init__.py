@@ -1041,7 +1041,8 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
             'Run Ansible playbooks in check mode (no changes are '
             'made), reporting what would change. Facts are gathered '
             'live from the managed hosts. Accepts a playbook target '
-            'or a list of targets (see the playbooks tool), run in '
+            'or a list of targets (see the playbook.list tool), run '
+            'in '
             'order, and optional limit/tags. A check run of a '
             'project-local playbook asks the user first: its tasks '
             'can execute commands even in check mode. The result is '
@@ -1061,8 +1062,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
             'run',
             'Run Ansible playbooks, changing the managed hosts. Use '
             'the "check" tool first to preview the changes. Accepts a '
-            'playbook target or a list of targets (see the playbooks '
-            'tool), run in order, and optional limit/tags. The change '
+            'playbook target or a list of targets (see the '
+            'playbook.list tool), run in order, and optional '
+            'limit/tags. The change '
             'is complete when this call returns; a dependent call '
             'must wait for it (batched requests run concurrently).'
             + _survival_note(),
