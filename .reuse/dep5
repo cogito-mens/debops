@@ -103,3 +103,10 @@ Files: src/debops/_data/skills/*
 Copyright: 2026 Maciej Delmanowski <drybjed@gmail.com>
            2026 DebOps <https://debops.org/>
 License: GPL-3.0-or-later
+
+# The EFF large wordlist (the words only; the dice-roll column of
+# the upstream file is stripped: 'cut -f2'), from
+# https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt
+Files: src/debops/_data/mcp/wordlists/eff_large_wordlist.txt
+Copyright: 2016 Electronic Frontier Foundation <https://www.eff.org/>
+License: CC-BY-3.0

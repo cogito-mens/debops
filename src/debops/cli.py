@@ -661,6 +661,11 @@ class Interpreter(object):
 
             on_ready = _announce_ready
 
+        if socket_path and project is not None:
+            # The trust root of the daemon, generated on first use
+            from .mcp import trust as mcp_trust
+            mcp_trust.ensure_passphrase(project)
+
         try:
             if socket_path:
                 transport = UnixSocketTransport(

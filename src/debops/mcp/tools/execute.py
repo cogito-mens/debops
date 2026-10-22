@@ -76,6 +76,10 @@ def _execution_label(execution_id, context):
     client_name = context.client_info.get('name')
     if client_name:
         parts.append('client {}'.format(client_name))
+    if context.elevated:
+        parts.append('elevated')
+    elif context.trusted:
+        parts.append('trusted')
     if context.peer_pid is not None:
         parts.append('client pid {}'.format(context.peer_pid))
     return ', '.join(parts)
@@ -113,8 +117,13 @@ def _check_local_confirmation(local, context, policy):
     """Ask the user before a check run of a project-local playbook.
 
     Returns None to proceed, or the result to send back (the
-    elicitation request, or the refusal).
+    elicitation request, or the refusal). An elevated client answers
+    for itself.
     """
+    if context.elevated:
+        logger.notice('The check of a project playbook runs without '
+                      'the question: the client is elevated')
+        return None
     verdict = confirmation_flow(
             context,
             'Run the project playbook {} in check mode? Its tasks can '

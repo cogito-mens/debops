@@ -16,11 +16,13 @@ import json
 import logging
 import os
 import queue
+import secrets
 import threading
 import time
 
 from . import rpc
 from . import runs
+from . import trust
 from .present import make_path_presenter
 from .skills import SKILL_URI_PREFIX, SKILLS_EXTENSION
 from .tasks import TaskRegistry
@@ -45,6 +47,9 @@ LEGACY_PROTOCOL_VERSIONS = ('2025-11-25', '2025-06-18', '2025-03-26',
 
 PROTOCOL_VERSION_KEY = 'io.modelcontextprotocol/protocolVersion'
 CLIENT_CAPABILITIES_KEY = 'io.modelcontextprotocol/clientCapabilities'
+
+# The bearer token of a trusted client rides the request '_meta'
+TRUST_TOKEN_KEY = 'org.debops/token'
 CLIENT_INFO_KEY = 'io.modelcontextprotocol/clientInfo'
 SERVER_INFO_KEY = 'io.modelcontextprotocol/serverInfo'
 
@@ -160,7 +165,8 @@ class RequestContext(object):
     Carries the request id and the transport-level notification channel
     (for server-initiated messages such as progress notifications), plus
     the client's progress token, capabilities, identity and process id
-    from the request '_meta' and the transport.
+    from the request '_meta' and the transport. 'trusted' and
+    'elevated' resolve from the bearer token of the request.
     """
 
     def __init__(self, request_id, notify=None, progress_token=None,
@@ -175,6 +181,10 @@ class RequestContext(object):
         self.client_info = (client_info if isinstance(client_info, dict)
                             else {})
         self.peer_pid = peer_pid
+        # The trust of the bearer token the request carried, resolved
+        # by the dispatcher
+        self.trusted = False
+        self.elevated = False
         self._dead = dead
 
     def is_dead(self):
@@ -190,6 +200,21 @@ def _client_tag(client_info):
         return ''
     version = client_info.get('version') or ''
     return ' [{}]'.format(' '.join([name, version]).strip())
+
+
+def _audit_tag(context):
+    """The client identity plus the trust state, for an audit line —
+    ' [opencode 2.1.2, elevated]'."""
+    tag = _client_tag(context.client_info)
+    if getattr(context, 'elevated', False):
+        state = 'elevated'
+    elif getattr(context, 'trusted', False):
+        state = 'trusted'
+    else:
+        return tag
+    if tag:
+        return tag[:-1] + ', ' + state + ']'
+    return ' [{}]'.format(state)
 
 
 # How often the project configuration files are checked for changes
@@ -238,7 +263,8 @@ class ToolContext(object):
 
     def __init__(self, request_id, cancelled, progress_token=None,
                  notify=None, peer_pid=None, client_capabilities=None,
-                 client_info=None, input_responses=None, task=None):
+                 client_info=None, input_responses=None, task=None,
+                 trusted=False, elevated=False):
         self.request_id = request_id
         self.cancelled = cancelled
         self.progress_token = progress_token
@@ -252,6 +278,8 @@ class ToolContext(object):
                                 if isinstance(input_responses, dict)
                                 else None)
         self.task = task
+        self.trusted = trusted
+        self.elevated = elevated
         self._notify = notify
 
     def progress(self, message, progress=None, total=None):
@@ -364,6 +392,8 @@ class McpServer(object):
         self._active_lock = threading.Lock()
         self._methods = {
             'server/discover': self._discover,
+            'server/authenticate': self._server_authenticate,
+            'server/elevate': self._server_elevate,
             'tools/list': self._tools_list,
             'tools/call': self._tools_call,
             'notifications/cancelled': self._cancelled,
@@ -384,6 +414,12 @@ class McpServer(object):
         # The task registry: long-running work the client polls for
         self._tasks = TaskRegistry()
         self._tasks.on_task_change = self._emit_task_change
+        # The trust: bearer tokens of the authenticated clients
+        # (sliding lifetimes), and the rate-limit of failed
+        # authentications, per calling process
+        self._bearers = {}
+        self._bearers_lock = threading.Lock()
+        self._auth_failures = {}
         # The reload recipe, provided by the caller which knows how the
         # server was assembled ('debops mcp serve' sets it)
         self._rebuild = None
@@ -685,6 +721,7 @@ class McpServer(object):
                                  client_capabilities=capabilities,
                                  client_info=client_info,
                                  peer_pid=peer_pid, dead=dead)
+        self._resolve_trust(context, meta)
 
         if is_notification:
             logger.info('Notification: %s', method)
@@ -774,6 +811,147 @@ class McpServer(object):
     def _legacy_initialized(self, params, context):
         """The client finished the handshake; nothing to do."""
         return None
+
+    # -- the trust model: passphrase, bearer tokens, elevation -------
+
+    def _auth_rate_limited(self, peer):
+        """The seconds a peer must wait before authenticating again."""
+        with self._bearers_lock:
+            count, last = self._auth_failures.get(peer, (0, 0.0))
+            if not count:
+                return 0.0
+            wait = min(2.0 ** count, 60.0) - (time.monotonic() - last)
+            return max(0.0, wait)
+
+    def _auth_failed(self, peer):
+        with self._bearers_lock:
+            count, _last = self._auth_failures.get(peer, (0, 0.0))
+            self._auth_failures[peer] = (count + 1, time.monotonic())
+
+    def _resolve_trust(self, context, meta):
+        """Set the trust flags of a request context from the bearer
+        token it carried; the lifetimes slide with use."""
+        token = meta.get(TRUST_TOKEN_KEY) if isinstance(meta, dict) \
+            else None
+        if not token:
+            return
+        now = time.monotonic()
+        with self._bearers_lock:
+            bearer = self._bearers.get(str(token))
+            if bearer is None or now >= bearer['expires']:
+                return
+            context.trusted = True
+            bearer['expires'] = now + self.policy.trust_ttl
+            if now < bearer['elevated_until']:
+                context.elevated = True
+                bearer['elevated_until'] = now + self.policy.elevate_ttl
+
+    def _server_authenticate(self, params, context):
+        """Exchange the project's trust passphrase for a bearer token.
+
+        The token rides the '_meta' of the requests which follow. A
+        legacy client carries no '_meta', so trust stays unavailable
+        to it.
+        """
+        if self.project is None:
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_REQUEST, 'Invalid Request',
+                    data={'details': 'trust is bound to a project; the '
+                          'documentation mode has none'},
+                    request_id=context.request_id)
+        if self.legacy:
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_REQUEST, 'Invalid Request',
+                    data={'details': 'trust needs the per-request '
+                          "'_meta' envelope, which the 2025-era "
+                          'protocol does not carry; the client must '
+                          'speak the {} revision'.format(
+                                  PROTOCOL_VERSION)},
+                    request_id=context.request_id)
+        peer = context.peer_pid or 0
+        wait = self._auth_rate_limited(peer)
+        if wait > 0:
+            logger.warning('Authentication rate-limited for pid %s '
+                           '(%.0f s)', context.peer_pid, wait)
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_REQUEST, 'Rate limited',
+                    data={'details': 'too many failed attempts; retry '
+                          'in {:.0f} seconds'.format(wait)},
+                    request_id=context.request_id)
+        presented = params.get('passphrase')
+        stored = trust.read_passphrase(self.project)
+        if stored is None:
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_REQUEST, 'Invalid Request',
+                    data={'details': 'this daemon has no trust '
+                          'passphrase (it predates the trust support, '
+                          'or the file was removed); a restart '
+                          'generates one'},
+                    request_id=context.request_id)
+        if not isinstance(presented, str) \
+                or not trust.passphrase_matches(presented, stored):
+            self._auth_failed(peer)
+            logger.notice('Authentication failed for pid %s',
+                          context.peer_pid)
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_PARAMS, 'Invalid params',
+                    data={'details': 'the passphrase did not match'},
+                    request_id=context.request_id)
+        now = time.monotonic()
+        with self._bearers_lock:
+            self._auth_failures.pop(peer, None)
+            token = secrets.token_urlsafe(24)
+            self._bearers[token] = {'expires': now
+                                    + self.policy.trust_ttl,
+                                    'elevated_until': 0.0}
+        logger.notice('A client authenticated%s',
+                      _audit_tag(context))
+        return {'token': token, 'tokenType': 'bearer',
+                'expiresIn': self.policy.trust_ttl}
+
+    def _server_elevate(self, params, context):
+        """Raise a trusted session to elevated: the passphrase is
+        re-checked, sudo-style; the flag outlives nothing and slides
+        with use."""
+        meta = params.get('_meta')
+        token = meta.get(TRUST_TOKEN_KEY) if isinstance(meta, dict) \
+            else None
+        if not context.trusted or token is None:
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_REQUEST, 'Invalid Request',
+                    data={'details': 'elevation needs an authenticated '
+                          'session first (server/authenticate)'},
+                    request_id=context.request_id)
+        peer = context.peer_pid or 0
+        wait = self._auth_rate_limited(peer)
+        if wait > 0:
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_REQUEST, 'Rate limited',
+                    data={'details': 'too many failed attempts; retry '
+                          'in {:.0f} seconds'.format(wait)},
+                    request_id=context.request_id)
+        presented = params.get('passphrase')
+        stored = trust.read_passphrase(self.project)
+        if not isinstance(presented, str) or stored is None \
+                or not trust.passphrase_matches(presented, stored):
+            self._auth_failed(peer)
+            logger.notice('Elevation failed for pid %s',
+                          context.peer_pid)
+            raise rpc.JsonRpcError(
+                    rpc.INVALID_PARAMS, 'Invalid params',
+                    data={'details': 'the passphrase did not match'},
+                    request_id=context.request_id)
+        now = time.monotonic()
+        with self._bearers_lock:
+            self._auth_failures.pop(peer, None)
+            bearer = self._bearers.get(str(token))
+            if bearer is not None:
+                bearer['elevated_until'] = (now
+                                            + self.policy.elevate_ttl)
+                context.elevated = True
+        logger.notice('A trusted client elevated%s',
+                      _audit_tag(context))
+        return {'elevated': True, 'expiresIn': self.policy.elevate_ttl}
 
     def _check_request_meta(self, params, request_id):
         """Enforce the per-request protocol fields.
@@ -946,20 +1124,20 @@ class McpServer(object):
         if gated is not None:
             logger.notice('Tool %s(%s) -> gated%s', name,
                           ','.join(sorted(arguments)),
-                          _client_tag(context.client_info))
+                          _audit_tag(context))
             return gated
         if (tool.task_eligible
                 and self._client_supports(context, TASKS_EXTENSION)):
             logger.notice('Tool %s(%s) -> task%s', name,
                           ','.join(sorted(arguments)),
-                          _client_tag(context.client_info))
+                          _audit_tag(context))
             return self._start_task(tool, arguments, params, context)
         if not tool.needs_context:
             result = tool.handler(arguments)
             logger.notice('Tool %s(%s) -> %s%s', name,
                           ','.join(sorted(arguments)),
                           'error' if result.get('isError') else 'ok',
-                          _client_tag(context.client_info))
+                          _audit_tag(context))
             return result
 
         request_id = context.request_id
@@ -975,12 +1153,13 @@ class McpServer(object):
                     peer_pid=context.peer_pid,
                     client_capabilities=context.client_capabilities,
                     client_info=context.client_info,
-                    input_responses=params.get('inputResponses'))
+                    input_responses=params.get('inputResponses'),
+                    trusted=context.trusted, elevated=context.elevated)
             result = tool.handler(arguments, tool_context)
             logger.notice('Tool %s(%s) -> %s%s', name,
                           ','.join(sorted(arguments)),
                           'error' if result.get('isError') else 'ok',
-                          _client_tag(context.client_info))
+                          _audit_tag(context))
             return result
         finally:
             if request_id is not None:
@@ -1000,6 +1179,14 @@ class McpServer(object):
         if (self.policy is None
                 or tool.name not in self.policy.confirm
                 or tool.self_confirms):
+            return None
+
+        if context.elevated:
+            # The elevation re-proved the human; the gates answer
+            # themselves for it. The audit line says so
+            logger.notice('Tool %s runs without the confirmation '
+                          'gate: the client is elevated%s',
+                          tool.name, _audit_tag(context))
             return None
 
         # The retry of a confirmed call carries the user's answer

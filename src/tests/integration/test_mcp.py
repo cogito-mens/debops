@@ -2929,6 +2929,102 @@ def test_repl_speaks_the_legacy_era(run_debops, mcp_env, project_dir,
         server.wait(timeout=10)
 
 
+def test_trust_flow_over_a_socket(run_debops, mcp_env, project_dir,
+                                  tmp_path, debops_source_dir):
+    """The trust model end to end: the daemon generates the
+    passphrase; authenticating with it marks the client trusted;
+    elevating skips the confirmation gate."""
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+    playbooks = project_dir / "ansible" / "playbooks"
+    playbooks.mkdir(parents=True)
+    (playbooks / "custom.yml").write_text("""---
+- name: Test play
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Say hello
+      ansible.builtin.debug:
+        msg: hello from the repl
+""")
+
+    socket_path = str(tmp_path / "trust.sock")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+            [debops_source_dir,
+             env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    env.update(mcp_env)
+    server = _serve_daemon(
+            [sys.executable, "-m", "debops", "mcp", "serve",
+             "--socket", socket_path], project_dir, socket_path, env)
+    try:
+        # The daemon generated the trust root, unreadable by the
+        # tools and invisible to git
+        trust_file = (project_dir / ".debops" / "mcp" / "secret"
+                      / "trust")
+        assert trust_file.exists()
+        passphrase = trust_file.read_text()
+
+        def call(method, params, request_id, token=None):
+            import socket as socket_module
+            connection = socket_module.socket(socket_module.AF_UNIX,
+                                              socket_module.SOCK_STREAM)
+            connection.connect(socket_path)
+            meta = dict(REQUEST_META)
+            meta["io.modelcontextprotocol/clientCapabilities"] = {
+                    "elicitation": {}}
+            if token is not None:
+                meta["org.debops/token"] = token
+            connection.sendall((json.dumps({
+                    "jsonrpc": "2.0", "id": request_id,
+                    "method": method, "params": dict(
+                            params or {}, _meta=meta)})
+                    + "\n").encode())
+            reader = connection.makefile("rb")
+            response = json.loads(reader.readline())
+            connection.close()
+            return response
+
+        # The local playbook's check asks the untrusted client
+        ask = call("tools/call", {"name": "check",
+                                  "arguments": {"playbook": "custom"}},
+                   1)
+        assert ask["result"].get("resultType") == "input_required" \
+            or ask["result"].get("isError")
+
+        # Authenticate: the passphrase is exchanged for a bearer
+        answer = call("server/authenticate",
+                      {"passphrase": passphrase}, 2)
+        assert "error" not in answer
+        token = answer["result"]["token"]
+
+        # Trusted alone still asks; elevated runs
+        gated = call("tools/call", {"name": "check",
+                                    "arguments": {"playbook":
+                                                  "custom"}},
+                     3, token=token)
+        assert gated["result"]["resultType"] == "input_required"
+        answer = call("server/elevate",
+                      {"passphrase": passphrase}, 4, token=token)
+        assert answer["result"]["elevated"] is True
+        ran = call("tools/call", {"name": "check",
+                                  "arguments": {"playbook": "custom"}},
+                   5, token=token)
+        # No tasks capability declared: the run answers synchronously
+        assert ran["result"]["resultType"] == "complete"
+        assert ran["result"].get("isError") is False
+        assert "exit code: 0" in ran["result"]["content"][0]["text"]
+    finally:
+        server.terminate()
+        server.wait(timeout=10)
+
+
 def test_repl_spawns_a_daemon_on_the_well_known_socket(
         run_debops, mcp_env, project_dir, tmp_path):
     """No daemon running: the pipe mode spawns one on the well-known

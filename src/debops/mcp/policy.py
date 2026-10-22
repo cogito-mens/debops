@@ -148,6 +148,8 @@ class McpPolicy(object):
         policy.execute_timeout = 3600
         policy.sync_interval = 60
         policy.idle_timeout = 0
+        policy.trust_ttl = 43200
+        policy.elevate_ttl = 900
         policy.confirm = set()
         policy.keyring_sources = []
         policy.overrides = False
@@ -272,6 +274,18 @@ class McpPolicy(object):
             self.idle_timeout = int(mcp_config.get('idle_timeout', 0))
         except (TypeError, ValueError):
             self.idle_timeout = 0
+
+        # The trust lifetimes, in seconds, sliding with use: the
+        # bearer token of an authenticated session, and the elevation
+        # of a trusted one
+        try:
+            self.trust_ttl = int(mcp_config.get('trust_ttl', 43200))
+        except (TypeError, ValueError):
+            self.trust_ttl = 43200
+        try:
+            self.elevate_ttl = int(mcp_config.get('elevate_ttl', 900))
+        except (TypeError, ValueError):
+            self.elevate_ttl = 900
 
         # Tools which ask the user for confirmation before they run, via
         # an elicitation request. The confirmation is a courtesy for the
