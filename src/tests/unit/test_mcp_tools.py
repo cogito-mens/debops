@@ -1413,6 +1413,15 @@ class ToolsTestCase(unittest.TestCase):
             self.assertNotIn('asks the user to confirm',
                              tool['description'], tool['name'])
 
+    def test_project_mode_descriptions_point_at_execution(self):
+        # The counterpart of the documentation mode: with the
+        # execution tools present, the playbook tools name them
+        tools = self._tools_by_name({'execute': 'all'})
+        self.assertIn('"run"', tools['playbook.list']['description'])
+        self.assertIn('"check"', tools['playbook.list']['description'])
+        self.assertIn('before running it',
+                      tools['playbook.info']['description'])
+
     def test_confirm_without_execution_is_consistent(self):
         # 'run' is the policy stub; its confirm entry is dropped with
         # it, so the refusal never carries the confirmation badge
@@ -2305,6 +2314,24 @@ class DocumentationModeTestCase(unittest.TestCase):
                           'role.defaults', 'role.files', 'role.handlers',
                           'role.info', 'role.tasks', 'role.templates',
                           'role.vars'])
+
+    def test_descriptions_never_nudge_at_execution(self):
+        # The mode has no run/check tools; the playbook tools must not
+        # send an agent looking for them — a named but missing tool
+        # makes agents retry-loop over it
+        response = self.server.handle({
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list',
+                'params': {'_meta': REQUEST_META, }})
+        tools = {tool['name']: tool
+                 for tool in response['result']['tools']}
+        for name in ('playbook.list', 'playbook.info'):
+            description = tools[name]['description']
+            for word in ('"run"', '"check"', 'execute', 'running'):
+                self.assertNotIn(word, description, (name, word))
+        self.assertIn('collection.playbooks',
+                      tools['playbook.list']['description'])
+        self.assertIn('read-only',
+                      tools['playbook.list']['description'])
 
     def test_role_info_works_on_the_bundled_content(self):
         response = self.call_tool('role.info', {'name': 'testrole'})

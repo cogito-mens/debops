@@ -452,12 +452,38 @@ def _documentation_entries(server, policy, project, roles_path,
     if bundled_content:
         roles_paths.append(roles_path)
     roles_paths.extend(extra_roles_paths)
+    if project is None:
+        # The documentation mode has no execution tools; the
+        # descriptions must not nudge towards them — a named but
+        # missing tool makes agents retry-loop over it
+        list_description = (
+                'List the playbook targets of the bundled DebOps '
+                'collection, grouped by section; the playbooks of the '
+                'other visible collections are listed by '
+                'collection.playbooks. This server is read-only '
+                'documentation.')
+        info_description = (
+                'Describe a playbook of the bundled DebOps collection '
+                'or another visible collection: its plays, the '
+                'inventory groups it targets, the roles it applies, '
+                'and the playbooks it imports. With "detail": "full", '
+                'also shows the plays\' variables and task listings.')
+    else:
+        list_description = (
+                'List the playbook targets which "run" and "check" can '
+                'execute in this project: the project\'s own playbooks, '
+                'the bundled DebOps collection playbooks, and playbook '
+                'sets from the view configuration.')
+        info_description = (
+                'Describe a project or bundled DebOps playbook: its '
+                'plays, the inventory groups it targets, the roles it '
+                'applies, and the playbooks it imports. Use this to '
+                'learn what a playbook does before running it. With '
+                '"detail: full", also shows the plays\' variables '
+                'and task listings.')
     entries = [
         ('playbook.list',
-         'List the playbook targets which "run" and "check" can execute '
-         'in this project: the project\'s own playbooks, the bundled '
-         'DebOps collection playbooks, and playbook sets from the view '
-         'configuration.',
+         list_description,
          {'type': 'object',
           'properties': {'filter': {'type': 'string',
                                     'description': 'Only include '
@@ -467,11 +493,7 @@ def _documentation_entries(server, policy, project, roles_path,
              project, policy,
              playbooks_path if bundled_content else None, arguments)),
         ('playbook.info',
-         'Describe a project or bundled DebOps playbook: its plays, the '
-         'inventory groups it targets, the roles it applies, and the '
-         'playbooks it imports. Use this to learn what a playbook does '
-         'before running it. With "detail: full", also shows the plays\' '
-         'variables and task listings.',
+         info_description,
          {'type': 'object',
           'properties': {'playbook': {'type': 'string',
                                       'description': 'Playbook target, '
