@@ -72,6 +72,59 @@ class TransportLifecycleTestCase(unittest.TestCase):
         thread.join(timeout=5)
         self.assertEqual(events, ['ready', 'stop'])
 
+    def test_the_pid_sidecar_lifecycle(self):
+        path = os.path.join(self.tmpdir, 'pid.sock')
+        pid_path = path + '.pid'
+        transport = UnixSocketTransport(path, pid_path=pid_path,
+                                        pid_note='spawned')
+        thread = threading.Thread(target=transport.serve,
+                                  args=(McpServer(),), daemon=True)
+        thread.start()
+        for _ in range(500):
+            if os.path.exists(pid_path):
+                break
+            time.sleep(0.01)
+        with open(pid_path) as fp:
+            lines = fp.read().split()
+        self.assertEqual(int(lines[0]), os.getpid())
+        # The origin note rides the second line
+        self.assertEqual(lines[1], 'spawned')
+        transport.shutdown()
+        thread.join(timeout=5)
+        self.assertFalse(os.path.exists(pid_path))
+
+    def test_the_idle_timeout_stops_an_untouched_daemon(self):
+        path = os.path.join(self.tmpdir, 'idle.sock')
+        transport = UnixSocketTransport(path, idle_timeout=1)
+        thread = threading.Thread(target=transport.serve,
+                                  args=(McpServer(),), daemon=True)
+        thread.start()
+        # No client ever: the watchdog stops the daemon
+        thread.join(timeout=10)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(os.path.exists(path))
+
+    def test_a_connected_client_holds_the_daemon(self):
+        import socket as socket_module
+        path = os.path.join(self.tmpdir, 'busy.sock')
+        transport = UnixSocketTransport(path, idle_timeout=1)
+        thread = threading.Thread(target=transport.serve,
+                                  args=(McpServer(),), daemon=True)
+        thread.start()
+        for _ in range(500):
+            if os.path.exists(path):
+                break
+            time.sleep(0.01)
+        client = socket_module.socket(socket_module.AF_UNIX,
+                                      socket_module.SOCK_STREAM)
+        client.connect(path)
+        # The timeout passes with the connection held: still alive
+        time.sleep(1.6)
+        self.assertTrue(thread.is_alive())
+        client.close()
+        thread.join(timeout=10)
+        self.assertFalse(thread.is_alive())
+
     def test_stdio_ready_and_stop(self):
         events = []
         # An immediate EOF ends the stdio serving

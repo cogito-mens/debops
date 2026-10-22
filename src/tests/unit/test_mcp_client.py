@@ -19,6 +19,8 @@ import threading
 import time
 import unittest
 
+from unittest import mock
+
 
 class CallArgumentsTestCase(unittest.TestCase):
 
@@ -311,5 +313,36 @@ class UnixClientTestCase(unittest.TestCase):
                                 'server/discover')
 
 
-if __name__ == '__main__':
-    unittest.main()
+class SocketPathTestCase(unittest.TestCase):
+
+    def test_the_default_socket_path(self):
+        from debops.mcp.client import default_socket_path
+        with mock.patch.dict(os.environ,
+                             {'XDG_RUNTIME_DIR': '/run/user/1000'}):
+            path = default_socket_path(
+                    type('Project', (), {'path': '/srv/projects/example',
+                                         'name': 'example'})())
+            self.assertTrue(path.startswith('/run/user/1000/debops/'
+                                            'mcp/'))
+            self.assertTrue(path.endswith('-example.sock'))
+            # The path hash keeps two same-named projects apart
+            other = default_socket_path(
+                    type('Project', (), {'path': '/srv/other/example',
+                                         'name': 'example'})())
+            self.assertNotEqual(path, other)
+            # The documentation mode has its own
+            self.assertTrue(default_socket_path().endswith(
+                    'documentation.sock'))
+
+    def test_a_socket_name_too_long_for_af_unix_is_truncated(self):
+        from debops.mcp.client import default_socket_path
+        deep = '/tmp/' + 'x' * 60
+        with mock.patch.dict(os.environ, {'XDG_RUNTIME_DIR': deep}):
+            path = default_socket_path(
+                    type('Project', (), {'path': '/srv/projects/example',
+                                         'name': 'example'})())
+            # The AF_UNIX limit is honored, the hash keeps it unique
+            self.assertLessEqual(len(path.encode('utf-8')), 100)
+            self.assertIn('-example', path)
+
+

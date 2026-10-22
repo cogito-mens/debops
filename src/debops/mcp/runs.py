@@ -60,7 +60,7 @@ def cache_root():
     return os.path.join(_cache_base(), CACHE_SUBDIRECTORY)
 
 
-def project_key(project):
+def project_key(project, view=None):
     """The name of the run log directory of a project view.
 
     The hash of the project path keeps two projects with the same name
@@ -68,10 +68,12 @@ def project_key(project):
     executions of one view are serialized by its lock, so the logs in
     one directory are never pruned while a run of that view writes
     them. The name itself is only there to make the directory
-    recognizable.
+    recognizable. With view='' the name carries no view — the daemon
+    socket's naming, one per project, its view switchable inside.
     """
     path = os.path.realpath(project.path)
-    view = getattr(project, 'view', None) or ''
+    if view is None:
+        view = getattr(project, 'view', None) or ''
     digest = hashlib.sha256(
             '{}\0{}'.format(path, view).encode('utf-8', 'replace'))
     name = re.sub(r'[^A-Za-z0-9._-]', '-', str(project.name or 'project'))

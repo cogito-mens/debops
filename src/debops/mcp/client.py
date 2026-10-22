@@ -13,6 +13,7 @@ import json
 import os
 import re
 import socket
+import tempfile
 import textwrap
 
 from . import rpc
@@ -28,6 +29,42 @@ def request_meta(capabilities=None):
         },
         'io.modelcontextprotocol/clientCapabilities': capabilities or {},
     }
+
+
+def default_socket_path(project=None):
+    """The well-known socket path of a project's daemon.
+
+    The runtime directory holds '<project-key>.sock' — the run-log
+    naming minus the view (one daemon per project, its view
+    switchable inside), computed from the project path on both sides,
+    so two same-named projects stay apart and the directory layout
+    never leaks into the name. A documentation-mode daemon answers at
+    'documentation.sock'. A long name or a deep runtime directory is
+    truncated to fit the AF_UNIX path limit; the hash prefix keeps it
+    unique.
+    """
+    base = os.environ.get('XDG_RUNTIME_DIR')
+    if not base:
+        base = os.path.join(tempfile.gettempdir(),
+                            'debops-mcp-{}'.format(os.getuid()))
+    directory = os.path.join(base, 'debops', 'mcp')
+    if project is None:
+        return _fit_socket_path(directory, 'documentation')
+    from .runs import project_key
+    return _fit_socket_path(directory, project_key(project, view=''))
+
+
+def _fit_socket_path(directory, key):
+    """The socket path, the name truncated to fit the AF_UNIX limit."""
+    # 108 bytes on Linux, the terminator included; keep a margin
+    path = os.path.join(directory, key + '.sock')
+    overflow = len(path.encode('utf-8')) - 100
+    if overflow <= 0:
+        return path
+    hash_part, _dash, name = key.partition('-')
+    name = name[:-overflow] if overflow < len(name) else ''
+    return os.path.join(directory,
+                        '{}-{}.sock'.format(hash_part, name))
 
 
 class UnixClient(object):

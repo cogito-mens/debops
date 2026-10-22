@@ -164,9 +164,23 @@ class UnixSocketTransport(object):
     reconnect freely.
     """
 
-    def __init__(self, path, mode=0o660, max_connections=32):
+    def __init__(self, path, mode=0o660, max_connections=32,
+                 pid_path=None, idle_timeout=0, pid_note=None):
         self.path = os.path.abspath(os.path.expanduser(path))
         self.mode = mode
+        # The pid sidecar of a well-known daemon socket: 'kill $(cat
+        # x.pid)' is the management story. Written after the bind,
+        # removed on shutdown. None for an explicitly named socket —
+        # no sidecars in arbitrary directories. The optional note
+        # (the second line) records the daemon's origin
+        self._pid_path = pid_path
+        self._pid_note = pid_note
+        # Exit after this many seconds without a client (0: run
+        # forever). A connected client is activity; so is a call
+        self.idle_timeout = idle_timeout
+        self._last_activity = time.monotonic()
+        self._active = 0
+        self._active_lock = threading.Lock()
         self._semaphore = threading.BoundedSemaphore(max_connections)
         self._socket = None
         self._serving = False
@@ -221,6 +235,15 @@ class UnixSocketTransport(object):
             signal.signal(signal.SIGTERM, lambda *_: self.shutdown())
         logger.notice('MCP server listening on %s (mode %04o)',
                       self.path, self.mode)
+        if self._pid_path is not None:
+            with open(self._pid_path, 'w') as fp:
+                fp.write('{}\n'.format(os.getpid()))
+                if self._pid_note is not None:
+                    # The origin of the daemon ('spawned' by a client)
+                    fp.write(self._pid_note + '\n')
+        if self.idle_timeout > 0:
+            threading.Thread(target=self._idle_watchdog,
+                             daemon=True).start()
         if on_ready is not None:
             on_ready()
         try:
@@ -240,6 +263,7 @@ class UnixSocketTransport(object):
                                    'a connection')
                     connection.close()
                     continue
+                self._last_activity = time.monotonic()
                 thread = threading.Thread(
                         target=self._serve_connection,
                         args=(connection, server), daemon=True)
@@ -262,6 +286,26 @@ class UnixSocketTransport(object):
                 pass
             else:
                 logger.notice('MCP server on %s shut down', self.path)
+            if self._pid_path is not None:
+                try:
+                    os.unlink(self._pid_path)
+                except OSError:
+                    pass
+
+    def _idle_watchdog(self):
+        """Stop the accept loop when no client showed up in time."""
+        while self._serving:
+            time.sleep(min(self.idle_timeout, 5) / 2)
+            with self._active_lock:
+                active = self._active
+            if active:
+                continue
+            idle = time.monotonic() - self._last_activity
+            if idle >= self.idle_timeout:
+                logger.notice('No client for %d seconds; the daemon '
+                              'shuts down', self.idle_timeout)
+                self.shutdown()
+                return
 
     def shutdown(self):
         """Ask the accept loop to stop; in-flight connections finish."""
@@ -269,6 +313,9 @@ class UnixSocketTransport(object):
 
     def _serve_connection(self, connection, server):
         dead = threading.Event()
+        with self._active_lock:
+            self._active += 1
+        self._last_activity = time.monotonic()
         try:
             pid, uid, gid = get_peer_credentials(connection)
             logger.notice('Client connected: pid=%s uid=%s gid=%s',
@@ -303,6 +350,9 @@ class UnixSocketTransport(object):
         finally:
             # Long-lived streams (subscriptions) end with the channel
             dead.set()
+            with self._active_lock:
+                self._active -= 1
+            self._last_activity = time.monotonic()
             self._semaphore.release()
             connection.close()
 

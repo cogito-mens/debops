@@ -147,6 +147,7 @@ class McpPolicy(object):
         policy.execute = 'none'
         policy.execute_timeout = 3600
         policy.sync_interval = 60
+        policy.idle_timeout = 0
         policy.confirm = set()
         policy.keyring_sources = []
         policy.overrides = False
@@ -262,6 +263,15 @@ class McpPolicy(object):
             self.sync_interval = int(mcp_config.get('sync_interval', 60))
         except (TypeError, ValueError):
             self.sync_interval = 60
+
+        # How long a socket daemon idles without a client before it
+        # shuts down, in seconds; 0 runs forever. A daemon spawned by
+        # a client gets an hour when neither this nor the command
+        # line answers
+        try:
+            self.idle_timeout = int(mcp_config.get('idle_timeout', 0))
+        except (TypeError, ValueError):
+            self.idle_timeout = 0
 
         # Tools which ask the user for confirmation before they run, via
         # an elicitation request. The confirmation is a courtesy for the

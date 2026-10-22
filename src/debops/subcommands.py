@@ -479,7 +479,7 @@ Commands:
     connect  bridge stdio to an MCP server UNIX socket
     inspect  inspect an MCP server on a UNIX socket
     configure  write the client configuration of an LLM harness
-               (OpenCode, Claude Code, Codex) into the project
+               into the project directory
     skills   list or print the DebOps skills shipped with the package
     disable  disable the MCP functionality on this host or account
              (the kill switch)''')
@@ -523,13 +523,29 @@ Commands:
                                  'project instances (required with '
                                  '--instance)')
         parser.add_argument('--socket', type=str, metavar='PATH',
-                            help='listen on a UNIX socket at PATH instead '
-                                 'of serving on stdio')
+                            nargs='?', const='',
+                            help='listen on a UNIX socket instead of '
+                                 'serving on stdio; the well-known '
+                                 'runtime path ($XDG_RUNTIME_DIR/debops/'
+                                 'mcp/<project-key>.sock) when PATH is '
+                                 'omitted')
         parser.add_argument('--socket-mode',
                             type=lambda value: int(value, 8),
                             default=0o660, metavar='MODE',
                             help='file mode of the UNIX socket, in octal '
                                  '(default: %(default)04o)')
+        parser.add_argument('--detach', action='store_true',
+                            help='detach the socket daemon from the '
+                                 'terminal; the command returns once the '
+                                 'daemon is up (or fails to start); a '
+                                 'pid file rides next to a well-known '
+                                 'socket')
+        parser.add_argument('--idle-timeout', type=int, default=0,
+                            metavar='SECONDS',
+                            help='shut the daemon down after this many '
+                                 'seconds without a client (0: run '
+                                 'forever, the default; a client-spawned '
+                                 'daemon gets an hour)')
         parser.add_argument('--max-connections', type=int, default=32,
                             metavar='COUNT',
                             help='maximum number of concurrent connections '
@@ -558,6 +574,9 @@ Commands:
             parser.error('--docs and --instance exclude each other')
         if self.args.docs and self.args.view_lock:
             parser.error('--docs has no views to lock')
+        if self.args.detach and self.args.socket is None:
+            parser.error('--detach detaches the socket daemon; '
+                         'it needs --socket')
 
         if self.args.instance is not None:
             if self.args.view is not None:

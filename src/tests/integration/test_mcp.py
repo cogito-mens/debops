@@ -2779,6 +2779,78 @@ def test_help_wraps_at_a_comfortable_width(run_debops, mcp_env,
     assert "--docs" in result.stdout
 
 
+def test_serve_detach_reports_and_serves(run_debops, mcp_env,
+                                         project_dir, tmp_path):
+    """'serve --socket --detach': the command returns once the daemon
+    is up; the pid sidecar rides the well-known path."""
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    env = dict(mcp_env, XDG_RUNTIME_DIR=str(runtime))
+    result = run_debops("mcp", "serve", "--socket", "--detach",
+                        cwd=str(project_dir), env=env)
+    assert result.returncode == 0
+    assert "The daemon runs detached: pid " in result.stdout
+    sockets = list((runtime / "debops" / "mcp").glob("*.sock"))
+    assert len(sockets) == 1
+    pid_path = Path(str(sockets[0]) + ".pid")
+    pid = int(pid_path.read_text().strip())
+    try:
+        # The pid file names the serving process
+        assert "debops-mcp" in Path(
+                "/proc/{}/comm".format(pid)).read_text()
+        # And it answers
+        probe = run_debops("mcp", "inspect", str(sockets[0]),
+                           cwd=str(project_dir), env=env)
+        assert probe.returncode == 0
+    finally:
+        os.kill(pid, 15)
+
+
+def test_serve_idle_timeout_stops_the_daemon(run_debops, mcp_env,
+                                             project_dir, tmp_path,
+                                             debops_source_dir):
+    """An untouched daemon with an idle timeout goes away by itself,
+    cleaning up the socket."""
+    socket_path = str(tmp_path / "idle.sock")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+            [debops_source_dir,
+             env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    env.update(mcp_env)
+    server = subprocess.Popen(
+            [sys.executable, "-m", "debops", "mcp", "serve",
+             "--socket", socket_path, "--idle-timeout", "2"],
+            cwd=str(project_dir), env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        _serve_daemon_wait(socket_path)
+        # No client ever connects: the daemon exits by itself
+        server.wait(timeout=20)
+        assert server.returncode == 0
+        assert not os.path.exists(socket_path)
+    finally:
+        server.kill()
+        server.wait(timeout=10)
+
+
+def _serve_daemon_wait(socket_path):
+    """Wait until the socket accepts a connection."""
+    import socket as socket_module
+    deadline = time.monotonic() + 15
+    while True:
+        try:
+            probe = socket_module.socket(socket_module.AF_UNIX,
+                                         socket_module.SOCK_STREAM)
+            probe.connect(socket_path)
+            probe.close()
+            return
+        except (ConnectionRefusedError, FileNotFoundError):
+            if time.monotonic() > deadline:
+                raise RuntimeError("the daemon did not come up")
+            probe.close()
+            time.sleep(0.05)
+
+
 def test_configure_fires_no_hooks(run_debops, mcp_env, project_dir):
     # Configuration writes are not hook events — in a project or (for
     # printing) outside of one

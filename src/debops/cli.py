@@ -25,7 +25,7 @@ from .mcp.tools.playbooks import COLLECTION_PLAYBOOKS
 from .mcp.role_skills import RoleSkillSource
 from .mcp.playbook_skills import PlaybookSkillSource
 from .mcp import client as mcp_client
-from .mcp.client import UnixClient
+from .mcp.client import UnixClient, default_socket_path
 from .mcp.transport import StdioTransport, UnixSocketTransport
 from .mcp.transport import bridge_stdio_to_unix, ping_unix
 from .mcp.harnesses import (configure_agents_md, configure_harness,
@@ -40,6 +40,8 @@ import logging
 from logging.handlers import SysLogHandler
 import platform
 import getpass
+import select
+import subprocess
 import sys
 import os
 import textwrap
@@ -349,8 +351,59 @@ class Interpreter(object):
                   '(mcp.enabled is false)', file=sys.stderr)
             sys.exit(1)
 
+    def _mcp_serve_detached(self):
+        """Spawn the socket daemon detached; report once it is up.
+
+        The child re-runs this command without the flag, announces the
+        bound socket on its stdout when it listens, and gets the
+        DEBOPS_MCP_DETACHED marker; the early errors ride its stderr
+        pipe back here.
+        """
+        command = [sys.executable, '-m', 'debops']
+        command.extend(arg for arg in sys.argv[1:] if arg != '--detach')
+        child = subprocess.Popen(
+                command, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ, DEBOPS_MCP_DETACHED='1'),
+                start_new_session=True)
+        ready, _w, _x = select.select([child.stdout], [], [], 15)
+        socket_path = child.stdout.readline().strip() if ready else ''
+        if socket_path:
+            # The pid sidecar of a well-known socket
+            pid = None
+            try:
+                with open(socket_path + '.pid') as fp:
+                    pid = fp.read().strip()
+            except OSError:
+                pass
+            print('The daemon runs detached: {}{}'.format(
+                    'pid {}, '.format(pid) if pid else '',
+                    socket_path))
+            return
+        details = child.stderr.read().strip()
+        if child.poll() is None:
+            # Never came up and never failed; do not leave it hanging
+            child.kill()
+            child.wait()
+        print('Error: the daemon did not start'
+              + (': ' + details if details else
+                 ' (no diagnostic; the timeout expired)'),
+              file=sys.stderr)
+        sys.exit(1)
+
     def do_mcp_serve(self, args):
         self._mcp_refuse_if_disabled()
+
+        if args.detach:
+            self._mcp_serve_detached()
+            return
+        # The child of a --detach: its late crash output lands next to
+        # the socket (early errors still reach the parent's pipe)
+        detached = os.environ.pop('DEBOPS_MCP_DETACHED', None) is not None
+        # A client-spawned daemon gets the hour when nobody answered
+        # the idle timeout; an explicit serve runs forever by default
+        spawned = os.environ.pop('DEBOPS_MCP_SPAWNED', None) is not None
 
         # The server is confined to a project directory; outside of
         # one — or with --docs — it runs in the documentation mode
@@ -371,6 +424,24 @@ class Interpreter(object):
                     sys.exit(1)
                 docs_mode = True
 
+        socket_path = None
+        if args.socket is not None:
+            # A bare --socket means the well-known runtime path
+            socket_path = os.path.abspath(os.path.expanduser(
+                    args.socket)) if args.socket \
+                else default_socket_path(project)
+
+        if detached and socket_path is not None:
+            # The detached daemon's late crash output lands next to
+            # the socket; the spawning parent relays the early ones
+            # through its pipe
+            os.makedirs(os.path.dirname(socket_path), mode=0o700,
+                        exist_ok=True)
+            fd = os.open(socket_path + '.err',
+                         os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            os.dup2(fd, 2)
+            os.close(fd)
+
         set_process_name('debops-mcp')
         if args.log is not None:
             # A harness swallows the server's stderr; the audit channel
@@ -379,9 +450,11 @@ class Interpreter(object):
             # either to see the audit lines
             debops_log = logging.getLogger('debops')
             if args.log:
+                log_path = os.path.abspath(os.path.expanduser(args.log))
                 try:
-                    log_handler = logging.FileHandler(os.path.abspath(
-                            os.path.expanduser(args.log)))
+                    os.makedirs(os.path.dirname(log_path),
+                                exist_ok=True)
+                    log_handler = logging.FileHandler(log_path)
                 except OSError as errmsg:
                     print('Error: cannot open the log file: {}'
                           .format(errmsg), file=sys.stderr)
@@ -423,7 +496,7 @@ class Interpreter(object):
                             package_path=os.path.join(
                                     DEBOPS_PACKAGE_DATA, 'prompts')),
                     killswitch=killswitch,
-                    transport='unix' if args.socket else 'stdio',
+                    transport='unix' if socket_path else 'stdio',
                     legacy=args.legacy)
             register_documentation_tools(server)
             logger.notice('Serving DebOps documentation (no project '
@@ -500,7 +573,7 @@ class Interpreter(object):
                                    sources=[role_skills,
                                             playbook_skills]),
                                prompts=prompts, killswitch=killswitch,
-                               transport='unix' if args.socket
+                               transport='unix' if socket_path
                                else 'stdio',
                                legacy=args.legacy)
             register_project_tools(server,
@@ -536,10 +609,9 @@ class Interpreter(object):
             # others only ever log a failure, so a hook cannot stall a
             # running server or its shutdown
             hook_env = {'DEBOPS_MCP_TRANSPORT':
-                        'unix' if args.socket else 'stdio'}
-            if args.socket:
-                hook_env['DEBOPS_MCP_SOCKET'] = os.path.abspath(
-                        os.path.expanduser(args.socket))
+                        'unix' if socket_path else 'stdio'}
+            if socket_path:
+                hook_env['DEBOPS_MCP_SOCKET'] = socket_path
             if not run_hooks(project.path, 'mcp-pre-start', extra_env=hook_env):
                 print('Error: the mcp-pre-start hook aborted the startup',
                       file=sys.stderr)
@@ -564,11 +636,38 @@ class Interpreter(object):
             on_ready = _on_ready
             on_stop = _on_stop
 
+        idle_timeout = args.idle_timeout
+        if idle_timeout is None:
+            idle_timeout = getattr(policy, 'idle_timeout', 0)
+            if not idle_timeout and spawned:
+                # A client-spawned daemon does not live forever
+                idle_timeout = 3600
+
+        if detached:
+            base_on_ready = on_ready
+
+            def _announce_ready():
+                # The spawning parent waits for this line
+                print(socket_path, flush=True)
+                if base_on_ready is not None:
+                    base_on_ready()
+
+            on_ready = _announce_ready
+
         try:
-            if args.socket:
+            if socket_path:
                 transport = UnixSocketTransport(
-                        args.socket, mode=args.socket_mode,
-                        max_connections=args.max_connections)
+                        socket_path, mode=args.socket_mode,
+                        max_connections=args.max_connections,
+                        idle_timeout=idle_timeout,
+                        # The pid sidecar belongs to the well-known
+                        # runtime directory only; an explicitly named
+                        # socket leaves no marks in arbitrary places.
+                        # A client-spawned daemon says so, so the
+                        # REPL's --stop can tell it apart
+                        pid_path=(socket_path + '.pid'
+                                  if not args.socket else None),
+                        pid_note=('spawned' if spawned else None))
             else:
                 transport = StdioTransport()
             transport.serve(server, on_ready=on_ready,
