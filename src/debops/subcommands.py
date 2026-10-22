@@ -648,11 +648,14 @@ Commands:
                             'harness into the project directory',
                 usage='debops mcp configure [<args>]',
                 epilog='Default files: ' + '; '.join(
-                        '{}: {}'.format(name, harness.default_filename)
+                        '{}: {}'.format(name,
+                                        harness.default_filename
+                                        or '(print only)')
                         for name, harness in sorted(HARNESSES.items())))
-        parser.add_argument('-H', '--harness',
+        parser.add_argument('-H', '--harness', metavar='HARNESS',
                             choices=sorted(HARNESSES),
-                            help='the harness to configure')
+                            help='the harness to configure: '
+                                 + ', '.join(sorted(HARNESSES)))
         parser.add_argument('-f', '--filename', type=str, metavar='PATH',
                             help='write to PATH instead of the harness '
                                  'default (relative to the project '

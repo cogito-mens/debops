@@ -2656,6 +2656,39 @@ def test_configure_harness_zed(run_debops, mcp_env, project_dir):
     assert entry["args"] == ["mcp", "serve", "--legacy"]
 
 
+def test_configure_goose_prints_for_a_hand_merge(run_debops, mcp_env,
+                                                 project_dir):
+    # No writable file is known for Goose: the snippet prints
+    before = set(os.listdir(str(project_dir)))
+    result = run_debops("mcp", "configure", "-H", "goose",
+                        cwd=str(project_dir), env=mcp_env)
+    assert result.returncode == 0
+    assert "to add by hand" in result.stdout
+    assert "cmd: debops" in result.stdout
+    assert '["mcp", "serve", "--legacy"]' in result.stdout
+    # Nothing was written
+    assert set(os.listdir(str(project_dir))) == before
+
+
+def test_configure_amp_prints_the_cli_command(run_debops, mcp_env,
+                                              project_dir):
+    result = run_debops("mcp", "configure", "-H", "amp",
+                        cwd=str(project_dir), env=mcp_env)
+    assert result.returncode == 0
+    assert "amp mcp add debops -- debops mcp serve --legacy" \
+        in result.stdout
+
+
+def test_configure_help_names_the_print_only_harnesses(run_debops,
+                                                       mcp_env,
+                                                       project_dir):
+    result = run_debops("mcp", "configure", "--help",
+                        cwd=str(project_dir), env=mcp_env)
+    assert result.returncode == 0
+    assert "goose: (print only)" in result.stdout
+    assert "zed: .zed" in result.stdout
+
+
 def test_configure_harness_docs_outside_a_project(run_debops, mcp_env,
                                                   tmp_path):
     # The documentation mode serves content without a project; the

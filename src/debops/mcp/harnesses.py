@@ -36,6 +36,9 @@ documented negotiation of it, or the 2025-era revision served with
 - Zed: '.zed/settings.json' ('context_servers'; JSONC — a commented
   settings file is refused for a hand-merge); the 2025-era protocol,
   so its entry serves with '--legacy'
+- Goose, Cline, JetBrains AI Assistant and Amp have no writable
+  project file; their entries print for a hand-merge (the YAML
+  snippet, the JSON fragment or the CLI command)
 """
 
 import json
@@ -107,18 +110,38 @@ def _zed_entry(argv):
     return {'command': argv[0], 'args': argv[1:], 'env': {}}
 
 
+def _goose_text(argv):
+    """The Goose 'extensions' snippet ('~/.config/goose/config.yaml')."""
+    return ('extensions:\n'
+            '  debops:\n'
+            '    name: DebOps\n'
+            '    type: stdio\n'
+            '    cmd: debops\n'
+            '    args: {}\n'
+            '    enabled: true\n'
+            '    timeout: 300\n'.format(json.dumps(argv[1:])))
+
+
+def _amp_text(argv):
+    """The Amp CLI registration command."""
+    return 'amp mcp add debops -- {}\n'.format(' '.join(argv))
+
+
 class Harness(object):
     """One supported harness: its files, format and entry shape.
 
     'default_filename' is project-relative, 'user_filename' account-
     level ('$XDG_CONFIG_HOME/...' is resolved at call time; '~' too).
-    'path' is the key path of the servers mapping; the entry name is
-    appended at configure time.
+    Both None marks a print-only harness: nothing writable is known,
+    so 'configure' prints the fragment for a hand-merge. 'print_text'
+    renders the printed form when the generic fragment does not fit
+    (a YAML snippet, a CLI command). 'path' is the key path of the
+    servers mapping; the entry name is appended at configure time.
     """
 
     def __init__(self, name, default_filename, config_format, path,
                  entry_builder, note=None, user_filename=None,
-                 note_project=None, legacy=False):
+                 note_project=None, legacy=False, print_text=None):
         self.name = name
         self.default_filename = default_filename
         self.format = config_format
@@ -130,6 +153,7 @@ class Harness(object):
         # The harness speaks only the 2025-era protocol revision; its
         # spawned entries serve with '--legacy'
         self.legacy = legacy
+        self.print_text = print_text
 
 
 HARNESSES = {
@@ -183,6 +207,27 @@ HARNESSES = {
             note='legacy support only',
             user_filename='$XDG_CONFIG_HOME/zed/settings.json',
             legacy=True),
+    # No writable file is known for these; 'configure' prints the
+    # fragment for a hand-merge
+    'goose': Harness(
+            'goose', None, 'json', ('mcpServers',), _plain_entry,
+            note='legacy support only; the snippet goes into '
+                 '~/.config/goose/config.yaml',
+            print_text=_goose_text, legacy=True),
+    'cline': Harness(
+            'cline', None, 'json', ('mcpServers',), _plain_entry,
+            note='legacy support only; paste into the Cline MCP '
+                 'settings (MCP Servers, then Configure)',
+            legacy=True),
+    'jetbrains': Harness(
+            'jetbrains', None, 'json', ('mcpServers',), _plain_entry,
+            note='legacy support only; paste at Settings -> Tools -> '
+                 'AI Assistant -> Model Context Protocol',
+            legacy=True),
+    'amp': Harness(
+            'amp', None, 'json', ('mcpServers',), _plain_entry,
+            note='legacy support only',
+            print_text=_amp_text, legacy=True),
 }
 
 
@@ -304,6 +349,8 @@ def fragment_for_display(harness_name, connect=None, name=DEFAULT_NAME,
     when a file cannot be rewritten safely."""
     harness = HARNESSES[harness_name]
     argv = _entry_argv(harness, connect, verbosity, log, docs=docs)
+    if harness.print_text is not None:
+        return harness.print_text(argv)
     fragment = _harness_fragment(harness, argv, name)
     if harness.format == 'toml':
         return toml.dumps(fragment)
@@ -368,7 +415,7 @@ def _target_path(harness, project_path, filename, user,
             relative = filename
         else:
             path = _user_config_path(harness)
-            relative = path
+            relative = path if path is not None else '(no known file)'
         return path, relative, notes
     if project_path is None:
         if not print_only:
@@ -376,9 +423,13 @@ def _target_path(harness, project_path, filename, user,
                              'project-local configuration needs one; '
                              'the account level does not: --user)')
         # Printing asks for no directory at all
-        relative = filename if filename else harness.default_filename
+        relative = filename or harness.default_filename \
+            or '(no known file)'
         return relative, relative, notes
     relative = filename if filename else harness.default_filename
+    if relative is None:
+        # A print-only harness has no file to write
+        return None, '(no known file)', notes
     path = relative if os.path.isabs(relative) \
         else os.path.join(project_path, relative)
     if harness.name == 'opencode' and filename is None:
@@ -461,9 +512,15 @@ def configure_harness(project_path, harness_name, filename=None,
     path, relative, notes = _target_path(harness, project_path,
                                          filename, user,
                                          print_only=print_only)
-    if user and filename is None and path is None:
-        notes.append('note: no known account-level configuration file '
-                     'for this harness')
+    if path is None and filename is None:
+        # Nothing writable is known for this harness; the fragment
+        # prints for a hand-merge
+        if user:
+            notes.append('note: no known account-level configuration '
+                         'file for this harness')
+        else:
+            notes.append('note: no writable configuration file is '
+                         'known for this harness')
         print_only = True
     if connect is not None:
         _check_connect_path(connect, notes)
@@ -478,8 +535,12 @@ def configure_harness(project_path, harness_name, filename=None,
     argv = _entry_argv(harness, connect, verbosity, log, docs=docs)
     command = ' '.join(argv)
     if print_only:
-        lines = ['Configuration for {} ({}), not written to {}:'.format(
-                harness_name, command, relative)]
+        if path is None and filename is None:
+            lines = ['Configuration for {} ({}), to add by hand:'
+                     .format(harness_name, command)]
+        else:
+            lines = ['Configuration for {} ({}), not written to '
+                     '{}:'.format(harness_name, command, relative)]
         lines.extend(notes)
         lines.append('')
         lines.append(fragment_for_display(harness_name,

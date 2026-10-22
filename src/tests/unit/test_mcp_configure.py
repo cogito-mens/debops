@@ -374,6 +374,52 @@ class ConfigureTestCase(unittest.TestCase):
                          os.path.join('.zed', 'settings.json'))
 
 
+class PrintOnlyTestCase(unittest.TestCase):
+    """The harnesses without a known file print for a hand-merge."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-print-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+
+    def test_goose_prints_the_yaml_snippet(self):
+        status, lines = configure_harness(self.tmpdir, 'goose')
+        self.assertEqual(status, 'printed')
+        self.assertIn('to add by hand', lines[0])
+        text = '\n'.join(lines)
+        self.assertIn('extensions:', text)
+        self.assertIn('cmd: debops', text)
+        self.assertIn('["mcp", "serve", "--legacy"]', text)
+        self.assertIn('config.yaml', text)
+        # Nothing was written
+        self.assertEqual(os.listdir(self.tmpdir), [])
+
+    def test_amp_prints_the_cli_command(self):
+        status, lines = configure_harness(self.tmpdir, 'amp')
+        self.assertEqual(status, 'printed')
+        self.assertIn('amp mcp add debops -- debops mcp serve '
+                      '--legacy', '\n'.join(lines))
+
+    def test_cline_prints_the_generic_fragment(self):
+        status, lines = configure_harness(self.tmpdir, 'cline')
+        self.assertEqual(status, 'printed')
+        text = '\n'.join(lines)
+        self.assertIn('mcpServers', text)
+        self.assertIn('--legacy', text)
+        self.assertIn('MCP Servers', text)
+
+    def test_a_print_only_harness_remove_is_graceful(self):
+        from debops.mcp.harnesses import remove_harness
+        status, _lines = remove_harness(self.tmpdir, 'goose')
+        self.assertEqual(status, 'not configured')
+
+    def test_print_only_at_the_user_level(self):
+        with mock.patch.dict(os.environ, {'HOME': self.tmpdir}):
+            status, lines = configure_harness(self.tmpdir, 'goose',
+                                              user=True)
+        self.assertEqual(status, 'printed')
+        self.assertIn('no known account-level', '\n'.join(lines))
+
+
 class UserModeTestCase(unittest.TestCase):
     """The account-level configuration ('--user'), needing no
     project."""
