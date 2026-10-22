@@ -6,10 +6,13 @@
 the elevation."""
 
 import os
+import logging
 import shutil
 import stat
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 
 from debops.mcp.policy import McpPolicy
@@ -235,6 +238,150 @@ class TrustFlowTestCase(unittest.TestCase):
                 'params': {'passphrase': self.passphrase}})
         self.assertIn('error', response)
         self.assertIn('_meta', response['error']['data']['details'])
+
+
+class TrustedPresentationTestCase(unittest.TestCase):
+    """Trusted clients get the human form of the server-local paths:
+    the monikers go, the '~' home masking stays."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-tpres-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        self.project = make_project_at(self.tmpdir)
+        self.project.view = 'system'
+        self.policy = McpPolicy(self.project)
+        trust.ensure_passphrase(self.project)
+        with open(os.path.join(self.tmpdir, trust.TRUST_PATH)) as fp:
+            self.passphrase = fp.read()
+
+    def test_the_trusted_form_of_the_paths(self):
+        import unittest.mock
+        from debops.constants import DEBOPS_PACKAGE_DATA
+        from debops.mcp import runs
+        with unittest.mock.patch.dict(
+                os.environ,
+                {'XDG_CACHE_HOME': os.path.join(self.tmpdir,
+                                                'cache')}):
+            server = McpServer(project=self.project, policy=self.policy,
+                               transport='unix')
+            # The moniker table is read at server construction
+            log_line = os.path.join(runs.cache_root(), 'x',
+                                    'execution-1.log')
+        pkg = os.path.join(DEBOPS_PACKAGE_DATA, 'mcp', 'ansible.cfg')
+        server.register_tool(
+                'probe', 'the probe', {'type': 'object'},
+                lambda arguments: {
+                    'content': [{'type': 'text',
+                                 'text': 'log: {} pkg: {} home: {}'
+                                 .format(log_line, pkg,
+                                         os.path.expanduser('~/x'))}],
+                    'isError': False})
+
+        def call(token=None):
+            return server.handle(_request(
+                    'tools/call', {'name': 'probe', 'arguments': {}},
+                    token=token))
+
+        # Untrusted: monikers plus the home masking
+        text = call()['result']['content'][0]['text']
+        self.assertIn('run-logs:/x/execution-1.log', text)
+        self.assertIn('bundled:/mcp/ansible.cfg', text)
+        self.assertIn('home: ~/x', text)
+
+        # Trusted: the real roots, the home still masked
+        token = server.handle(_request(
+                'server/authenticate',
+                {'passphrase': self.passphrase}))['result']['token']
+        text = call(token)['result']['content'][0]['text']
+        self.assertIn('log: {}'.format(log_line), text)
+        self.assertNotIn('bundled:', text)
+        self.assertIn('debops/_data/mcp/ansible.cfg', text)
+        self.assertIn('home: ~/x', text)
+
+
+class ActivityTopicTestCase(unittest.TestCase):
+    """The activity topic: the audit lines to a trusted listener."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-activity-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        self.project = make_project_at(self.tmpdir)
+        self.project.view = 'system'
+        self.policy = McpPolicy(self.project)
+        self.server = McpServer(project=self.project,
+                                policy=self.policy)
+        trust.ensure_passphrase(self.project)
+        with open(os.path.join(self.tmpdir, trust.TRUST_PATH)) as fp:
+            self.passphrase = fp.read()
+
+    def test_activity_streams_to_a_trusted_listener(self):
+        import threading
+        token = self.server.handle(_request(
+                'server/authenticate',
+                {'passphrase': self.passphrase}))['result']['token']
+        messages = []
+        done = threading.Event()
+
+        def notify(message):
+            messages.append(message)
+
+        meta = dict(REQUEST_META)
+        meta['org.debops/token'] = token
+
+        def listen():
+            self.server.handle(
+                    {'jsonrpc': '2.0', 'id': 42,
+                     'method': 'subscriptions/listen',
+                     'params': {'_meta': meta,
+                                'notifications': {'activity': True}}},
+                    notify=notify, dead=done)
+
+        thread = threading.Thread(target=listen, daemon=True)
+        thread.start()
+        try:
+            # The acknowledgment comes first and honors the topic
+            deadline = time.monotonic() + 5
+            while not messages and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(messages)
+            self.assertEqual(messages[0]['method'],
+                             'notifications/subscriptions/acknowledged')
+            self.assertEqual(messages[0]['params']['notifications'],
+                             {'activity': True})
+
+            # The feed rides the notice level; the default level of
+            # the logger hides those from any handler
+            debops_log = logging.getLogger('debops')
+            old_level = debops_log.level
+            debops_log.setLevel(logging.NOTICE)
+            try:
+                debops_log.notice('the test marker')
+            finally:
+                debops_log.setLevel(old_level)
+            count = len(messages)
+            deadline = time.monotonic() + 5
+            while len(messages) <= count \
+                    and time.monotonic() < deadline:
+                time.sleep(0.01)
+            activity = [message for message in messages
+                        if message['method']
+                        == 'notifications/activity']
+            self.assertTrue(activity, messages)
+            self.assertEqual(activity[0]['params']['line'],
+                             'the test marker')
+        finally:
+            done.set()
+            thread.join(timeout=5)
+        # The feed detached with the listener
+        self.assertIsNone(self.server._activity_handler)
+
+    def test_an_untrusted_listener_is_refused(self):
+        response = self.server.handle(_request(
+                'subscriptions/listen',
+                {'notifications': {'activity': True}}),
+                notify=lambda message: None, dead=threading.Event())
+        self.assertIn('error', response)
+        self.assertIn('trusted', response['error']['data']['details'])
 
 
 if __name__ == '__main__':

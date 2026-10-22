@@ -217,6 +217,23 @@ def _audit_tag(context):
     return ' [{}]'.format(state)
 
 
+class _ActivityHandler(logging.Handler):
+    """Feed the notice-level audit lines to the activity
+    subscribers."""
+
+    def __init__(self, server):
+        super().__init__(level=logging.NOTICE)
+        self.setFormatter(logging.Formatter('%(message)s'))
+        self._server = server
+
+    def emit(self, record):
+        try:
+            self._server._emit_activity(self.format(record))
+        except Exception:
+            # A notification feed must never break the logged event
+            self.handleError(record)
+
+
 # How often the project configuration files are checked for changes
 CONFIG_WATCH_INTERVAL = 10.0  # seconds
 
@@ -376,6 +393,12 @@ class McpServer(object):
         # replaces its content roots with monikers
         self._present = make_path_presenter(
                 self._path_monikers(project, transport))
+        # A trusted client gets the human form: the home masking
+        # stays, the monikers go
+        self._present_trusted = make_path_presenter([])
+        # The activity feed handler, attached while a trusted client
+        # subscribes
+        self._activity_handler = None
         # The skill library served as resources; None when absent
         self.skills = skills
         # The prompt library; None when absent
@@ -757,8 +780,12 @@ class McpServer(object):
             result = {}
         if method in ('tools/call', 'tasks/get'):
             # Client-facing output masks the server-local paths; the
-            # audit log and the files keep the real ones
-            result = self._present(result)
+            # audit log and the files keep the real ones. A trusted
+            # client gets the human form: the home masking stays, the
+            # monikers go
+            presenter = (self._present_trusted if context.trusted
+                         else self._present)
+            result = presenter(result)
         if self.legacy:
             # The 2025-era result shape: no resultType, no caching
             # metadata
@@ -1490,11 +1517,34 @@ class McpServer(object):
         with self._subscriptions_lock:
             self._subscriptions[request_id] = {
                     'filter': honored, 'queue': event_queue}
+            if honored.get('activity') and self._activity_handler \
+                    is None:
+                # The audit feed attaches while someone listens
+                self._activity_handler = _ActivityHandler(self)
+                logging.getLogger('debops').addHandler(
+                        self._activity_handler)
         return event_queue
 
     def _unsubscribe(self, request_id):
         with self._subscriptions_lock:
             self._subscriptions.pop(request_id, None)
+            if self._activity_handler is not None and not any(
+                    subscription['filter'].get('activity')
+                    for subscription in self._subscriptions.values()):
+                logging.getLogger('debops').removeHandler(
+                        self._activity_handler)
+                self._activity_handler = None
+
+    def _emit_activity(self, line):
+        """Push an audit line to the activity subscribers."""
+        message = {'jsonrpc': '2.0',
+                   'method': 'notifications/activity',
+                   'params': {'line': line}}
+        with self._subscriptions_lock:
+            subscriptions = list(self._subscriptions.values())
+        for subscription in subscriptions:
+            if subscription['filter'].get('activity'):
+                subscription['queue'].put(message)
 
     def emit_list_changed(self, kind):
         """Notify subscribers that a list ('resources', 'prompts') changed."""
@@ -1585,6 +1635,16 @@ class McpServer(object):
                 if str(uri).startswith(SKILL_URI_PREFIX)]
         if uris:
             honored['resourceSubscriptions'] = uris
+        if requested.get('activity'):
+            # The audit stream is the operator's view of the other
+            # clients; it needs trust
+            if not context.trusted:
+                raise rpc.JsonRpcError(
+                        rpc.INVALID_PARAMS, 'Invalid params',
+                        data={'details': 'the activity topic needs a '
+                              'trusted client (server/authenticate)'},
+                        request_id=request_id)
+            honored['activity'] = True
         task_ids = requested.get('taskIds')
         if task_ids:
             # Task notifications require the client to have declared

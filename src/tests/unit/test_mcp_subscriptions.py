@@ -113,6 +113,15 @@ class SubscriptionStreamTestCase(unittest.TestCase):
         self.assertEqual(completion['result']['_meta']
                          [SUBSCRIPTION_ID_KEY], 1)
 
+    def test_the_activity_topic_needs_a_trusted_client(self):
+        connection = self._open()
+        reader = connection.makefile('rb')
+        self._listen(connection, {'activity': True})
+        response = json.loads(rpc.read_message(reader))
+        self.assertIn('error', response)
+        self.assertIn('trusted',
+                      response['error']['data']['details'])
+
     def test_resource_update_notifications(self):
         connection = self._open()
         reader = connection.makefile('rb')
