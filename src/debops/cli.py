@@ -480,7 +480,7 @@ class Interpreter(object):
             role_skills = RoleSkillSource(roles_paths)
             playbook_skills = PlaybookSkillSource(
                     COLLECTION_PLAYBOOKS if policy.bundled_content
-                    else None, role_skills)
+                    else None, role_skills, policy=policy)
             role_skills.playbooks = playbook_skills
             server = McpServer(project=project, policy=policy,
                                skills=SkillLibrary(

@@ -183,6 +183,33 @@ class PlaybookSkillsTestCase(unittest.TestCase):
         self.assertIn('playbook.info', brief)
         self.assertIn('ansible.doc', brief)
 
+    def test_the_brief_teaches_the_permitted_override_users(self):
+        # The escape hatch the policy allows is written into the
+        # briefs it covers: the model learns the usernames from the
+        # skill, not from a refusal
+        policy = type('Policy', (), {
+                'execute_user_override': {'scope/db/*': ['root'],
+                                          'service/web': ['root',
+                                                          'admin']}})()
+        source = PlaybookSkillSource(self.playbooks, self.role_source,
+                                     policy=policy)
+        brief = source.read('playbooks/scope/db/tune/SKILL.md')
+        self.assertIn("pass 'user'", brief)
+        self.assertIn('one of \'root\'', brief)
+        brief = source.read('playbooks/service/web/SKILL.md')
+        self.assertIn("one of 'root', 'admin'", brief)
+
+    def test_a_playbook_outside_the_table_gets_no_override_note(self):
+        policy = type('Policy', (), {
+                'execute_user_override': {'scope/db/*': ['root']}})()
+        source = PlaybookSkillSource(self.playbooks, self.role_source,
+                                     policy=policy)
+        brief = source.read('playbooks/service/web/SKILL.md')
+        self.assertNotIn('ansible_user', brief)
+        # The default source has no policy at all
+        brief = self.read('scope/web')
+        self.assertNotIn('ansible_user', brief)
+
     def test_a_nameless_play_gets_the_role_description(self):
         with open(os.path.join(self.playbooks, 'service',
                                'db-tools.yml'), 'w') as fp:

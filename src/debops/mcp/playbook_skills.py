@@ -24,6 +24,7 @@ documentation mode does not, and the agent should never meet a tool
 which does not exist there.
 """
 
+import fnmatch
 import logging
 import os
 import time
@@ -31,6 +32,7 @@ import time
 import jinja2
 
 from .skills import _parse_frontmatter_text
+from .tools.execute import _playbook_match_name
 from .tools.playbooks import list_playbooks, parse_playbook, target_form
 
 logger = logging.getLogger(__name__)
@@ -70,6 +72,13 @@ shared parts.
 {% if execution -%}
 Verify with 'check' ('syntax_check' or 'list_tasks' for a playbook you
 wrote), change with 'run'; inspect the outcome with 'execution.output'.
+{% if override_users %}
+A fresh host may need a different connection user for this playbook —
+the bootstrap case, before the managed account exists: pass 'user' to
+'check'/'run', one of {{ override_users }}. A host's own ansible_user
+in the inventory still takes precedence; passwords are never handled,
+so a host without an SSH key is the operator's manual step first.
+{% endif %}
 {%- else -%}
 Inspect it with 'playbook.info'; the role's details answer through the
 'role.*' tools and 'ansible.doc'.
@@ -86,7 +95,8 @@ class PlaybookSkillSource(object):
     the RoleSkillSource the names resolve against (the role must be
     visible for a brief to exist). 'execution' says whether the
     project-mode tools exist; the documentation mode renders without
-    them.
+    them. 'policy' is the project policy; its connection user
+    override table is taught by the briefs it covers.
     """
 
     # No reservation: authored content lives in the package tree under
@@ -94,10 +104,12 @@ class PlaybookSkillSource(object):
     # generated briefs, and the project tree shadows both
     prefixes = set()
 
-    def __init__(self, playbooks_path, roles, execution=True):
+    def __init__(self, playbooks_path, roles, execution=True,
+                 policy=None):
         self.playbooks_path = playbooks_path
         self._roles = roles
         self.execution = execution
+        self._policy = policy
         self._environment = jinja2.sandbox.SandboxedEnvironment(
                 keep_trailing_newline=True)
         self._template = self._environment.from_string(_BRIEF)
@@ -177,6 +189,23 @@ class PlaybookSkillSource(object):
             else None
         return play_name, roles, imports, groups
 
+    def _override_users(self, target):
+        """The usernames the project policy permits for this target,
+        comma-joined for the brief; None when the playbook is outside
+        the override table.
+
+        Mirrors the gate in the execution tools: the first matching
+        glob wins.
+        """
+        policy = self._policy
+        if policy is None:
+            return None
+        match_name = _playbook_match_name(target)
+        for pattern, users in policy.execute_user_override.items():
+            if fnmatch.fnmatch(match_name, pattern):
+                return ', '.join("'{}'".format(user) for user in users)
+        return None
+
     def _render(self, target):
         """The brief of one target, or None when it maps to nothing."""
         mapped = self._map(target)
@@ -235,6 +264,7 @@ class PlaybookSkillSource(object):
                 stack=stack_text,
                 variants=', '.join(variants),
                 hosts=', '.join("'{}'".format(group) for group in groups),
+                override_users=self._override_users(target),
                 execution=self.execution)
 
     def uris_for(self, role):
