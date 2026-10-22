@@ -385,3 +385,28 @@ def test_mcp_configure_options():
 def test_mcp_configure_requires_a_known_harness():
     with pytest.raises(SystemExit):
         parse_cli("mcp", "configure", "-H", "windsurf")
+
+
+def _help_text(monkeypatch, columns):
+    from debops import subcommands
+
+    parser = subcommands._argument_parser(prog='debops example')
+    parser.add_argument('--example', help=('a help text long enough to '
+                                           'need the wrap ' * 8).strip())
+    monkeypatch.setattr(subcommands.shutil, 'get_terminal_size',
+                        lambda: os.terminal_size((columns, 24)))
+    return parser.format_help()
+
+
+def test_help_wraps_at_a_comfortable_width(monkeypatch):
+    # A wide terminal no longer sprawls: the cap is the width an
+    # 80-column terminal would get
+    help_text = _help_text(monkeypatch, 200)
+    assert all(len(line) <= 78 for line in help_text.splitlines())
+    assert 'a help text long enough' in help_text
+
+
+def test_help_a_narrower_terminal_still_wins(monkeypatch):
+    # The cap never widens: the terminal width applies below it
+    help_text = _help_text(monkeypatch, 60)
+    assert all(len(line) <= 58 for line in help_text.splitlines())

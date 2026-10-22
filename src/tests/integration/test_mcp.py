@@ -2661,6 +2661,17 @@ def test_configure_print_needs_no_project(run_debops, mcp_env,
     assert "--socket" not in result.stdout
 
 
+def test_help_wraps_at_a_comfortable_width(run_debops, mcp_env,
+                                           project_dir):
+    # A wide terminal no longer sprawls the option help
+    result = run_debops("mcp", "configure", "--help",
+                        cwd=str(project_dir),
+                        env=dict(mcp_env, COLUMNS="200"))
+    assert result.returncode == 0
+    assert all(len(line) <= 78 for line in result.stdout.splitlines())
+    assert "--docs" in result.stdout
+
+
 def test_configure_fires_no_hooks(run_debops, mcp_env, project_dir):
     # Configuration writes are not hook events — in a project or (for
     # printing) outside of one
