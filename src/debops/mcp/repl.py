@@ -10,6 +10,7 @@ status tail as it moves; a confirmation gate asks the human. Pipes
 work: commands on standard input, answers on standard output.
 """
 
+import getpass
 import os
 import shlex
 import subprocess
@@ -18,6 +19,7 @@ import time
 
 from . import server as _server
 from .client import UnixClient, default_socket_path
+from .trust import TRUST_PATH
 
 # The capabilities the interactive clients (the REPL, the shell)
 # declare: the tasks extension (a long execution is a handle the
@@ -158,6 +160,27 @@ def connect_or_spawn(socket_path, project, docs=False, spawn=None,
     return spawned_client
 
 
+def bootstrap_trust(client, project):
+    """Authenticate silently with the passphrase file when the
+    account can read it; an untrusted session works regardless."""
+    if project is None:
+        return False
+    try:
+        with open(os.path.join(project.path, TRUST_PATH)) as fp:
+            phrase = fp.read().strip()
+    except OSError:
+        return False
+    try:
+        answer = client.request('server/authenticate',
+                                {'passphrase': phrase})
+    except (ConnectionError, EOFError, TimeoutError):
+        return False
+    if 'error' in answer:
+        return False
+    client.bearer = answer['result']['token']
+    return True
+
+
 def stop_daemon(socket_path, out=sys.stdout):
     """Stop the daemon at the socket; the client-spawned ones only.
 
@@ -243,7 +266,8 @@ class Repl(object):
     """One interpreter session against a daemon."""
 
     def __init__(self, client, project_name=None, view=None,
-                 out=sys.stdout, err=sys.stderr, interactive=False):
+                 out=sys.stdout, err=sys.stderr, interactive=False,
+                 project_path=None):
         self.client = client
         self.project_name = project_name
         self.view = view
@@ -252,12 +276,15 @@ class Repl(object):
         self.interactive = interactive
         self.had_error = False
         self._completion_cache = {}
+        self.project_path = project_path
+        self.elevated = False
 
     @property
     def prompt(self):
         name = self.project_name or 'docs'
         view = ':{}'.format(self.view) if self.view else ''
-        return 'debops {}{}> '.format(name, view)
+        marker = '!' if self.elevated else ''
+        return 'debops{} {}{}> '.format(marker, name, view)
 
     # -- the wire -------------------------------------------------
 
@@ -390,6 +417,152 @@ class Repl(object):
 
     def cmd_run(self, args):
         return self._call_tool('run', execution_arguments(args))
+
+    def cmd_elevate(self, args):
+        """Raise the session: the gates answer themselves while it
+        lasts ('drop' ends it)."""
+        if args:
+            raise ReplError('elevate takes no arguments')
+        if self.client.legacy:
+            raise ReplError('trust needs the {} revision; this daemon '
+                            'speaks the 2025-era protocol'
+                            .format(_server.PROTOCOL_VERSION))
+        if self.elevated:
+            raise ReplError('already elevated ("drop" ends it)')
+        phrase = self._passphrase()
+        if self.client.bearer is None:
+            answer = self._request('server/authenticate',
+                                   {'passphrase': phrase})
+            self.client.bearer = answer['token']
+        self._request('server/elevate', {'passphrase': phrase})
+        self.elevated = True
+        print('elevated; the confirmation gates answer themselves '
+              'for a while of active use', file=self._err)
+
+    def cmd_drop(self, args):
+        """End the elevation ahead of its timeout."""
+        if args:
+            raise ReplError('drop takes no arguments')
+        if not self.elevated:
+            raise ReplError('not elevated')
+        if self.client.bearer is not None and not self.client.legacy:
+            self._request('server/drop', {})
+        self.elevated = False
+        print('dropped; the gates ask again', file=self._err)
+
+    def cmd_watch(self, args):
+        """Stream the activity of the server's clients until
+        Ctrl-C."""
+        if args:
+            raise ReplError('watch takes no arguments')
+        if self.client.legacy:
+            raise ReplError('the 2025-era protocol has no '
+                            'subscription streams')
+        if not self._ensure_trusted():
+            raise ReplError("watch needs a trusted session: the "
+                            "activity stream is the operator's view "
+                            'of the other clients')
+        print('watching the server activity (Ctrl-C ends it)',
+              file=self._err)
+        try:
+            for message in self.client.request_streaming(
+                    'subscriptions/listen',
+                    {'notifications': {'activity': True}}):
+                if message.get('method') == 'notifications/activity':
+                    print(message.get('params', {}).get('line', ''),
+                          file=self._out)
+        except KeyboardInterrupt:
+            # Closing the channel ends the stream server-side
+            self.client.close()
+            print('watch ended', file=self._err)
+        except (EOFError, RuntimeError) as errmsg:
+            raise ReplError(str(errmsg))
+
+    def cmd_edit(self, args):
+        """Open a project file in $VISUAL/$EDITOR and write the
+        changes back through the tools (committed by the server)."""
+        if len(args) != 1:
+            raise ReplError('usage: edit <path>')
+        if not self.interactive:
+            raise ReplError('edit needs a terminal')
+        path = args[0]
+        result = self._call_tool('project.read', {'path': path})
+        current = ''
+        if result.get('isError'):
+            text = ''.join(block.get('text', '') for block in
+                           result.get('content', []))
+            if 'not found' not in text and 'no such' not in text \
+                    and 'does not exist' not in text:
+                # A refusal (a denied path) stops the edit; a missing
+                # file starts empty
+                self._render(result)
+                return
+        else:
+            current = ''.join(block.get('text', '') for block in
+                              result.get('content', []))
+        import tempfile
+        fd, tmp = tempfile.mkstemp(prefix='debops-edit-',
+                                   suffix='-' + os.path.basename(path))
+        try:
+            with os.fdopen(fd, 'w') as fp:
+                fp.write(current)
+            editor = (os.environ.get('VISUAL') or
+                      os.environ.get('EDITOR') or 'vi')
+            returncode = subprocess.call(shlex.split(editor) + [tmp])
+            if returncode != 0:
+                raise ReplError('the editor exited with {}'
+                                .format(returncode))
+            with open(tmp) as fp:
+                new = fp.read()
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        if new == current:
+            print('unchanged: ' + path, file=self._err)
+            return
+        result = self._call_tool('file.write',
+                                 {'path': path, 'content': new})
+        self._render(result)
+
+    def _passphrase(self):
+        """The trust passphrase: the file when the account reads it,
+        a prompt otherwise."""
+        if self.project_path is not None:
+            try:
+                with open(os.path.join(self.project_path,
+                                       TRUST_PATH)) as fp:
+                    return fp.read().strip()
+            except OSError:
+                pass
+        if not self.interactive:
+            raise ReplError('the trust passphrase of the project is '
+                            'not readable here; a pipe cannot ask '
+                            'for it')
+        try:
+            return getpass.getpass('the trust passphrase: ')
+        except EOFError:
+            raise ReplError('cancelled')
+
+    def _ensure_trusted(self):
+        """Authenticate the session when the passphrase is reachable;
+        True when trusted."""
+        if self.client.bearer is not None:
+            return True
+        if self.client.legacy:
+            return False
+        try:
+            phrase = self._passphrase()
+        except ReplError:
+            return False
+        try:
+            answer = self._request('server/authenticate',
+                                   {'passphrase': phrase})
+        except ReplError:
+            return False
+        self.client.bearer = answer['token']
+        return True
 
     def cmd_logs(self, args):
         if args:
@@ -566,7 +739,10 @@ class Repl(object):
         if handler is None:
             raise ReplError("unknown verb: {!r} ('help' lists them)"
                             .format(verb))
-        self._render(handler(args))
+        result = handler(args)
+        # A verb which printed its own answer returns None
+        if result is not None:
+            self._render(result)
 
     def _print_help(self):
         print('Commands (the MCP tools of the project, for a human):',
@@ -583,7 +759,7 @@ class Repl(object):
         'view': 'views',
         'role': 'roles', 'defaults': 'roles', 'vars': 'roles',
         'tasks': 'roles', 'handlers': 'roles',
-        'read': 'files',
+        'read': 'files', 'edit': 'files',
     }
 
     def complete_candidates(self, verb):
@@ -656,6 +832,13 @@ HELP = {
     'environment [filter]': 'the environment variables',
     'set <NAME> <value>': 'set an environment variable',
     'unset <NAME>': 'remove an environment variable',
+    'edit <path>': 'open a project file in the editor, write back '
+                   'through the tools',
+    'elevate': 'the confirmation gates answer themselves for a '
+               'while ("drop" ends it)',
+    'drop': 'end the elevation',
+    'watch': 'stream the activity of the server\'s clients '
+             '(a trusted session; Ctrl-C ends it)',
     'help': 'this text',
     'exit': 'leave the interpreter (Ctrl-D works too)',
 }
@@ -805,13 +988,14 @@ def _execute_line(repl, line):
     return False
 
 
-def run(client, project_name=None, view=None, interactive=None):
+def run(client, project_name=None, view=None, interactive=None,
+        project_path=None):
     """Build and run an interpreter session against the connected
     daemon."""
     if interactive is None:
         interactive = sys.stdin.isatty()
     session = Repl(client, project_name=project_name, view=view,
-                   interactive=interactive)
+                   interactive=interactive, project_path=project_path)
     if interactive:
         return run_interactive(session)
     return run_pipe(session)

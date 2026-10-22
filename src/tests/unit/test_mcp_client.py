@@ -312,6 +312,21 @@ class UnixClientTestCase(unittest.TestCase):
             client.request_unix(os.path.join(self.tmpdir, 'absent.sock'),
                                 'server/discover')
 
+    def test_request_streaming_round_trip(self):
+        # The stream: the ack, then the notifications, then the
+        # completion ends it
+        with client.UnixClient(self.path) as connection:
+            stream = connection.request_streaming(
+                    'subscriptions/listen',
+                    {'notifications': {'toolsListChanged': True}})
+            ack = next(stream)
+            self.assertEqual(ack['method'],
+                             'notifications/subscriptions/acknowledged')
+            connection.notify('notifications/cancelled',
+                              {'requestId': connection.inflight_id})
+            with self.assertRaises(StopIteration):
+                next(stream)
+
 
 class SocketPathTestCase(unittest.TestCase):
 

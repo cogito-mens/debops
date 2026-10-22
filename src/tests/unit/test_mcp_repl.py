@@ -292,6 +292,125 @@ class ConnectEraTestCase(unittest.TestCase):
         self.assertEqual(connected.protocol_version, '2026-07-28')
 
 
+class TrustVerbsTestCase(unittest.TestCase):
+    """The elevate/drop/watch verbs and the passphrase handling."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-trustrepl-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+
+    def _write_passphrase(self, words='correct horse battery staple'):
+        from debops.mcp import trust
+        path = os.path.join(self.tmpdir, trust.TRUST_PATH)
+        os.makedirs(os.path.dirname(path))
+        with open(path, 'w') as fp:
+            fp.write(words + '\n')
+
+    def test_elevate_authenticates_then_raises(self):
+        self._write_passphrase()
+        client = FakeClient()
+        client.legacy = False
+        client.bearer = None
+        session, _out, err = make_repl(client, interactive=False)
+        session.project_path = self.tmpdir
+        client.queue('server/authenticate',
+                     {'token': 'the-token', 'tokenType': 'bearer'})
+        client.queue('server/elevate', {'elevated': True,
+                                        'expiresIn': 900})
+        session.execute('elevate')
+        # The token rides from here on; the prompt carries the marker
+        self.assertEqual(client.bearer, 'the-token')
+        self.assertTrue(session.elevated)
+        self.assertEqual(session.prompt, 'debops! project:system> ')
+        self.assertEqual(client.calls[0][0], 'server/authenticate')
+        self.assertEqual(client.calls[1],
+                         ('server/elevate',
+                          {'passphrase': 'correct horse battery '
+                           'staple'}))
+
+    def test_elevate_twice_is_a_clean_error(self):
+        client = FakeClient()
+        client.legacy = False
+        client.bearer = 'the-token'
+        session, _out, _err = make_repl(client)
+        session.elevated = True
+        with self.assertRaises(ReplError) as context:
+            session.execute('elevate')
+        self.assertIn('already elevated', str(context.exception))
+
+    def test_elevate_needs_the_new_protocol(self):
+        client = FakeClient()
+        client.legacy = True
+        session, _out, _err = make_repl(client)
+        with self.assertRaises(ReplError) as context:
+            session.execute('elevate')
+        self.assertIn('2025-era', str(context.exception))
+
+    def test_drop_clears_the_flag_and_tells_the_server(self):
+        client = FakeClient()
+        client.legacy = False
+        client.bearer = 'the-token'
+        session, _out, _err = make_repl(client)
+        session.elevated = True
+        client.queue('server/drop', {'elevated': False})
+        session.execute('drop')
+        self.assertFalse(session.elevated)
+        self.assertEqual(client.calls[0][0], 'server/drop')
+
+    def test_drop_when_not_elevated_is_a_clean_error(self):
+        client = FakeClient()
+        client.legacy = False
+        client.bearer = None
+        session, _out, _err = make_repl(client)
+        with self.assertRaises(ReplError) as context:
+            session.execute('drop')
+        self.assertIn('not elevated', str(context.exception))
+
+    def test_watch_needs_trust_and_a_pipe_cannot_ask(self):
+        client = FakeClient()
+        client.legacy = False
+        client.bearer = None
+        session, _out, _err = make_repl(client, interactive=False)
+        # No passphrase file: a pipe cannot ask
+        with self.assertRaises(ReplError) as context:
+            session.execute('watch')
+        self.assertIn('trusted', str(context.exception))
+
+    def test_watch_streams_the_activity(self):
+        client = FakeClient()
+        client.legacy = False
+        client.bearer = 'the-token'
+        session, out, _err = make_repl(client)
+        stream = iter([
+                {'method': 'notifications/subscriptions/acknowledged',
+                 'params': {'notifications': {'activity': True}}},
+                {'method': 'notifications/activity',
+                 'params': {'line': 'Tool check(site) -> ok'}},
+                {'id': 1, 'result': {}},
+        ])
+        client.request_streaming = lambda *a, **kw: stream
+        session.execute('watch')
+        self.assertIn('Tool check(site) -> ok', out.getvalue())
+        self.assertEqual(client.calls, [])  # the stream bypasses them
+
+    def test_bootstrap_trust_with_a_readable_file(self):
+        self._write_passphrase()
+        client = FakeClient()
+        client.bearer = None
+        client.queue('server/authenticate',
+                     {'token': 'the-token', 'tokenType': 'bearer'})
+        project = type('Project', (), {'path': self.tmpdir})()
+        self.assertTrue(repl.bootstrap_trust(client, project))
+        self.assertEqual(client.bearer, 'the-token')
+
+    def test_bootstrap_trust_without_a_file_is_silent(self):
+        client = FakeClient()
+        client.bearer = None
+        project = type('Project', (), {'path': self.tmpdir})()
+        self.assertFalse(repl.bootstrap_trust(client, project))
+        self.assertEqual(client.calls, [])
+
+
 class StopDaemonTestCase(unittest.TestCase):
     """The '--stop' guardrails: only a client-spawned daemon goes."""
 

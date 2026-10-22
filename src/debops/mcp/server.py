@@ -417,6 +417,7 @@ class McpServer(object):
             'server/discover': self._discover,
             'server/authenticate': self._server_authenticate,
             'server/elevate': self._server_elevate,
+            'server/drop': self._server_drop,
             'tools/list': self._tools_list,
             'tools/call': self._tools_call,
             'notifications/cancelled': self._cancelled,
@@ -980,6 +981,22 @@ class McpServer(object):
                       _audit_tag(context))
         return {'elevated': True, 'expiresIn': self.policy.elevate_ttl}
 
+    def _server_drop(self, params, context):
+        """Drop the elevation of the session's bearer, ahead of its
+        TTL."""
+        meta = params.get('_meta')
+        token = meta.get(TRUST_TOKEN_KEY) if isinstance(meta, dict) \
+            else None
+        with self._bearers_lock:
+            bearer = self._bearers.get(str(token))
+            if bearer is not None:
+                bearer['elevated_until'] = 0.0
+        if context.elevated:
+            context.elevated = False
+            logger.notice('A trusted client dropped the elevation%s',
+                          _audit_tag(context))
+        return {'elevated': False}
+
     def _check_request_meta(self, params, request_id):
         """Enforce the per-request protocol fields.
 
@@ -1447,6 +1464,9 @@ class McpServer(object):
                     client_capabilities=context.client_capabilities,
                     client_info=context.client_info,
                     input_responses=params.get('inputResponses'),
+                    # The trust of the requesting moment rides with
+                    # the task
+                    trusted=context.trusted, elevated=context.elevated,
                     task=task)
             if tool.needs_context:
                 result = tool.handler(arguments, tool_context)

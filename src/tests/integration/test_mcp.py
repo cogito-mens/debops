@@ -3025,6 +3025,66 @@ def test_trust_flow_over_a_socket(run_debops, mcp_env, project_dir,
         server.wait(timeout=10)
 
 
+def test_repl_elevate_skips_the_gate(run_debops, mcp_env, project_dir,
+                                     tmp_path, debops_source_dir):
+    """The pipe REPL elevates with the passphrase file and the gated
+    check just runs."""
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+    playbooks = project_dir / "ansible" / "playbooks"
+    playbooks.mkdir(parents=True)
+    (playbooks / "custom.yml").write_text("""---
+- name: Test play
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Say hello
+      ansible.builtin.debug:
+        msg: hello from the repl
+""")
+
+    socket_path = str(tmp_path / "elevate.sock")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+            [debops_source_dir,
+             env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    env.update(mcp_env)
+    server = _serve_daemon(
+            [sys.executable, "-m", "debops", "mcp", "serve",
+             "--socket", socket_path], project_dir, socket_path, env)
+    try:
+        # The defaults gate the local playbook's check; the pipe
+        # declines the question
+        declined = subprocess.run(
+                [sys.executable, "-m", "debops", "mcp", "repl",
+                 "--socket", socket_path],
+                cwd=str(project_dir), env=env,
+                input="check custom\n", capture_output=True, text=True,
+                timeout=60)
+        assert declined.returncode == 1
+        assert "declined" in declined.stderr
+
+        # Elevated, the same check runs
+        elevated = subprocess.run(
+                [sys.executable, "-m", "debops", "mcp", "repl",
+                 "--socket", socket_path],
+                cwd=str(project_dir), env=env,
+                input="elevate\ncheck custom\nexit\n",
+                capture_output=True, text=True, timeout=120)
+        assert elevated.returncode == 0
+        assert "elevated" in elevated.stderr
+        assert "exit code: 0" in elevated.stdout
+    finally:
+        server.terminate()
+        server.wait(timeout=10)
+
+
 def test_repl_spawns_a_daemon_on_the_well_known_socket(
         run_debops, mcp_env, project_dir, tmp_path):
     """No daemon running: the pipe mode spawns one on the well-known

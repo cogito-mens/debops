@@ -86,6 +86,9 @@ class UnixClient(object):
         # protocol revision), once known
         self.server_version = None
         self.protocol_version = None
+        # The bearer token of an authenticated session, riding the
+        # '_meta' of every request while set
+        self.bearer = None
         self._handshaken = False
         self._connection = None
         self._reader = None
@@ -135,6 +138,9 @@ class UnixClient(object):
         request_params = dict(params or {})
         if not self.legacy:
             request_params['_meta'] = request_meta(self._capabilities)
+        if self.bearer is not None and not self.legacy:
+            request_params['_meta'][_server.TRUST_TOKEN_KEY] = \
+                self.bearer
         message = {'jsonrpc': '2.0', 'id': self._next_id,
                    'method': method, 'params': request_params}
         self._next_id += 1
@@ -174,6 +180,37 @@ class UnixClient(object):
                    'params': notify_params}
         self._connection.sendall(json.dumps(message).encode('utf-8')
                                  + b'\n')
+
+    def request_streaming(self, method, params=None):
+        """Send a request which answers with a notification stream,
+        closed by the completion; iterate it. Closing the connection
+        ends the stream server-side."""
+        self._connect()
+        request_params = dict(params or {})
+        if not self.legacy:
+            request_params['_meta'] = request_meta(self._capabilities)
+        if self.bearer is not None and not self.legacy:
+            request_params['_meta'][_server.TRUST_TOKEN_KEY] = \
+                self.bearer
+        request_id = self._next_id
+        self._next_id += 1
+        message = {'jsonrpc': '2.0', 'id': request_id,
+                   'method': method, 'params': request_params}
+        self._connection.sendall(json.dumps(message).encode('utf-8')
+                                 + b'\n')
+        while True:
+            data = rpc.read_message(self._reader)
+            if data is None:
+                raise EOFError('the server closed the connection')
+            message = json.loads(data)
+            if message.get('id') == request_id:
+                if 'error' in message:
+                    details = (message['error'].get('data', {}) or {})
+                    raise RuntimeError(details.get(
+                            'details') or message['error'].get(
+                                    'message', 'unknown error'))
+                return
+            yield message
 
     def close(self):
         if self._connection is not None:

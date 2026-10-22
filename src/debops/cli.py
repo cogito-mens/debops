@@ -995,13 +995,17 @@ class Interpreter(object):
             print('Error:', errmsg, file=sys.stderr)
             sys.exit(1)
         with client:
+            if not args.legacy:
+                repl_mod.bootstrap_trust(client, project)
             code = repl_mod.run(
                     client,
                     project_name=(project.name if project is not None
                                   else None),
                     view=(project.view if project is not None
                           else None),
-                    interactive=interactive)
+                    interactive=interactive,
+                    project_path=(project.path if project is not None
+                                  else None))
         sys.exit(code)
 
     def do_mcp_configure(self, args):
