@@ -18,6 +18,7 @@ from .mcp.skills import SkillLibrary, match_skill
 from .mcp.tools import (register_documentation_tools,
                         register_project_tools)
 from .mcp.tools.collections import BUNDLED_COLLECTIONS_ROOT
+from .mcp.tools.doc import account_ansible_doc
 from .mcp.tools.roles import COLLECTION_ROLES, project_role_paths
 from .mcp.tools.playbooks import COLLECTION_PLAYBOOKS
 from .mcp.role_skills import RoleSkillSource
@@ -449,6 +450,19 @@ class Interpreter(object):
             if shutil.which('ansible-galaxy') is None:
                 logger.warning('ansible-galaxy is not installed; the '
                                'collection tools will not answer')
+            # The ansible.doc tool resolves the account's own binary;
+            # the resolution is in the log for debugging
+            doc_binary = account_ansible_doc()
+            if doc_binary is None:
+                logger.warning('ansible-doc was not found; the '
+                               'ansible.doc tool will not answer')
+            else:
+                logger.notice('ansible-doc: %s', doc_binary)
+            if 'ANSIBLE_COLLECTIONS_PATH' not in os.environ:
+                # The tool widens the lookup past the index roots
+                logger.notice('ansible.doc serves the account\'s '
+                              'collection roots next to the bundled '
+                              'one')
         else:
             logger.notice('Serving project \'%s\' at %s, view \'%s\' '
                           '(pid %s)', project.name, project.path,

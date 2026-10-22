@@ -56,18 +56,21 @@ ACCOUNT_COLLECTION_ROOTS = ('~/.ansible/collections',
                             '/usr/share/ansible/collections')
 
 
-def _account_ansible_doc():
-    """The ansible-doc of the account's own environment.
+def account_ansible_doc():
+    """The ansible-doc of the account's own environment, or None.
 
     The user locations in preference order, then the inherited PATH;
-    the plain command name as the last resort, so the subprocess
-    reports it missing in its own words.
+    None when nothing is found, so the caller decides how to report
+    the absence.
     """
     for candidate in ACCOUNT_ANSIBLE_DOC:
         path = os.path.expanduser(candidate)
         if os.path.isfile(path) and os.access(path, os.X_OK):
+            logger.debug('Resolved ansible-doc: %s', path)
             return path
-    return shutil.which('ansible-doc') or 'ansible-doc'
+    found = shutil.which('ansible-doc')
+    logger.debug('Resolved ansible-doc: %s', found or '(not found)')
+    return found
 
 
 def _doc_environ(project, policy):
@@ -152,8 +155,10 @@ def tool_ansible_doc(project, policy, arguments, roles_paths=None):
     if project is None:
         # The documentation mode consults the account's own
         # ansible-doc: the harness which spawned the server may carry
-        # a PATH without the user installs
-        command = [_account_ansible_doc()]
+        # a PATH without the user installs. The plain name as the last
+        # resort, so the subprocess reports it missing in its own
+        # words
+        command = [account_ansible_doc() or 'ansible-doc']
     if list_mode:
         command.append('--list')
     if snippet:

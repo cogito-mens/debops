@@ -284,8 +284,9 @@ def test_docs_mode_consults_the_accounts_ansible_doc(
     bundled one."""
     monkeypatch.delenv("ANSIBLE_COLLECTIONS_PATH", raising=False)
     home = tmp_path / "home"
-    _ansible_doc_stub(home)
+    stub = _ansible_doc_stub(home)
     env = _account_env(mcp_env, debops_source_dir, home)
+    log_path = tmp_path / "server.log"
 
     request = json.dumps({
         "jsonrpc": "2.0", "id": 1,
@@ -293,7 +294,8 @@ def test_docs_mode_consults_the_accounts_ansible_doc(
         "params": {"_meta": REQUEST_META, "name": "ansible.doc",
                    "arguments": {"plugin": "ansible.builtin.service"}},
     }) + "\n"
-    result = run_debops("mcp", "serve", "--docs", cwd=str(project_dir),
+    result = run_debops("mcp", "serve", "--docs", "--log",
+                        str(log_path), cwd=str(project_dir),
                         env=env, input_text=request)
 
     assert result.returncode == 0
@@ -304,6 +306,11 @@ def test_docs_mode_consults_the_accounts_ansible_doc(
     assert text.startswith("stub says: ")
     assert str(home / ".ansible" / "collections") in text
     assert "/usr/share/ansible/collections" in text
+    # The resolution is in the log for debugging
+    log_content = log_path.read_text()
+    assert "ansible-doc: {}".format(stub) in log_content
+    assert "ansible.doc serves the account's collection roots" \
+        in log_content
 
 
 def test_docs_mode_relies_on_an_operator_chosen_path(
@@ -311,9 +318,10 @@ def test_docs_mode_relies_on_an_operator_chosen_path(
     """With ANSIBLE_COLLECTIONS_PATH defined the variable rules the
     lookup; the account roots are not added."""
     home = tmp_path / "home"
-    _ansible_doc_stub(home)
+    stub = _ansible_doc_stub(home)
     env = _account_env(mcp_env, debops_source_dir, home)
     env["ANSIBLE_COLLECTIONS_PATH"] = "/srv/operator/collections"
+    log_path = tmp_path / "server.log"
 
     request = json.dumps({
         "jsonrpc": "2.0", "id": 1,
@@ -321,13 +329,19 @@ def test_docs_mode_relies_on_an_operator_chosen_path(
         "params": {"_meta": REQUEST_META, "name": "ansible.doc",
                    "arguments": {"plugin": "ansible.builtin.service"}},
     }) + "\n"
-    result = run_debops("mcp", "serve", "--docs", cwd=str(project_dir),
+    result = run_debops("mcp", "serve", "--docs", "--log",
+                        str(log_path), cwd=str(project_dir),
                         env=env, input_text=request)
 
     assert result.returncode == 0
     (response,) = read_json_lines(result.stdout)
     text = response["result"]["content"][0]["text"]
     assert text.rstrip() == "stub says: /srv/operator/collections"
+    # The log names the binary; the account-roots widening stays out
+    # of it when the operator chose the path
+    log_content = log_path.read_text()
+    assert "ansible-doc: {}".format(stub) in log_content
+    assert "account's collection roots" not in log_content
 
 
 def test_serve_log_file(run_debops, mcp_env, project_dir):

@@ -222,7 +222,7 @@ class AnsibleDocTestCase(unittest.TestCase):
             fp.write('#!/bin/sh\n')
         os.chmod(binary, 0o755)
         with mock.patch.dict(os.environ, {'HOME': tmpdir}):
-            resolved = doc._account_ansible_doc()
+            resolved = doc.account_ansible_doc()
         self.assertEqual(resolved, binary)
 
     def test_docs_mode_falls_back_to_the_path(self):
@@ -231,19 +231,26 @@ class AnsibleDocTestCase(unittest.TestCase):
                                ('/nonexistent/ansible-doc',)):
             with mock.patch('debops.mcp.tools.doc.shutil.which',
                             return_value='/x/bin/ansible-doc'):
-                self.assertEqual(doc._account_ansible_doc(),
+                self.assertEqual(doc.account_ansible_doc(),
                                  '/x/bin/ansible-doc')
+            # Nothing anywhere: None, so the caller decides how to
+            # report the absence
             with mock.patch('debops.mcp.tools.doc.shutil.which',
                             return_value=None):
-                self.assertEqual(doc._account_ansible_doc(),
-                                 'ansible-doc')
+                self.assertIsNone(doc.account_ansible_doc())
 
     def test_docs_mode_runs_the_resolved_binary(self):
-        with mock.patch('debops.mcp.tools.doc._account_ansible_doc',
+        with mock.patch('debops.mcp.tools.doc.account_ansible_doc',
                         return_value='/home/x/.local/bin/ansible-doc'):
             _result, run = self.run_doc({'plugin': 'x'})
         self.assertEqual(run.call_args[0][0][0],
                          '/home/x/.local/bin/ansible-doc')
+
+    def test_docs_mode_falls_back_to_the_plain_name(self):
+        with mock.patch('debops.mcp.tools.doc.account_ansible_doc',
+                        return_value=None):
+            _result, run = self.run_doc({'plugin': 'x'})
+        self.assertEqual(run.call_args[0][0][0], 'ansible-doc')
 
     def test_a_restricted_policy_scopes_the_collections(self):
         policy = type('Policy', (), {'bundled_content': True,
