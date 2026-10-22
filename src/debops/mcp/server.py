@@ -779,7 +779,9 @@ class McpServer(object):
                 'targets with playbook.list and playbook.info, and the '
                 'visible collections with collection.roles and '
                 'collection.playbooks; ANSIBLE_COLLECTIONS_PATH decides '
-                'which external collections are visible. Reusable '
+                'which external collections are visible, and without '
+                'it the account\'s own collections are served next to '
+                'the bundled ones. Reusable '
                 'DebOps workflows are available as skill:// resources. '
                 + batching)
         if self.transport == 'unix':

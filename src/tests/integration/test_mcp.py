@@ -249,6 +249,87 @@ def test_serve_docs_rejects_view(run_debops, mcp_env, project_dir):
     assert "--docs" in result.stderr
 
 
+def _ansible_doc_stub(home):
+    """A stub ansible-doc in the account's user bin, which reports the
+    environment it was called with."""
+    user_bin = home / ".local" / "bin"
+    user_bin.mkdir(parents=True)
+    stub = user_bin / "ansible-doc"
+    stub.write_text("#!/bin/sh\n"
+                    "printf '%s\\n' \"stub says: "
+                    "$ANSIBLE_COLLECTIONS_PATH\"\n")
+    stub.chmod(0o755)
+    return stub
+
+
+def _account_env(mcp_env, debops_source_dir, home):
+    """A server environment with a staged HOME.
+
+    The fake home hides the account's user site-packages from the
+    debops subprocess (its dependencies may live there), so the real
+    one rides the PYTHONPATH explicitly.
+    """
+    import site
+    return dict(mcp_env, HOME=str(home),
+                PYTHONPATH=os.pathsep.join(
+                        [debops_source_dir, site.getusersitepackages()]))
+
+
+def test_docs_mode_consults_the_accounts_ansible_doc(
+        run_debops, mcp_env, project_dir, tmp_path, monkeypatch,
+        debops_source_dir):
+    """Without an operator-chosen ANSIBLE_COLLECTIONS_PATH the tool
+    runs the account's own ansible-doc (a pipx user install lives at
+    ~/.local/bin), serving the account's collection roots next to the
+    bundled one."""
+    monkeypatch.delenv("ANSIBLE_COLLECTIONS_PATH", raising=False)
+    home = tmp_path / "home"
+    _ansible_doc_stub(home)
+    env = _account_env(mcp_env, debops_source_dir, home)
+
+    request = json.dumps({
+        "jsonrpc": "2.0", "id": 1,
+        "method": "tools/call",
+        "params": {"_meta": REQUEST_META, "name": "ansible.doc",
+                   "arguments": {"plugin": "ansible.builtin.service"}},
+    }) + "\n"
+    result = run_debops("mcp", "serve", "--docs", cwd=str(project_dir),
+                        env=env, input_text=request)
+
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    text = response["result"]["content"][0]["text"]
+    assert response["result"].get("isError", False) is False
+    # The stub ran, not any system ansible-doc
+    assert text.startswith("stub says: ")
+    assert str(home / ".ansible" / "collections") in text
+    assert "/usr/share/ansible/collections" in text
+
+
+def test_docs_mode_relies_on_an_operator_chosen_path(
+        run_debops, mcp_env, project_dir, tmp_path, debops_source_dir):
+    """With ANSIBLE_COLLECTIONS_PATH defined the variable rules the
+    lookup; the account roots are not added."""
+    home = tmp_path / "home"
+    _ansible_doc_stub(home)
+    env = _account_env(mcp_env, debops_source_dir, home)
+    env["ANSIBLE_COLLECTIONS_PATH"] = "/srv/operator/collections"
+
+    request = json.dumps({
+        "jsonrpc": "2.0", "id": 1,
+        "method": "tools/call",
+        "params": {"_meta": REQUEST_META, "name": "ansible.doc",
+                   "arguments": {"plugin": "ansible.builtin.service"}},
+    }) + "\n"
+    result = run_debops("mcp", "serve", "--docs", cwd=str(project_dir),
+                        env=env, input_text=request)
+
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    text = response["result"]["content"][0]["text"]
+    assert text.rstrip() == "stub says: /srv/operator/collections"
+
+
 def test_serve_log_file(run_debops, mcp_env, project_dir):
     # A harness swallows the server's stderr; the audit log is the file
     log_path = project_dir.parent / "server.log"

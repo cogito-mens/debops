@@ -5,7 +5,9 @@
 """Tests for the ansible.doc tool."""
 
 import os
+import shutil
 import subprocess
+import tempfile
 import unittest
 
 from unittest import mock
@@ -37,8 +39,10 @@ class AnsibleDocTestCase(unittest.TestCase):
         self.assertFalse(result.get('isError', False))
         self.assertIn('Manage services.', result['content'][0]['text'])
         command = run.call_args[0][0]
-        self.assertEqual(command[:2], ['ansible-doc',
-                                       'ansible.builtin.service'])
+        # The documentation mode resolves the account's own
+        # ansible-doc to an absolute path when one exists
+        self.assertTrue(command[0].endswith('ansible-doc'), command[0])
+        self.assertEqual(command[1], 'ansible.builtin.service')
         self.assertNotIn('--json', command)
 
     def test_plugin_type_and_json(self):
@@ -178,6 +182,68 @@ class AnsibleDocTestCase(unittest.TestCase):
         self.assertTrue(os.path.isfile(env['ANSIBLE_CONFIG']))
         self.assertEqual(env['ANSIBLE_HOME'],
                          os.path.dirname(env['ANSIBLE_CONFIG']))
+
+    def test_docs_mode_serves_the_account_collections_by_default(self):
+        # No operator-chosen collections path: the account's default
+        # roots are served next to the bundled collection, so the
+        # tool answers for the content the account actually has
+        without = {key: value for key, value in os.environ.items()
+                   if key != 'ANSIBLE_COLLECTIONS_PATH'}
+        with mock.patch.dict(os.environ, without, clear=True):
+            _result, run = self.run_doc({'plugin': 'x'})
+        env = run.call_args[1]['env']
+        roots = env['ANSIBLE_COLLECTIONS_PATH'].split(os.pathsep)
+        self.assertEqual(roots[0], BUNDLED_COLLECTIONS_ROOT)
+        self.assertIn(os.path.expanduser('~/.ansible/collections'),
+                      roots)
+        self.assertIn('/usr/share/ansible/collections', roots)
+
+    def test_docs_mode_inherits_an_operator_chosen_path(self):
+        # The variable, when defined, rules the lookup alone
+        with mock.patch.dict(
+                os.environ,
+                {'ANSIBLE_COLLECTIONS_PATH': '/srv/collections'},
+                clear=True):
+            _result, run = self.run_doc({'plugin': 'x'})
+        env = run.call_args[1]['env']
+        self.assertEqual(env['ANSIBLE_COLLECTIONS_PATH'],
+                         '/srv/collections')
+
+    def test_docs_mode_prefers_the_accounts_ansible_doc(self):
+        # The pipx or pip --user install wins; the harness which
+        # spawned the server may carry a PATH without it
+        from debops.mcp.tools import doc
+        tmpdir = tempfile.mkdtemp(prefix='debops-mcp-doc-')
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        user_bin = os.path.join(tmpdir, '.local', 'bin')
+        os.makedirs(user_bin)
+        binary = os.path.join(user_bin, 'ansible-doc')
+        with open(binary, 'w') as fp:
+            fp.write('#!/bin/sh\n')
+        os.chmod(binary, 0o755)
+        with mock.patch.dict(os.environ, {'HOME': tmpdir}):
+            resolved = doc._account_ansible_doc()
+        self.assertEqual(resolved, binary)
+
+    def test_docs_mode_falls_back_to_the_path(self):
+        from debops.mcp.tools import doc
+        with mock.patch.object(doc, 'ACCOUNT_ANSIBLE_DOC',
+                               ('/nonexistent/ansible-doc',)):
+            with mock.patch('debops.mcp.tools.doc.shutil.which',
+                            return_value='/x/bin/ansible-doc'):
+                self.assertEqual(doc._account_ansible_doc(),
+                                 '/x/bin/ansible-doc')
+            with mock.patch('debops.mcp.tools.doc.shutil.which',
+                            return_value=None):
+                self.assertEqual(doc._account_ansible_doc(),
+                                 'ansible-doc')
+
+    def test_docs_mode_runs_the_resolved_binary(self):
+        with mock.patch('debops.mcp.tools.doc._account_ansible_doc',
+                        return_value='/home/x/.local/bin/ansible-doc'):
+            _result, run = self.run_doc({'plugin': 'x'})
+        self.assertEqual(run.call_args[0][0][0],
+                         '/home/x/.local/bin/ansible-doc')
 
     def test_a_restricted_policy_scopes_the_collections(self):
         policy = type('Policy', (), {'bundled_content': True,

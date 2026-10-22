@@ -428,13 +428,15 @@ class Interpreter(object):
             logger.notice('Serving DebOps documentation (no project '
                           'directory, pid %s)', os.getpid())
             # The provider's galaxy subprocess and its server-side
-            # filter must agree on the collections roots
+            # filter agree on the collections roots through the
+            # fallback in effective_collections_path(); the environment
+            # stays unpinned, so the ansible.doc tool can tell an
+            # operator-chosen collections path apart from none
             if 'ANSIBLE_COLLECTIONS_PATH' in os.environ:
                 effective = os.environ['ANSIBLE_COLLECTIONS_PATH']
                 origin = 'from the environment'
             else:
                 effective = BUNDLED_COLLECTIONS_ROOT
-                os.environ['ANSIBLE_COLLECTIONS_PATH'] = effective
                 origin = 'the bundled default'
             roots = [entry for entry in effective.split(os.pathsep)
                      if entry]
