@@ -3085,6 +3085,41 @@ def test_repl_elevate_skips_the_gate(run_debops, mcp_env, project_dir,
         server.wait(timeout=10)
 
 
+def test_repl_watch_without_a_trust_root(run_debops, mcp_env,
+                                         project_dir, tmp_path,
+                                         debops_source_dir):
+    """No trust passphrase configured: 'watch' refuses cleanly
+    instead of asking for one that cannot work."""
+    socket_path = str(tmp_path / "notrust.sock")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+            [debops_source_dir,
+             env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    env.update(mcp_env)
+    server = _serve_daemon(
+            [sys.executable, "-m", "debops", "mcp", "serve",
+             "--socket", socket_path], project_dir, socket_path, env)
+    try:
+        # The daemon generated the trust root at startup; deleting it
+        # models a daemon which never did
+        trust_file = (project_dir / ".debops" / "mcp" / "secret"
+                      / "trust")
+        assert trust_file.exists()
+        trust_file.unlink()
+        result = subprocess.run(
+                [sys.executable, "-m", "debops", "mcp", "repl",
+                 "--socket", socket_path],
+                cwd=str(project_dir), env=env,
+                input="watch\n", capture_output=True, text=True,
+                timeout=60)
+        assert result.returncode == 1
+        assert "no trust passphrase" in result.stderr
+        assert "Traceback" not in result.stderr
+    finally:
+        server.terminate()
+        server.wait(timeout=10)
+
+
 def test_repl_spawns_a_daemon_on_the_well_known_socket(
         run_debops, mcp_env, project_dir, tmp_path):
     """No daemon running: the pipe mode spawns one on the well-known

@@ -371,10 +371,11 @@ class TrustVerbsTestCase(unittest.TestCase):
         client.legacy = False
         client.bearer = None
         session, _out, _err = make_repl(client, interactive=False)
-        # No passphrase file: a pipe cannot ask
+        session.project_path = self.tmpdir
+        # No passphrase file: a pipe cannot ask — the refusal is terse
         with self.assertRaises(ReplError) as context:
             session.execute('watch')
-        self.assertIn('trusted', str(context.exception))
+        self.assertEqual(str(context.exception), 'no trust passphrase')
 
     def test_watch_streams_the_activity(self):
         client = FakeClient()
@@ -409,6 +410,88 @@ class TrustVerbsTestCase(unittest.TestCase):
         project = type('Project', (), {'path': self.tmpdir})()
         self.assertFalse(repl.bootstrap_trust(client, project))
         self.assertEqual(client.calls, [])
+
+    def test_bootstrap_trust_without_a_file_is_silent(self):
+        client = FakeClient()
+        client.bearer = None
+        project = type('Project', (), {'path': self.tmpdir})()
+        self.assertFalse(repl.bootstrap_trust(client, project))
+        self.assertEqual(client.calls, [])
+
+    def test_a_missing_trust_root_is_a_clean_refusal(self):
+        # No file, nothing to check an answer against: the refusal is
+        # terse, not a prompt which cannot work
+        client = FakeClient()
+        client.legacy = False
+        client.bearer = None
+        session, _out, _err = make_repl(client, interactive=True)
+        session.project_path = self.tmpdir
+        with self.assertRaises(ReplError) as context:
+            session.execute('elevate')
+        self.assertEqual(str(context.exception), 'no trust passphrase')
+
+    def test_an_unreadable_trust_file_prompts(self):
+        self._write_passphrase()
+        path = os.path.join(
+                self.tmpdir,
+                __import__('debops.mcp.trust', fromlist=['x'])
+                .TRUST_PATH)
+        os.chmod(path, 0o000)
+        self.addCleanup(os.chmod, path, 0o600)
+        client = FakeClient()
+        client.legacy = False
+        client.bearer = None
+        session, _out, _err = make_repl(client, interactive=True)
+        session.project_path = self.tmpdir
+        client.queue('server/authenticate',
+                     {'token': 'the-token', 'tokenType': 'bearer'})
+        client.queue('server/elevate', {'elevated': True,
+                                        'expiresIn': 900})
+        with mock.patch('debops.mcp.repl.getpass.getpass',
+                        return_value='correct horse battery staple'):
+            session.execute('elevate')
+        self.assertTrue(session.elevated)
+
+    def test_ctrl_c_at_the_passphrase_prompt_survives_the_session(
+            self):
+        self._write_passphrase()
+        path = os.path.join(
+                self.tmpdir,
+                __import__('debops.mcp.trust', fromlist=['x'])
+                .TRUST_PATH)
+        os.chmod(path, 0o000)
+        self.addCleanup(os.chmod, path, 0o600)
+        client = FakeClient()
+        client.legacy = False
+        client.bearer = None
+        client.close = lambda: None
+        session, _out, err = make_repl(client, interactive=True)
+        session.project_path = self.tmpdir
+        with mock.patch('builtins.input',
+                        side_effect=['elevate', EOFError()]), \
+                mock.patch('debops.mcp.repl.getpass.getpass',
+                           side_effect=KeyboardInterrupt):
+            code = repl.run_interactive_plain(session)
+        # The interrupt became a line on the error channel, the
+        # session went on to a clean exit
+        self.assertEqual(code, 0)
+        self.assertIn('cancelled', err.getvalue())
+
+    def test_ctrl_c_during_a_call_closes_the_connection(self):
+        # A half-read answer must not wait for the next command
+        client = FakeClient()
+        client.legacy = False
+        client.bearer = None
+        closes = []
+        client.close = lambda: closes.append(True)
+        client.request = mock.Mock(side_effect=KeyboardInterrupt)
+        session, _out, err = make_repl(client, interactive=True)
+        with mock.patch('builtins.input',
+                        side_effect=['status', EOFError()]):
+            code = repl.run_interactive_plain(session)
+        self.assertEqual(code, 0)
+        self.assertIn('^C', err.getvalue())
+        self.assertEqual(closes, [True])
 
 
 class StopDaemonTestCase(unittest.TestCase):

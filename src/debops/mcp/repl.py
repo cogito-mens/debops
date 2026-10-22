@@ -64,7 +64,7 @@ def ask(message, default=False):
     suffix = ' [Y/n] ' if default else ' [y/N] '
     try:
         reply = input(message + suffix)
-    except EOFError:
+    except (EOFError, KeyboardInterrupt):
         return default
     reply = reply.strip().lower()
     if not reply:
@@ -459,10 +459,7 @@ class Repl(object):
         if self.client.legacy:
             raise ReplError('the 2025-era protocol has no '
                             'subscription streams')
-        if not self._ensure_trusted():
-            raise ReplError("watch needs a trusted session: the "
-                            "activity stream is the operator's view "
-                            'of the other clients')
+        self._ensure_trusted()
         print('watching the server activity (Ctrl-C ends it)',
               file=self._err)
         try:
@@ -528,41 +525,40 @@ class Repl(object):
 
     def _passphrase(self):
         """The trust passphrase: the file when the account reads it,
-        a prompt otherwise."""
+        a prompt when it exists but is unreadable (the cross-account
+        case), a clean refusal when it is absent — a daemon without
+        the file has nothing to check an answer against."""
         if self.project_path is not None:
             try:
                 with open(os.path.join(self.project_path,
                                        TRUST_PATH)) as fp:
                     return fp.read().strip()
+            except PermissionError:
+                pass  # it exists; ask
             except OSError:
-                pass
+                raise ReplError('no trust passphrase')
         if not self.interactive:
             raise ReplError('the trust passphrase of the project is '
                             'not readable here; a pipe cannot ask '
                             'for it')
         try:
             return getpass.getpass('the trust passphrase: ')
-        except EOFError:
+        except (EOFError, KeyboardInterrupt):
             raise ReplError('cancelled')
 
     def _ensure_trusted(self):
         """Authenticate the session when the passphrase is reachable;
-        True when trusted."""
+        raises the reason when not."""
         if self.client.bearer is not None:
-            return True
+            return
         if self.client.legacy:
-            return False
-        try:
-            phrase = self._passphrase()
-        except ReplError:
-            return False
-        try:
-            answer = self._request('server/authenticate',
-                                   {'passphrase': phrase})
-        except ReplError:
-            return False
+            raise ReplError('trust needs the {} revision; this daemon '
+                            'speaks the 2025-era protocol'
+                            .format(_server.PROTOCOL_VERSION))
+        phrase = self._passphrase()
+        answer = self._request('server/authenticate',
+                               {'passphrase': phrase})
         self.client.bearer = answer['token']
-        return True
 
     def cmd_logs(self, args):
         if args:
@@ -896,6 +892,9 @@ def run_pipe(repl):
             repl.had_error = True
         except EOFError:
             break
+        except KeyboardInterrupt:
+            # An interrupted script dies like any other tool
+            return 130
     return 1 if repl.had_error else 0
 
 
@@ -935,8 +934,14 @@ def run_interactive(repl):
             continue
         except EOFError:
             break
-        if _execute_line(repl, line):
-            break
+        try:
+            if _execute_line(repl, line):
+                break
+        except KeyboardInterrupt:
+            # A command died on the interrupt; the session survives.
+            # The connection may hold a half-read answer — drop it
+            print('^C', file=repl._err)
+            repl.client.close()
     return 0
 
 
@@ -980,7 +985,15 @@ def run_interactive_plain(repl):
                 continue
             except EOFError:
                 break
-            done = _execute_line(repl, line)
+            try:
+                done = _execute_line(repl, line)
+            except KeyboardInterrupt:
+                # The command died on the interrupt; the session
+                # survives. The connection may hold a half-read
+                # answer — drop it
+                print('^C', file=repl._err)
+                repl.client.close()
+                continue
             if done:
                 break
     finally:

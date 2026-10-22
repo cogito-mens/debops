@@ -912,9 +912,7 @@ class McpServer(object):
             raise rpc.JsonRpcError(
                     rpc.INVALID_REQUEST, 'Invalid Request',
                     data={'details': 'this daemon has no trust '
-                          'passphrase (it predates the trust support, '
-                          'or the file was removed); a restart '
-                          'generates one'},
+                          'passphrase; a restart generates one'},
                     request_id=context.request_id)
         if not isinstance(presented, str) \
                 or not trust.passphrase_matches(presented, stored):
