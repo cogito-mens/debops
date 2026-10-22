@@ -332,6 +332,96 @@ class ExecuteTestCase(unittest.TestCase):
         self.assertEqual(schema['properties']['debug']['type'],
                          'boolean')
 
+    def test_user_refused_by_default(self):
+        # No override table, no override: the refusal names the policy
+        result, runner, _i, _h, _p = self.call_execute(
+                arguments={'user': 'root'})
+        self.assertTrue(result['isError'])
+        self.assertIn('execute_user_override',
+                      result['content'][0]['text'])
+        self.assertIsNone(runner.call_args)
+
+    def test_user_override_lands_in_the_command(self):
+        self.policy.execute_user_override = {'bootstrap*': ['root']}
+        result, runner, _i, _h, _p = self.call_execute(
+                playbook='bootstrap', arguments={'user': 'root'})
+        self.assertFalse(result['isError'])
+        args = runner.call_args[1]['ansible_args']
+        self.assertEqual(args[args.index('--user') + 1], 'root')
+        # The answer carries the override: the header for the human,
+        # the structured summary for the harness
+        text = result['content'][0]['text']
+        self.assertIn('user: root (policy override)', text)
+        self.assertEqual(result['structuredContent']['user'], 'root')
+
+    def test_user_override_refused_for_an_unmatched_playbook(self):
+        self.policy.execute_user_override = {'bootstrap*': ['root']}
+        result, runner, _i, _h, _p = self.call_execute(
+                playbook='site', arguments={'user': 'root'})
+        self.assertTrue(result['isError'])
+        self.assertIn("'site'", result['content'][0]['text'])
+        self.assertIn('execute_user_override',
+                      result['content'][0]['text'])
+        self.assertIsNone(runner.call_args)
+
+    def test_user_override_refused_for_an_unlisted_username(self):
+        self.policy.execute_user_override = {'bootstrap*': ['root']}
+        result, runner, _i, _h, _p = self.call_execute(
+                playbook='bootstrap', arguments={'user': 'admin'})
+        self.assertTrue(result['isError'])
+        self.assertIn("'admin'", result['content'][0]['text'])
+        self.assertIsNone(runner.call_args)
+
+    def test_user_override_refused_for_a_bad_username(self):
+        self.policy.execute_user_override = {'bootstrap*': ['root']}
+        for bad in ('root;id', 'root x', '-root', '0root', ''):
+            result, runner, _i, _h, _p = self.call_execute(
+                    playbook='bootstrap', arguments={'user': bad})
+            self.assertTrue(result['isError'], repr(bad))
+            self.assertIn('invalid "user" value',
+                          result['content'][0]['text'], repr(bad))
+            self.assertIsNone(runner.call_args, repr(bad))
+
+    def test_user_override_needs_every_target_to_match(self):
+        # A multi-target run: one playbook outside the table refuses
+        # the whole override
+        self.policy.execute_user_override = {'bootstrap*': ['root'],
+                                             'scope/python/*': ['root']}
+        result, runner, _i, _h, _p = self.call_execute(
+                playbook=['bootstrap', 'site'],
+                arguments={'user': 'root'})
+        self.assertTrue(result['isError'])
+        self.assertIn("'site'", result['content'][0]['text'])
+        self.assertIsNone(runner.call_args)
+
+    def test_user_override_per_playbook_user_lists(self):
+        self.policy.execute_user_override = {'bootstrap*': ['root'],
+                                             'scope/python/*': ['root',
+                                                                'admin']}
+        result, runner, _i, _h, _p = self.call_execute(
+                playbook=['bootstrap', 'scope/python/raw'],
+                arguments={'user': 'root'})
+        self.assertFalse(result['isError'])
+
+    def test_user_override_matches_without_the_yml_extension(self):
+        # The playbook resolution accepts both spellings of a target;
+        # the policy matches the name without the extension
+        self.policy.execute_user_override = {'scope/python/raw':
+                                             ['root']}
+        for target in ('scope/python/raw', 'scope/python/raw.yml'):
+            result, runner, _i, _h, _p = self.call_execute(
+                    playbook=target, arguments={'user': 'root'})
+            self.assertFalse(result['isError'], target)
+
+    def test_schema_hides_user_until_the_policy_allows_it(self):
+        from debops.mcp.tools import execution_schema
+        schema = execution_schema(self.policy)
+        self.assertNotIn('user', schema['properties'])
+        self.policy.execute_user_override = {'bootstrap*': ['root']}
+        schema = execution_schema(self.policy)
+        self.assertEqual(schema['properties']['user']['type'],
+                         'string')
+
     def test_schema_lists_the_verification_options_by_default(self):
         from debops.mcp.tools import execution_schema
         schema = execution_schema(self.policy)

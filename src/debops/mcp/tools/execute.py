@@ -295,6 +295,50 @@ def _playbook_targets(arguments):
     return targets
 
 
+# A UNIX login name; the override argument is validated against it
+_USER_RE = re.compile(r'[a-z_][a-z0-9_-]*')
+
+
+def _playbook_match_name(target):
+    """The target as the override policy keys it: without the '.yml'
+    extension (the playbook resolution accepts both forms)."""
+    for suffix in ('.yml', '.yaml'):
+        if target.endswith(suffix):
+            return target[:-len(suffix)]
+    return target
+
+
+def _check_user_override(policy, targets, user):
+    """Validate the connection user override against the policy.
+
+    Returns an error text, or None when the override is allowed: the
+    username must be a login name, every playbook target must match a
+    glob in the policy's execute_user_override table, and the username
+    must be in that glob's list. The targets are playbook names (the
+    path forms are refused upstream), so the policy can only ever name
+    the known playbook directories — the collection and the
+    project/view playbooks.
+    """
+    if not isinstance(user, str) or not _USER_RE.fullmatch(user):
+        return 'invalid "user" value: {!r}'.format(user)
+    for target in targets:
+        match_name = _playbook_match_name(target)
+        allowed = None
+        for pattern, users in policy.execute_user_override.items():
+            if fnmatch.fnmatch(match_name, pattern):
+                allowed = users
+                break
+        if allowed is None:
+            return ('the "user" option is not allowed for {!r} by the '
+                    'project policy (project.mcp.execute_user_override)'
+                    .format(target))
+        if user not in allowed:
+            return ('the user {!r} is not allowed for {!r} by the '
+                    'project policy (project.mcp.execute_user_override)'
+                    .format(user, target))
+    return None
+
+
 def _build_ansible_args(arguments, check, allowed_options=EXECUTE_OPTIONS,
                         diff=False, debug=False):
     """Build the ansible-playbook arguments from the tool arguments.
@@ -685,6 +729,16 @@ def _execute_playbook(project, policy, arguments, context, check,
                             'debug run prints task arguments — secrets '
                             'included — into the answer')
 
+    # The bootstrap escape hatch: a fresh host may need a different
+    # connection user, before the managed account exists. The policy
+    # names the playbooks and the usernames; passwords stay out of
+    # this entirely
+    user = arguments.get('user')
+    if user is not None:
+        refused = _check_user_override(policy, targets, user)
+        if refused is not None:
+            return error_result(refused)
+
     # A run can create entire directory trees in the project (the
     # 'secret' role's storage, resources/, ...). No declared paths:
     # the exit commit records what became dirty during the run, and an
@@ -698,6 +752,11 @@ def _execute_playbook(project, policy, arguments, context, check,
                                        debug=debug)
         except ValueError as errmsg:
             return error_result(str(errmsg))
+        if user is not None:
+            # The run's default connection user: a host's own
+            # ansible_user in the inventory still takes precedence,
+            # and without an override the run connects as this account
+            args.extend(['--user', user])
 
         # The runner is command-line machinery: some of its error paths
         # print to stdout and call sys.exit(). Both would damage a server
@@ -897,6 +956,8 @@ def _execute_playbook(project, policy, arguments, context, check,
     header = '# debops {} {}\n\nexecution: {}\nexit code: {}\nhosts: {}\n'.format(
             mode, ' '.join(targets), execution_id, returncode,
             ', '.join(resolved_hosts) if resolved_hosts else '(none)')
+    if user is not None:
+        header += 'user: {} (policy override)\n'.format(user)
     if log_path is not None:
         # The log outlives the server; it is where the run is read
         header += 'log: {}\n'.format(log_path)
@@ -921,6 +982,8 @@ def _execute_playbook(project, policy, arguments, context, check,
     summary = {'mode': mode, 'playbooks': targets,
                'hosts': resolved_hosts, 'exitCode': returncode,
                'status': status, 'executionId': execution_id}
+    if user is not None:
+        summary['user'] = user
     if log_path is not None:
         summary['log'] = log_path
     if excerpt is not None:

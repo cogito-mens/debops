@@ -57,6 +57,19 @@ execute_diff = false
 # the debug verbosity; even -v shows them). Off by default.
 #execute_debug = false
 
+# The bootstrap escape hatch: a fresh host may need a different
+# connection user for the first bootstrap, before the managed account
+# and its SSH key exist. Each key is a glob matched against the
+# playbook target — the name without the '.yml' extension, globs like
+# 'bootstrap*' work — and the value is the allowed username or list
+# of them. The override is the run's default connection user, layered
+# on top of the inventory: a host's own ansible_user still takes
+# precedence, and with no override the run connects as this UNIX
+# account. Passwords are never handled: a host without a key is the
+# operator's manual step (ssh-copy-id), the agent learns to wait for
+# it.
+#execute_user_override = { "bootstrap*" = "root", "scope/python/raw" = "root" }
+
 # The run logs of the executions live in the user's cache directory
 # ($XDG_CACHE_HOME/debops/mcp/runs/), one directory per project view;
 # a diff or a debug run renders secrets into them, and the files are

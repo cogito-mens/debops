@@ -780,6 +780,74 @@ def test_check_tool_runs_a_playbook_in_check_mode(run_debops, mcp_env,
     assert "hello from mcp" in text
 
 
+def test_check_with_a_user_override(run_debops, mcp_env, project_dir):
+    """The bootstrap escape hatch: the policy names the playbooks and
+    the usernames; the local connection ignores the user, so the
+    plumbing is what this proves."""
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+    confd = project_dir / ".debops" / "conf.d"
+    confd.mkdir(parents=True, exist_ok=True)
+    (confd / "mcp-test.toml").write_text(
+            "[project.mcp]\n"
+            "confirm_required = false\n"
+            "execute_user_override = { \"bootstrap*\" = \"root\" }\n")
+
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+    playbooks = project_dir / "ansible" / "playbooks"
+    playbooks.mkdir(parents=True)
+    (playbooks / "bootstrap-test.yml").write_text("""---
+- name: Test play
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Say hello
+      ansible.builtin.debug:
+        msg: hello from mcp
+""")
+    (playbooks / "unrelated.yml").write_text(
+            (playbooks / "bootstrap-test.yml").read_text())
+
+    requests = "".join(json.dumps(request) + "\n" for request in (
+        {"jsonrpc": "2.0", "id": 1,
+         "method": "tools/call",
+         "params": {"_meta": REQUEST_META, "name": "check",
+                    "arguments": {"playbook": "bootstrap-test",
+                                  "user": "root"}}},
+        # A playbook outside the table refuses the override
+        {"jsonrpc": "2.0", "id": 2,
+         "method": "tools/call",
+         "params": {"_meta": REQUEST_META, "name": "check",
+                    "arguments": {"playbook": "unrelated",
+                                  "user": "root"}}},
+    ))
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=requests)
+
+    assert result.returncode == 0
+    # The requests run concurrently: the refusal answers at once, the
+    # check run when the playbook finishes — match by request id
+    by_id = {}
+    for response in read_json_lines(result.stdout):
+        by_id[response.get('id')] = response
+
+    allowed = by_id[1]["result"]
+    assert allowed["isError"] is False
+    text = allowed["content"][0]["text"]
+    assert "exit code: 0" in text
+    assert "user: root (policy override)" in text
+    assert allowed["structuredContent"]["user"] == "root"
+
+    refused = by_id[2]["result"]
+    assert refused["isError"] is True
+    assert "execute_user_override" in refused["content"][0]["text"]
+
+
 def test_detached_run_survives_the_death_of_the_server(
         run_debops, mcp_env, project_dir, tmp_path, debops_source_dir):
     """The harness case: the client (or its session) dies mid-run.

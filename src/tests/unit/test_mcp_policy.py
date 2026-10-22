@@ -188,6 +188,20 @@ class McpConfigTemplateTestCase(unittest.TestCase):
         self.assertEqual(values['local_playbooks'],
                          policy.local_playbooks)
 
+    def test_the_user_override_example_parses(self):
+        # The shipped example is a comment; TOML inline tables are
+        # single-line, so an uncomment which keeps the line must parse
+        import toml
+        from debops.projectdir import _read_config_template
+        example = None
+        for line in _read_config_template('mcp.toml').splitlines():
+            if line.startswith('#execute_user_override'):
+                example = line[1:]
+        self.assertIsNotNone(example)
+        parsed = toml.loads(example)['execute_user_override']
+        self.assertEqual(parsed['bootstrap*'], 'root')
+        self.assertIn('scope/python/raw', parsed)
+
 
 class RunLogRetentionTestCase(unittest.TestCase):
     """The run log retention knobs of the policy."""
@@ -267,6 +281,56 @@ class ExecuteOptionsTestCase(unittest.TestCase):
                                     ['limit', '--background']}}})
         policy = McpPolicy(project)
         self.assertEqual(policy.execute_options, ['limit'])
+
+
+class UserOverridePolicyTestCase(unittest.TestCase):
+    """The connection user override table: off by default, the string
+    form normalizes to a list."""
+
+    def _policy(self, override):
+        return McpPolicy(FakeProject('/srv/projects/example', raw_config={
+                'project': {'mcp': {'execute_user_override': override}}}))
+
+    def test_no_override_by_default(self):
+        policy = McpPolicy(FakeProject('/srv/projects/example'))
+        self.assertEqual(policy.execute_user_override, {})
+
+    def test_a_username_string_becomes_a_list(self):
+        policy = self._policy({'bootstrap*': 'root'})
+        self.assertEqual(policy.execute_user_override,
+                         {'bootstrap*': ['root']})
+
+    def test_a_list_of_usernames_is_kept(self):
+        policy = self._policy({'scope/python/*': ['root', 'admin']})
+        self.assertEqual(policy.execute_user_override,
+                         {'scope/python/*': ['root', 'admin']})
+
+    def test_a_non_mapping_is_ignored(self):
+        policy = self._policy(['bootstrap*'])
+        self.assertEqual(policy.execute_user_override, {})
+
+    def test_a_bad_value_drops_only_its_entry(self):
+        policy = self._policy({'bootstrap*': 'root',
+                               'broken': {'not': 'a username'},
+                               'empty': []})
+        self.assertEqual(policy.execute_user_override,
+                         {'bootstrap*': ['root']})
+
+    def test_a_non_string_key_is_dropped(self):
+        policy = self._policy({42: 'root', 'bootstrap*': 'root'})
+        self.assertEqual(policy.execute_user_override,
+                         {'bootstrap*': ['root']})
+
+    def test_a_key_with_the_extension_is_kept_but_warned(self):
+        # The targets match without the '.yml' extension; a key which
+        # carries one is likely dead configuration
+        with self.assertLogs('debops.mcp.policy',
+                             level='WARNING') as logged:
+            policy = self._policy({'bootstrap.yml': 'root'})
+        self.assertEqual(policy.execute_user_override,
+                         {'bootstrap.yml': ['root']})
+        self.assertIn('without the extension',
+                      ''.join(logged.output))
 
 
 class EnvFileDenyTestCase(unittest.TestCase):

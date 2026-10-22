@@ -107,6 +107,19 @@ def execution_schema(policy):
                            '— secrets included — into the answer; '
                            'the project enables it with '
                            'project.mcp.execute_debug'}
+    if policy is None or policy.execute_user_override:
+        properties['user'] = {
+            'type': 'string',
+            'description': 'Connect as this user for the run instead '
+                           'of the default (the bootstrap case: a '
+                           'fresh host has no managed account yet). '
+                           'Honored only for the playbooks and '
+                           'usernames the project policy names in '
+                           'project.mcp.execute_user_override; the '
+                           'inventory ansible_user of a host still '
+                           'wins. Passwords are never handled — a '
+                           'host without an SSH key is an operator '
+                           'task'}
     return {'type': 'object', 'properties': properties,
             'required': ['playbook']}
 
@@ -268,6 +281,7 @@ TOOL_OUTPUT_SCHEMAS = {
         'hosts': {'type': 'array', 'items': {'type': 'string'}},
         'exitCode': {'type': 'integer'}, 'status': {'type': 'string'},
         'executionId': {'type': 'integer'}, 'log': {'type': 'string'},
+        'user': {'type': 'string'},
         'failureExcerpt': {'type': 'string'},
         'recap': _RECAP_SCHEMA},
         'required': ['mode', 'playbooks', 'hosts', 'exitCode',
@@ -278,6 +292,7 @@ TOOL_OUTPUT_SCHEMAS = {
         'hosts': {'type': 'array', 'items': {'type': 'string'}},
         'exitCode': {'type': 'integer'}, 'status': {'type': 'string'},
         'executionId': {'type': 'integer'}, 'log': {'type': 'string'},
+        'user': {'type': 'string'},
         'failureExcerpt': {'type': 'string'},
         'recap': _RECAP_SCHEMA},
         'required': ['mode', 'playbooks', 'hosts', 'exitCode',

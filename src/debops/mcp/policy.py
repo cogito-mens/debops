@@ -165,6 +165,7 @@ class McpPolicy(object):
         policy.execute_debug = False
         policy.view_lock = False
         policy.execute_options = []
+        policy.execute_user_override = {}
         return policy
 
     def __init__(self, project):
@@ -451,6 +452,48 @@ class McpPolicy(object):
                           ', '.join(self.execute_options) or '(none)',
                           ' (opted in: {})'.format(', '.join(extra))
                           if extra else '')
+
+        # The bootstrap escape hatch: glob playbook targets mapped to
+        # the connection usernames a run may use instead of the
+        # inventory default. The default is empty — no override is
+        # honored. The tool layer validates the username charset
+        override = mcp_config.get('execute_user_override', {})
+        if not isinstance(override, dict):
+            logger.warning('Ignoring project.mcp.execute_user_override, '
+                           'it is not a mapping')
+            override = {}
+        self.execute_user_override = {}
+        for pattern, users in override.items():
+            if not isinstance(pattern, str):
+                logger.warning('Ignoring the project.mcp.'
+                               'execute_user_override entry %r: the '
+                               'key must be a glob of a playbook target',
+                               pattern)
+                continue
+            if pattern.endswith(('.yml', '.yaml')):
+                logger.warning('The project.mcp.execute_user_override '
+                               'entry %r may never match: the playbook '
+                               'targets match without the extension',
+                               pattern)
+            if isinstance(users, str):
+                users = [users]
+            if not isinstance(users, (list, tuple)):
+                logger.warning('Ignoring the project.mcp.'
+                               'execute_user_override entry %r: the '
+                               'value must be a username or a list of '
+                               'them', pattern)
+                continue
+            names = [str(name) for name in users]
+            if not names:
+                logger.warning('Ignoring the project.mcp.'
+                               'execute_user_override entry %r: the '
+                               'username list is empty', pattern)
+                continue
+            self.execute_user_override[pattern] = names
+        if self.execute_user_override:
+            logger.notice('Connection user overrides allowed by policy '
+                          '(project.mcp.execute_user_override): %s',
+                          ', '.join(sorted(self.execute_user_override)))
 
     def is_tool_allowed(self, name):
         """Check if a tool may be exposed; the deny list wins."""
