@@ -433,17 +433,6 @@ class Interpreter(object):
                     args.socket)) if args.socket \
                 else default_socket_path(project)
 
-        if detached and socket_path is not None:
-            # The detached daemon's late crash output lands next to
-            # the socket; the spawning parent relays the early ones
-            # through its pipe
-            os.makedirs(os.path.dirname(socket_path), mode=0o700,
-                        exist_ok=True)
-            fd = os.open(socket_path + '.err',
-                         os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            os.dup2(fd, 2)
-            os.close(fd)
-
         set_process_name('debops-mcp')
         if args.log is not None:
             # A harness swallows the server's stderr; the audit channel
@@ -651,6 +640,22 @@ class Interpreter(object):
             def _announce_ready():
                 # The spawning parent waits for this line
                 print(socket_path, flush=True)
+                # The daemon's crash output lands next to the socket
+                # from here on; the startup errors rode the parent's
+                # pipe (the socket directory exists by now)
+                fd = os.open(socket_path + '.err',
+                             os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+                             0o600)
+                os.dup2(fd, 2)
+                os.close(fd)
+                if args.log is not None:
+                    # The audit channel has the record; the stderr
+                    # channel of a detached daemon collects only the
+                    # interpreter-level crashes
+                    debops_log = logging.getLogger('debops')
+                    for handler in list(debops_log.handlers):
+                        if type(handler) is logging.StreamHandler:
+                            debops_log.removeHandler(handler)
                 if base_on_ready is not None:
                     base_on_ready()
 
@@ -688,6 +693,13 @@ class Interpreter(object):
                 if not run_hooks(project.path, 'mcp-post-stop', timeout=30,
                                  extra_env=hook_env):
                     logger.warning('The mcp-post-stop hook failed')
+            if detached and socket_path is not None:
+                # The crash channel leaves no empty file behind
+                try:
+                    if os.path.getsize(socket_path + '.err') == 0:
+                        os.unlink(socket_path + '.err')
+                except OSError:
+                    pass
 
     def do_mcp_connect(self, args):
         self._mcp_refuse_if_disabled()
