@@ -302,9 +302,11 @@ def test_docs_mode_consults_the_accounts_ansible_doc(
     (response,) = read_json_lines(result.stdout)
     text = response["result"]["content"][0]["text"]
     assert response["result"].get("isError", False) is False
-    # The stub ran, not any system ansible-doc
+    # The stub ran, not any system ansible-doc; the presentation
+    # masks the account's home directory in the output
     assert text.startswith("stub says: ")
-    assert str(home / ".ansible" / "collections") in text
+    assert "~/.ansible/collections" in text
+    assert str(home) not in text
     assert "/usr/share/ansible/collections" in text
     # The resolution and the roots are in the log for debugging
     log_content = log_path.read_text()
@@ -405,10 +407,12 @@ def test_docs_mode_tools_agree_on_the_account_collections(
         if "result" in response:
             by_id[response["id"]] = response["result"]
 
-    # ansible.doc got the account root and the bundled collection
+    # ansible.doc got the account root and the bundled collection;
+    # the presentation masks the account's home directory
     assert by_id[1].get("isError", False) is False
     text = by_id[1]["content"][0]["text"]
-    assert str(account_root) in text
+    assert "~/.ansible/collections" in text
+    assert str(home) not in text
     assert BUNDLED_COLLECTIONS_ROOT in text
 
     # The collection index lists the account's collection
@@ -1761,6 +1765,63 @@ def test_check_via_tasks_extension(run_debops, mcp_env, project_dir,
         assert task["status"] == "completed"
         assert "hello from a task" in \
             task["result"]["content"][0]["text"]
+    finally:
+        server.terminate()
+        server.wait(timeout=10)
+
+
+def test_socket_mode_masks_the_server_paths(
+        run_debops, mcp_env, tmp_path, debops_source_dir):
+    """Over a socket the server may live outside the harness' reach:
+    the client-facing paths mask the server account's home."""
+    home = tmp_path / "home"
+    project = home / "project"
+    (project / "ansible" / "inventory").mkdir(parents=True)
+    (project / ".debops.cfg").touch()
+    (project / "ansible" / "inventory" / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+    socket_path = str(tmp_path / "serve.sock")
+    env = _account_env(mcp_env, debops_source_dir, home)
+    server = subprocess.Popen(
+            [sys.executable, "-m", "debops", "mcp", "serve",
+             "--socket", socket_path],
+            cwd=str(project), env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def call(method, params, request_id):
+        import socket as socket_module
+        connection = socket_module.socket(socket_module.AF_UNIX,
+                                          socket_module.SOCK_STREAM)
+        connection.connect(socket_path)
+        connection.sendall((json.dumps({
+                "jsonrpc": "2.0", "id": request_id,
+                "method": method,
+                "params": dict(params or {}, _meta=REQUEST_META)})
+                + "\n").encode())
+        reader = connection.makefile("rb")
+        response = json.loads(reader.readline())
+        connection.close()
+        return response
+
+    try:
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                response = call("tools/call",
+                                {"name": "project.status",
+                                 "arguments": {}}, 1)
+                break
+            except (ConnectionRefusedError, FileNotFoundError):
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(0.01)
+        result = response["result"]
+        structured = result["structuredContent"]
+        # The project lives under the server account's home; the
+        # client sees the masked form
+        assert structured["path"] == "~/project"
+        assert structured["viewRoot"] == "~/project/ansible"
+        assert str(home) not in result["content"][0]["text"]
     finally:
         server.terminate()
         server.wait(timeout=10)

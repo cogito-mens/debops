@@ -20,8 +20,12 @@ import threading
 import time
 
 from . import rpc
+from . import runs
+from .present import make_path_presenter
 from .skills import SKILL_URI_PREFIX, SKILLS_EXTENSION
 from .tasks import TaskRegistry
+
+from ..constants import DEBOPS_PACKAGE_DATA, DEBOPS_USER_HOME_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -338,6 +342,12 @@ class McpServer(object):
         # Legacy clients which completed the handshake, by peer pid:
         # their capabilities and identity from 'initialize'
         self._legacy_clients = {}
+        # The client-facing presentation of the server-local paths:
+        # the account's home is masked to '~' everywhere; a socket
+        # server — which may live outside the harness' reach —
+        # replaces its content roots with monikers
+        self._present = make_path_presenter(
+                self._path_monikers(project, transport))
         # The skill library served as resources; None when absent
         self.skills = skills
         # The prompt library; None when absent
@@ -527,6 +537,49 @@ class McpServer(object):
             return True
         return self.killswitch.is_enabled()
 
+    @staticmethod
+    def _path_monikers(project, transport):
+        """The (prefix, moniker) table for the client-facing output.
+
+        stdio needs none — the server runs where the harness is. A
+        socket server masks the run-log cache and the bundled content,
+        plus the collection roots which sit outside both the project
+        and the account's home (the home masking covers those). The
+        import is deferred: the tools package imports this module.
+        """
+        if transport != 'unix':
+            return []
+        pairs = [(runs.cache_root(), 'run-logs:'),
+                 (DEBOPS_PACKAGE_DATA, 'bundled:')]
+        from .tools.collections import (ACCOUNT_COLLECTION_ROOTS,
+                                        documentation_collection_roots)
+        if project is None:
+            roots = documentation_collection_roots()
+        else:
+            roots = []
+            defined = os.environ.get('ANSIBLE_COLLECTIONS_PATH')
+            if defined:
+                roots.extend(entry for entry in
+                             defined.split(os.pathsep) if entry)
+            roots.extend(os.path.expanduser(root)
+                         for root in ACCOUNT_COLLECTION_ROOTS)
+        home = os.path.normpath(DEBOPS_USER_HOME_DIR)
+        project_path = getattr(project, 'path', None)
+        project_root = (os.path.realpath(project_path)
+                        if project_path is not None else None)
+        for root in roots:
+            if not root:
+                continue
+            normed = os.path.normpath(root)
+            if normed == home or normed.startswith(home + os.sep):
+                continue
+            if project_root is not None and (
+                    normed == project_root
+                    or normed.startswith(project_root + os.sep)):
+                continue
+            pairs.append((root, 'collections:'))
+        return pairs
+
     # -- transport entry point ---------------------------------------------
 
     def _base_meta(self):
@@ -665,6 +718,10 @@ class McpServer(object):
             return None
         if result is None:
             result = {}
+        if method in ('tools/call', 'tasks/get'):
+            # Client-facing output masks the server-local paths; the
+            # audit log and the files keep the real ones
+            result = self._present(result)
         if self.legacy:
             # The 2025-era result shape: no resultType, no caching
             # metadata
@@ -794,7 +851,11 @@ class McpServer(object):
                 'playbooks with the role.* and playbook.* tools, run '
                 "'check' before 'run'. Writes are "
                 'confined and committed to git automatically; secrets '
-                'and key material are never served. Reusable DebOps '
+                'and key material are never served. Server-local paths '
+                "in the output are masked: 'run-logs:/' is the "
+                "server's run-log cache, 'bundled:/' its bundled "
+                "content, 'collections:/' a collections root — read "
+                'them through the tools. Reusable DebOps '
                 'workflows are available as skill:// resources. '
                 .format(self.project.name, self.project.view)
                 + batching)
