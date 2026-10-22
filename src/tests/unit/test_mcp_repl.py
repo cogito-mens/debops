@@ -493,6 +493,44 @@ class CompletionTestCase(unittest.TestCase):
         client.request = dead
         self.assertEqual(repl_obj.complete_candidates('check'), [])
 
+    def test_the_completer_speaks_the_full_pt_protocol(self):
+        # The async completion path of prompt_toolkit calls
+        # get_completions_async, which only the real base class
+        # provides — a plain-object completer died on it
+        try:
+            from prompt_toolkit.document import Document
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        client = FakeClient()
+        session, _out, _err = make_repl(client)
+        completer = repl._Completer(session)
+        self.assertTrue(hasattr(completer, 'get_completions_async'))
+        # The verbs complete at the start of the line
+        found = [entry.text for entry in completer.get_completions(
+                Document('sta'), None)]
+        self.assertIn('status', found)
+        # The execution options complete after the target
+        found = [entry.text for entry in completer.get_completions(
+                Document('check site --l'), None)]
+        self.assertIn('--limit', found)
+        self.assertIn('--list-hosts', found)
+
+    def test_the_pt_path_is_taken_when_available(self):
+        # A bad import inside the pt branch must not silently fall
+        # back to the plain reader (the regression: CompleteStyle
+        # imported from the wrong submodule)
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        client = FakeClient()
+        session, _out, _err = make_repl(client)
+        with mock.patch('prompt_toolkit.PromptSession') as pt_session:
+            pt_session.return_value.prompt.side_effect = EOFError()
+            code = repl.run_interactive(session)
+        self.assertEqual(code, 0)
+        self.assertTrue(pt_session.called)
+
 
 if __name__ == '__main__':
     unittest.main()

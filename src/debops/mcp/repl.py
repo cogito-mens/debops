@@ -844,7 +844,16 @@ HELP = {
 }
 
 
-class _Completer(object):
+# The base class when prompt_toolkit is importable (the async
+# completion protocol comes from it); the plain reader never builds a
+# completer, so a missing library costs nothing
+try:
+    from prompt_toolkit.completion import Completer as _PtCompleter
+except ImportError:
+    _PtCompleter = object
+
+
+class _Completer(_PtCompleter):
     """The prompt_toolkit completer: the verbs, then the candidates
     of the verb (playbook targets, role names, files, views)."""
 
@@ -855,10 +864,14 @@ class _Completer(object):
         from prompt_toolkit.completion import Completion
         before = document.text_before_cursor
         words = before.split()
-        word = document.get_word_before_cursor() or ''
-        at_verb = not words or (len(words) == 1
-                                and not before.endswith(' '))
-        if at_verb:
+        # The fragment being completed is the last token, unless the
+        # line ends with a space ('--' fragments survive the split,
+        # which the word extraction of the document would not)
+        if words and not before.endswith(' '):
+            word = words.pop()
+        else:
+            word = ''
+        if not words:
             candidates = sorted(list(self._repl.verbs())
                                 + ['help', 'exit'])
         elif words[0] in ('check', 'run') and word.startswith('--'):
@@ -900,6 +913,7 @@ def run_interactive(repl):
     (history, completion), the plain readline loop otherwise."""
     try:
         from prompt_toolkit import PromptSession
+        from prompt_toolkit.shortcuts import CompleteStyle
         from prompt_toolkit.history import FileHistory
     except ImportError:
         # The plain reader carries the session; completion just is
@@ -908,6 +922,9 @@ def run_interactive(repl):
     history_dir = _history_dir()
     session = PromptSession(
             completer=_Completer(repl),
+            # The shell habit: Tab inserts the completion, a double
+            # Tab lists the candidates
+            complete_style=CompleteStyle.READLINE_LIKE,
             history=FileHistory(os.path.join(history_dir,
                                              'mcp-repl-history')))
     print(_banner(repl), file=repl._err)
