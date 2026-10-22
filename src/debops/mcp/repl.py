@@ -115,9 +115,7 @@ def connect_or_spawn(socket_path, project, docs=False, spawn=None,
         return connected
     if spawn is None:
         if interactive:
-            spawn = ask('No MCP daemon is running for this project. '
-                        'Spawn one, detached? (socket: {})'
-                        .format(socket_path), default=True)
+            spawn = ask('Spawn daemon?', default=True)
         else:
             # A pipe gets its daemon without ceremony
             spawn = True
