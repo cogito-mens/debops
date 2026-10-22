@@ -16,6 +16,8 @@ serve', the default) or bridges the harness to a running daemon
 are per-instance and always named: the default entry must never be
 repurposed into a bridge — outside a project it launches the
 documentation mode, which a stray socket would silently replace.
+'--docs' enforces that mode in the launched server, even inside a
+project.
 
 Supported harnesses are the ones with a project-local configuration
 file AND a known way to speak the 2026-07-28 protocol revision (or a
@@ -44,9 +46,13 @@ NAME_PATTERN = re.compile(r'^[A-Za-z0-9_-]+$')
 DEFAULT_NAME = 'debops'
 
 
-def _serve_argv(verbosity=0, log=None, legacy=False):
+def _serve_argv(verbosity=0, log=None, legacy=False, docs=False):
     """The argv of an entry which launches the server per call."""
     argv = ['debops', 'mcp', 'serve']
+    if docs:
+        # The documentation mode, enforced: read-only even inside a
+        # project directory
+        argv.append('--docs')
     if legacy:
         argv.append('--legacy')
     if log is not None:
@@ -173,19 +179,33 @@ commit writes to git automatically. Browse with `project.files` and
 `playbook.*` tools, and run `check` before `run`.
 ''' + AGENTS_END
 
+# The documentation-mode variant ('mcp configure --docs'): read-only
+# content, and no nudging towards the execution tools the mode lacks
+AGENTS_SECTION_DOCS = AGENTS_BEGIN + '''
+## MCP server
+
+The DebOps MCP server (the `debops` tools) serves the DebOps
+documentation here, read-only; no project is managed through it.
+Inspect roles with the `role.*` tools, playbooks with `playbook.list`
+and `playbook.info`, collections with `collection.roles` and
+`collection.playbooks`, and plugin documentation with `ansible.doc`.
+''' + AGENTS_END
+
 
 def configure_agents_md(project_path, harness_name=None,
-                        print_only=False):
+                        print_only=False, docs=False):
     """Write the AGENTS.md MCP section of a project; (status, lines).
 
     AGENTS.md is the instruction file the harnesses share (OpenCode,
     Codex, and Claude Code when no CLAUDE.md exists). The marked
     section is created, replaced in place, or appended; a project is
-    required unless printing.
+    required unless printing. With 'docs' the section describes the
+    documentation mode the entry enforces.
     """
     if project_path is None and not print_only:
         raise ValueError('not a DebOps project directory (the agents '
                          'file is written at the project root)')
+    section = AGENTS_SECTION_DOCS if docs else AGENTS_SECTION
     notes = []
     if (harness_name == 'claude' and project_path is not None
             and os.path.isfile(os.path.join(project_path,
@@ -198,7 +218,7 @@ def configure_agents_md(project_path, harness_name=None,
                 if project_path else 'AGENTS.md')]
         lines.extend(notes)
         lines.append('')
-        lines.append(AGENTS_SECTION)
+        lines.append(section)
         return 'printed', lines
 
     path = os.path.join(project_path, 'AGENTS.md')
@@ -207,16 +227,16 @@ def configure_agents_md(project_path, harness_name=None,
         with open(path) as fp:
             content = fp.read()
     if content is None:
-        new_content = AGENTS_SECTION + '\n'
+        new_content = section + '\n'
         status = 'created'
     elif AGENTS_BEGIN in content and AGENTS_END in content:
         before = content[:content.index(AGENTS_BEGIN)]
         after = content[content.index(AGENTS_END) + len(AGENTS_END):]
-        new_content = before + AGENTS_SECTION + after
+        new_content = before + section + after
         status = 'updated' if new_content != content else 'unchanged'
     else:
         new_content = (content.rstrip('\n') + '\n\n'
-                       + AGENTS_SECTION + '\n')
+                       + section + '\n')
         status = 'updated'
     if status != 'unchanged':
         _write_atomic(path, new_content)
@@ -225,12 +245,12 @@ def configure_agents_md(project_path, harness_name=None,
     return status, lines
 
 
-def _entry_argv(harness, connect, verbosity, log):
+def _entry_argv(harness, connect, verbosity, log, docs=False):
     """The command an entry runs: the bridge, or the server launch."""
     if connect is not None:
         return _connect_argv(connect)
     return _serve_argv(verbosity=verbosity, log=log,
-                       legacy=harness.legacy)
+                       legacy=harness.legacy, docs=docs)
 
 
 def _harness_fragment(harness, argv, name):
@@ -242,11 +262,11 @@ def _harness_fragment(harness, argv, name):
 
 
 def fragment_for_display(harness_name, connect=None, name=DEFAULT_NAME,
-                         verbosity=0, log=None):
+                         verbosity=0, log=None, docs=False):
     """The harness configuration fragment as text, for hand-merging
     when a file cannot be rewritten safely."""
     harness = HARNESSES[harness_name]
-    argv = _entry_argv(harness, connect, verbosity, log)
+    argv = _entry_argv(harness, connect, verbosity, log, docs=docs)
     fragment = _harness_fragment(harness, argv, name)
     if harness.format == 'toml':
         return toml.dumps(fragment)
@@ -364,7 +384,7 @@ def _check_connect_path(path, notes):
 
 def configure_harness(project_path, harness_name, filename=None,
                       user=False, print_only=False, name=DEFAULT_NAME,
-                      connect=None, verbosity=0, log=None):
+                      connect=None, verbosity=0, log=None, docs=False):
     """Write the harness configuration; return a (status, lines) pair
     for the caller to present.
 
@@ -374,14 +394,17 @@ def configure_harness(project_path, harness_name, filename=None,
     be repurposed into a bridge, since outside a project the launcher
     serves the documentation mode. 'verbosity' and 'log' ride the
     launched command; a bridge ignores them (the daemon's own flags
-    govern). The default mode writes the project-local file of the
-    harness (a project directory is required). With 'user' the
-    account-level file of the harness is the target and needs no
-    project; the spawned server serves a project when launched inside
-    one and the documentation mode otherwise. Printing instead of
-    writing is the safe fallback for anything uncertain ('printed'
-    status), and asks for no directory at all. Raises ValueError with
-    the refusal reason when an existing file cannot be merged safely.
+    govern). With 'docs' the launched server always runs in the
+    documentation mode, even inside a project — an enforcement, so it
+    never combines with a bridge. The default mode writes the
+    project-local file of the harness (a project directory is
+    required). With 'user' the account-level file of the harness is
+    the target and needs no project; the spawned server serves a
+    project when launched inside one and the documentation mode
+    otherwise. Printing instead of writing is the safe fallback for
+    anything uncertain ('printed' status), and asks for no directory
+    at all. Raises ValueError with the refusal reason when an existing
+    file cannot be merged safely.
     """
     harness = HARNESSES.get(harness_name)
     if harness is None:
@@ -394,6 +417,9 @@ def configure_harness(project_path, harness_name, filename=None,
         raise ValueError("a bridge entry needs its own --name: the "
                          "default entry launches the server (in the "
                          "documentation mode outside a project)")
+    if docs and connect is not None:
+        raise ValueError("a bridge takes the daemon's mode; --docs "
+                         "needs a launched entry")
 
     path, relative, notes = _target_path(harness, project_path,
                                          filename, user,
@@ -412,7 +438,7 @@ def configure_harness(project_path, harness_name, filename=None,
     if harness.note_project is not None and not user:
         notes.append('note: ' + harness.note_project)
 
-    argv = _entry_argv(harness, connect, verbosity, log)
+    argv = _entry_argv(harness, connect, verbosity, log, docs=docs)
     command = ' '.join(argv)
     if print_only:
         lines = ['Configuration for {} ({}), not written to {}:'.format(
@@ -421,7 +447,8 @@ def configure_harness(project_path, harness_name, filename=None,
         lines.append('')
         lines.append(fragment_for_display(harness_name,
                                           connect=connect, name=name,
-                                          verbosity=verbosity, log=log))
+                                          verbosity=verbosity, log=log,
+                                          docs=docs))
         return 'printed', lines
 
     data = _read_for_rewrite(path, harness.format)

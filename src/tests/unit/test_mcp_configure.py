@@ -256,6 +256,25 @@ class ConfigureTestCase(unittest.TestCase):
                 ['debops', 'mcp', 'serve', '--log',
                  '/var/log/debops-mcp.log', '-vvv'])
 
+    def test_docs_rides_the_serve_entry(self):
+        # The documentation mode, enforced in the spawned server
+        configure_harness(self.tmpdir, 'opencode', docs=True,
+                          verbosity=2, log='/var/log/debops-mcp.log')
+        config = self.read_json(os.path.join('.opencode',
+                                             'opencode.json'))
+        self.assertEqual(
+                config['mcp']['servers']['debops']['command'],
+                ['debops', 'mcp', 'serve', '--docs', '--log',
+                 '/var/log/debops-mcp.log', '-vv'])
+
+    def test_docs_refuses_a_bridge(self):
+        # A bridge takes the daemon's mode; an enforcement flag must
+        # never silently drop
+        with self.assertRaises(ValueError) as context:
+            configure_harness(self.tmpdir, 'claude', name='prod',
+                              connect='/run/prod.sock', docs=True)
+        self.assertIn('--docs', str(context.exception))
+
     def test_bare_log_means_syslog(self):
         configure_harness(self.tmpdir, 'claude', log='')
         config = self.read_json('.mcp.json')
@@ -448,6 +467,26 @@ class AgentsMdTestCase(unittest.TestCase):
         _status, lines = self.configure(self.tmpdir,
                                         harness_name='claude')
         self.assertTrue(any('@AGENTS.md' in line for line in lines))
+
+    def test_the_docs_variant_is_read_only(self):
+        # The entry enforces the documentation mode; the guidance must
+        # not nudge the agent towards the execution tools it lacks
+        status, _lines = self.configure(self.tmpdir, docs=True)
+        self.assertEqual(status, 'created')
+        content = self.read()
+        self.assertIn('read-only', content)
+        self.assertIn('ansible.doc', content)
+        for word in ('`run`', '`check`', 'project.read'):
+            self.assertNotIn(word, content, word)
+
+    def test_the_variant_switches_in_place(self):
+        self.configure(self.tmpdir)
+        status, _lines = self.configure(self.tmpdir, docs=True)
+        self.assertEqual(status, 'updated')
+        self.assertIn('read-only', self.read())
+        status, _lines = self.configure(self.tmpdir)
+        self.assertEqual(status, 'updated')
+        self.assertIn('`check` before `run`', self.read())
 
 
 class DisconnectTestCase(unittest.TestCase):

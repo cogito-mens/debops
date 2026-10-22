@@ -849,11 +849,21 @@ class Interpreter(object):
         # Removals work wherever the file is
         project_path = None
         if not args.user:
+            # ProjectDir chdirs into the directory it probes, even
+            # when it then fails; capture the invocation directory
+            # first
+            invoked_in = os.getcwd()
             try:
                 project = ProjectDir(path=args.project_dir,
                                      config=self.config)
             except (IsADirectoryError, NotADirectoryError) as errmsg:
-                if not args.print_only:
+                if args.docs:
+                    # The documentation mode serves content without a
+                    # project; the harness file lands in the current
+                    # directory
+                    os.chdir(invoked_in)
+                    project_path = invoked_in
+                elif not args.print_only:
                     print('Error:', errmsg, file=sys.stderr)
                     sys.exit(1)
             else:
@@ -878,7 +888,7 @@ class Interpreter(object):
                             name=args.name or 'debops',
                             connect=args.connect,
                             verbosity=args.verbose or 0,
-                            log=args.log)
+                            log=args.log, docs=args.docs)
             except ValueError as errmsg:
                 print('Error:', errmsg, file=sys.stderr)
                 if args.disconnect is None and not args.remove:
@@ -889,7 +899,7 @@ class Interpreter(object):
                             args.harness, connect=args.connect,
                             name=args.name or 'debops',
                             verbosity=args.verbose or 0,
-                            log=args.log))
+                            log=args.log, docs=args.docs))
                 sys.exit(1)
             for line in lines:
                 print(line)
@@ -897,7 +907,7 @@ class Interpreter(object):
             try:
                 _status, lines = configure_agents_md(
                         project_path, harness_name=args.harness,
-                        print_only=args.print_only)
+                        print_only=args.print_only, docs=args.docs)
             except ValueError as errmsg:
                 print('Error:', errmsg, file=sys.stderr)
                 sys.exit(1)

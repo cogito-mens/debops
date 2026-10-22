@@ -2582,6 +2582,45 @@ def test_configure_harness_refuses_a_non_project(run_debops, mcp_env,
     assert "not found" in result.stderr
 
 
+def test_configure_harness_docs_outside_a_project(run_debops, mcp_env,
+                                                  tmp_path):
+    # The documentation mode serves content without a project; the
+    # harness file lands in the current directory
+    result = run_debops("mcp", "configure", "-H", "opencode", "--docs",
+                        cwd=str(tmp_path), env=mcp_env)
+    assert result.returncode == 0
+    assert "Created" in result.stdout
+    config_path = tmp_path / ".opencode" / "opencode.json"
+    config = json.loads(config_path.read_text())
+    entry = config["mcp"]["servers"]["debops"]
+    assert entry["command"] == ["debops", "mcp", "serve", "--docs"]
+
+
+def test_configure_harness_docs_inside_a_project(run_debops, mcp_env,
+                                                 project_dir):
+    # The enforcement holds where the launcher would otherwise serve
+    # the project
+    result = run_debops("mcp", "configure", "-H", "opencode", "--docs",
+                        cwd=str(project_dir), env=mcp_env)
+    assert result.returncode == 0
+    config_path = project_dir / ".opencode" / "opencode.json"
+    config = json.loads(config_path.read_text())
+    entry = config["mcp"]["servers"]["debops"]
+    assert entry["command"] == ["debops", "mcp", "serve", "--docs"]
+
+
+def test_configure_docs_refuses_a_bridge(run_debops, mcp_env,
+                                         project_dir):
+    # A bridge takes the daemon's mode; the enforcement flag must not
+    # silently drop
+    result = run_debops("mcp", "configure", "-H", "opencode",
+                        "--docs", "--connect", "/run/x.sock",
+                        "--name", "prod",
+                        cwd=str(project_dir), env=mcp_env)
+    assert result.returncode == 2
+    assert "--docs" in result.stderr
+
+
 def test_configure_harness_user_mode_needs_no_project(run_debops,
                                                       mcp_env,
                                                       tmp_path):

@@ -648,6 +648,13 @@ Commands:
                                  'UNIX socket at PATH instead of '
                                  'launching the server; requires '
                                  '--name (never the default entry)')
+        parser.add_argument('--docs', action='store_true',
+                            help='the spawned server always runs in '
+                                 'the documentation mode, even inside '
+                                 'a project (read-only; no project '
+                                 'directory is served); the harness '
+                                 'file needs no project directory '
+                                 'either')
         parser.add_argument('--disconnect', type=str, metavar='NAME',
                             help='remove the named bridge entry')
         parser.add_argument('--remove', action='store_true',
@@ -680,6 +687,10 @@ Commands:
                              'project holds the bridges; the default '
                              'entry keeps the documentation mode '
                              'outside projects)')
+            if self.args.docs:
+                parser.error("--docs enforces the documentation mode "
+                             "of the spawned server; a --connect "
+                             "bridge takes the daemon's mode")
         if self.args.disconnect is not None and (
                 self.args.connect is not None or self.args.remove):
             parser.error('--disconnect does not combine with '
