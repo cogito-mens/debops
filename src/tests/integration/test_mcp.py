@@ -2643,6 +2643,19 @@ def test_configure_harness_refuses_a_non_project(run_debops, mcp_env,
     assert "not found" in result.stderr
 
 
+def test_configure_harness_zed(run_debops, mcp_env, project_dir):
+    # The legacy-era harnesses write their own file and key path
+    result = run_debops("mcp", "configure", "-H", "zed",
+                        cwd=str(project_dir), env=mcp_env)
+    assert result.returncode == 0
+    assert "legacy support only" in result.stdout
+    config = json.loads(
+            (project_dir / ".zed" / "settings.json").read_text())
+    entry = config["context_servers"]["debops"]
+    assert entry["command"] == "debops"
+    assert entry["args"] == ["mcp", "serve", "--legacy"]
+
+
 def test_configure_harness_docs_outside_a_project(run_debops, mcp_env,
                                                   tmp_path):
     # The documentation mode serves content without a project; the

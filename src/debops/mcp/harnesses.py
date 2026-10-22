@@ -20,8 +20,9 @@ documentation mode, which a stray socket would silently replace.
 project.
 
 Supported harnesses are the ones with a project-local configuration
-file AND a known way to speak the 2026-07-28 protocol revision (or a
-documented default which negotiates it):
+file AND a known protocol story — the 2026-07-28 revision, a
+documented negotiation of it, or the 2025-era revision served with
+'--legacy':
 
 - OpenCode: '.opencode/opencode.json', with 'protocol' pinned
 - Claude Code: '.mcp.json' (the portable file, also read by VS Code's
@@ -29,6 +30,12 @@ documented default which negotiates it):
 - Codex: '.codex/config.toml' (TOML; the project must be trusted)
 - Pi: '.pi/mcp.json' (the project must be trusted); speaks the 2025-era
   protocol, so its entry serves with '--legacy'
+- Antigravity CLI: '.agents/mcp_config.json'; Cursor: '.cursor/
+  mcp.json'; Kiro: '.kiro/settings/mcp.json' — the 2025-era protocol,
+  so their entries serve with '--legacy'
+- Zed: '.zed/settings.json' ('context_servers'; JSONC — a commented
+  settings file is refused for a hand-merge); the 2025-era protocol,
+  so its entry serves with '--legacy'
 """
 
 import json
@@ -81,7 +88,7 @@ def _claude_entry(argv):
     return {'type': 'stdio', 'command': argv[0], 'args': argv[1:]}
 
 
-def _codex_entry(argv):
+def _plain_entry(argv):
     return {'command': argv[0], 'args': argv[1:]}
 
 
@@ -92,6 +99,12 @@ def _pi_entry(argv):
             'exposure': 'direct',
             'description': 'Manage the DebOps project (inventory, '
                            'playbooks, executions)'}
+
+
+def _zed_entry(argv):
+    # Zed's 'context_servers' shape (the settings file is JSONC; a
+    # commented one is refused for a hand-merge)
+    return {'command': argv[0], 'args': argv[1:], 'env': {}}
 
 
 class Harness(object):
@@ -130,7 +143,7 @@ HARNESSES = {
             user_filename='~/.claude.json'),
     'codex': Harness(
             'codex', os.path.join('.codex', 'config.toml'),
-            'toml', ('mcp_servers',), _codex_entry,
+            'toml', ('mcp_servers',), _plain_entry,
             note='whether Codex negotiates the 2026-07-28 protocol '
                  'revision is unverified',
             note_project='Codex reads project configuration only in '
@@ -145,6 +158,30 @@ HARNESSES = {
             note_project='Pi reads project configuration only in '
                          'trusted projects',
             user_filename='~/.pi/agent/mcp.json',
+            legacy=True),
+    'antigravity': Harness(
+            'antigravity', os.path.join('.agents', 'mcp_config.json'),
+            'json', ('mcpServers',), _plain_entry,
+            note='legacy support only',
+            legacy=True),
+    'cursor': Harness(
+            'cursor', os.path.join('.cursor', 'mcp.json'),
+            'json', ('mcpServers',), _plain_entry,
+            note='legacy support only',
+            user_filename='~/.cursor/mcp.json',
+            legacy=True),
+    'kiro': Harness(
+            'kiro', os.path.join('.kiro', 'settings', 'mcp.json'),
+            'json', ('mcpServers',), _plain_entry,
+            note='legacy support only',
+            user_filename=os.path.join('~', '.kiro', 'settings',
+                                       'mcp.json'),
+            legacy=True),
+    'zed': Harness(
+            'zed', os.path.join('.zed', 'settings.json'),
+            'json', ('context_servers',), _zed_entry,
+            note='legacy support only',
+            user_filename='$XDG_CONFIG_HOME/zed/settings.json',
             legacy=True),
 }
 

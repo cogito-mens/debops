@@ -184,6 +184,59 @@ class ConfigureTestCase(unittest.TestCase):
         self.assertTrue(any('trusted' in line for line in lines), lines)
         self.assertTrue(any('confirm' in line for line in lines), lines)
 
+    def test_antigravity_fresh_write(self):
+        status, lines = configure_harness(self.tmpdir, 'antigravity')
+        self.assertEqual(status, 'created')
+        config = self.read_json(os.path.join('.agents',
+                                             'mcp_config.json'))
+        self.assertEqual(config['mcpServers']['debops'],
+                         {'command': 'debops',
+                          'args': ['mcp', 'serve', '--legacy']})
+        self.assertTrue(any('legacy support only' in line
+                            for line in lines), lines)
+
+    def test_cursor_fresh_write(self):
+        configure_harness(self.tmpdir, 'cursor')
+        config = self.read_json(os.path.join('.cursor', 'mcp.json'))
+        self.assertEqual(config['mcpServers']['debops']['args'],
+                         ['mcp', 'serve', '--legacy'])
+
+    def test_kiro_fresh_write(self):
+        configure_harness(self.tmpdir, 'kiro')
+        config = self.read_json(os.path.join('.kiro', 'settings',
+                                             'mcp.json'))
+        self.assertEqual(config['mcpServers']['debops']['args'],
+                         ['mcp', 'serve', '--legacy'])
+
+    def test_zed_fresh_write(self):
+        configure_harness(self.tmpdir, 'zed')
+        config = self.read_json(os.path.join('.zed', 'settings.json'))
+        self.assertEqual(config['context_servers']['debops'],
+                         {'command': 'debops',
+                          'args': ['mcp', 'serve', '--legacy'],
+                          'env': {}})
+
+    def test_zed_merge_preserves_the_existing_settings(self):
+        # The settings file carries the harness' whole configuration;
+        # the entry merges in without touching it
+        self.write(os.path.join('.zed', 'settings.json'),
+                   json.dumps({'theme': 'Ayu Dark', 'vim_mode': True}))
+        configure_harness(self.tmpdir, 'zed')
+        config = self.read_json(os.path.join('.zed', 'settings.json'))
+        self.assertEqual(config['theme'], 'Ayu Dark')
+        self.assertTrue(config['vim_mode'])
+        self.assertIn('debops', config['context_servers'])
+
+    def test_zed_a_commented_settings_file_is_refused(self):
+        # Zed settings are JSONC; a commented file is a hand-merge
+        path = self.write(os.path.join('.zed', 'settings.json'),
+                          '// my settings\n{}\n')
+        with self.assertRaises(ValueError) as context:
+            configure_harness(self.tmpdir, 'zed')
+        self.assertIn('not plain JSON', str(context.exception))
+        with open(path) as fp:
+            self.assertTrue(fp.read().startswith('//'))
+
     def test_print_only_needs_no_project(self):
         # Printing asks for no directory at all
         status, lines = configure_harness(None, 'opencode',
@@ -311,6 +364,14 @@ class ConfigureTestCase(unittest.TestCase):
                          '.mcp.json')
         self.assertEqual(HARNESSES['codex'].default_filename,
                          os.path.join('.codex', 'config.toml'))
+        self.assertEqual(HARNESSES['antigravity'].default_filename,
+                         os.path.join('.agents', 'mcp_config.json'))
+        self.assertEqual(HARNESSES['cursor'].default_filename,
+                         os.path.join('.cursor', 'mcp.json'))
+        self.assertEqual(HARNESSES['kiro'].default_filename,
+                         os.path.join('.kiro', 'settings', 'mcp.json'))
+        self.assertEqual(HARNESSES['zed'].default_filename,
+                         os.path.join('.zed', 'settings.json'))
 
 
 class UserModeTestCase(unittest.TestCase):
