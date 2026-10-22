@@ -3120,6 +3120,70 @@ def test_repl_watch_without_a_trust_root(run_debops, mcp_env,
         server.wait(timeout=10)
 
 
+def test_serve_split_stdio_and_socket(run_debops, mcp_env, project_dir,
+                                      tmp_path, debops_source_dir):
+    """'--socket --stdio': one server answers the harness' channel
+    and the socket; the end of stdio ends both."""
+    socket_path = str(tmp_path / "split.sock")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+            [debops_source_dir,
+             env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    env.update(mcp_env)
+    server = subprocess.Popen(
+            [sys.executable, "-m", "debops", "mcp", "serve",
+             "--socket", socket_path, "--stdio"],
+            cwd=str(project_dir), env=env, stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    discover = (json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "server/discover",
+            "params": {"_meta": REQUEST_META}}) + "\n").encode()
+
+    def readline_with_deadline(stream, deadline_s=15):
+        import select as select_module
+        deadline = time.monotonic() + deadline_s
+        while time.monotonic() < deadline:
+            ready, _w, _x = select_module.select([stream], [], [], 0.2)
+            if ready:
+                return stream.readline()
+        raise RuntimeError("no answer in time")
+
+    try:
+        _serve_daemon_wait(socket_path)
+        # The socket answers
+        import socket as socket_module
+        connection = socket_module.socket(socket_module.AF_UNIX,
+                                          socket_module.SOCK_STREAM)
+        connection.connect(socket_path)
+        connection.sendall(discover)
+        answer = json.loads(connection.makefile("rb").readline())
+        assert "supportedVersions" in answer["result"]
+        connection.close()
+        # stdio answers
+        server.stdin.write(discover)
+        server.stdin.flush()
+        answer = json.loads(readline_with_deadline(server.stdout))
+        assert "supportedVersions" in answer["result"]
+        # EOF on stdio ends both channels
+        server.stdin.close()
+        server.wait(timeout=20)
+        assert server.returncode == 0
+        assert not os.path.exists(socket_path)
+    finally:
+        server.kill()
+        server.wait(timeout=10)
+
+
+def test_serve_detach_refuses_stdio(run_debops, mcp_env, project_dir,
+                                    tmp_path):
+    result = run_debops("mcp", "serve", "--socket", "--stdio",
+                        "--detach",
+                        cwd=str(project_dir),
+                        env=dict(mcp_env, XDG_RUNTIME_DIR=str(tmp_path)))
+    assert result.returncode == 2
+    assert "--stdio" in result.stderr
+
+
 def test_repl_spawns_a_daemon_on_the_well_known_socket(
         run_debops, mcp_env, project_dir, tmp_path):
     """No daemon running: the pipe mode spawns one on the well-known

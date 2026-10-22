@@ -320,6 +320,28 @@ class ConfigureTestCase(unittest.TestCase):
                 ['debops', 'mcp', 'serve', '--docs', '--log',
                  '/var/log/debops-mcp.log', '-vv'])
 
+    def test_with_socket_adds_the_split_serve(self):
+        # The launched server answers the harness on stdio and the
+        # REPL on the well-known socket
+        configure_harness(self.tmpdir, 'opencode', with_socket=True)
+        config = self.read_json(os.path.join('.opencode',
+                                             'opencode.json'))
+        command = config['mcp']['servers']['debops']['command']
+        self.assertIn('--socket', command)
+        self.assertIn('--stdio', command)
+        # Separate elements: a space-joined flag is parsed as the
+        # socket's value (a string with a space is no option to
+        # argparse)
+        for element in command:
+            self.assertNotIn(' ', element)
+
+    def test_with_socket_refuses_a_bridge(self):
+        with self.assertRaises(ValueError) as context:
+            configure_harness(self.tmpdir, 'claude', name='prod',
+                              connect='/run/prod.sock',
+                              with_socket=True)
+        self.assertIn('--with-socket', str(context.exception))
+
     def test_docs_refuses_a_bridge(self):
         # A bridge takes the daemon's mode; an enforcement flag must
         # never silently drop

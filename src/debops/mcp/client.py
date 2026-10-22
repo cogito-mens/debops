@@ -153,10 +153,14 @@ class UnixClient(object):
                                .format(self._timeout))
         except (ConnectionResetError, BrokenPipeError):
             # The server closed the connection without a response; a
-            # fast close can already break the write
+            # fast close can already break the write. Drop the dead
+            # connection so the next call reconnects
+            self.close()
             raise EOFError('the server closed the connection without '
                            'a response')
         if data is None:
+            # The same drop on a clean close
+            self.close()
             raise EOFError('the server closed the connection without '
                            'a response')
         return data

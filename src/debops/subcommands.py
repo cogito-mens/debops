@@ -542,12 +542,18 @@ Commands:
                                  'daemon is up (or fails to start); a '
                                  'pid file rides next to a well-known '
                                  'socket')
-        parser.add_argument('--idle-timeout', type=int, default=0,
+        parser.add_argument('--idle-timeout', type=int, default=None,
                             metavar='SECONDS',
                             help='shut the daemon down after this many '
                                  'seconds without a client (0: run '
-                                 'forever, the default; a client-spawned '
-                                 'daemon gets an hour)')
+                                 'forever; default: the '
+                                 'project.mcp.idle_timeout policy, or '
+                                 'an hour for a client-spawned daemon)')
+        parser.add_argument('--stdio', action='store_true',
+                            help='serve stdio as well as the socket: '
+                                 'the harness launching the server '
+                                 'answers on stdio, the other clients '
+                                 'use the socket')
         parser.add_argument('--max-connections', type=int, default=32,
                             metavar='COUNT',
                             help='maximum number of concurrent connections '
@@ -579,6 +585,9 @@ Commands:
         if self.args.detach and self.args.socket is None:
             parser.error('--detach detaches the socket daemon; '
                          'it needs --socket')
+        if self.args.detach and self.args.stdio:
+            parser.error('a detached daemon has no one to serve stdio '
+                         'to; drop --stdio or --detach')
 
         if self.args.instance is not None:
             if self.args.view is not None:
@@ -738,6 +747,12 @@ Commands:
                                  'directory is served); the harness '
                                  'file needs no project directory '
                                  'either')
+        parser.add_argument('--with-socket', dest='with_socket',
+                            action='store_true',
+                            help='the launched server also answers the '
+                                 'well-known socket, so a `debops mcp '
+                                 'repl` attaches while the harness '
+                                 'session lives (never with --connect)')
         parser.add_argument('--disconnect', type=str, metavar='NAME',
                             help='remove the named bridge entry')
         parser.add_argument('--remove', action='store_true',
@@ -774,6 +789,10 @@ Commands:
                 parser.error("--docs enforces the documentation mode "
                              "of the spawned server; a --connect "
                              "bridge takes the daemon's mode")
+            if self.args.with_socket:
+                parser.error('--with-socket adds the socket to a '
+                             'launched entry; a --connect bridge '
+                             'launches nothing')
         if self.args.disconnect is not None and (
                 self.args.connect is not None or self.args.remove):
             parser.error('--disconnect does not combine with '

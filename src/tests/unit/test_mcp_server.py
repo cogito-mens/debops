@@ -40,8 +40,19 @@ def make_request(method, params=None, request_id=1, meta='default'):
     return message
 
 
-class DiscoverTestCase(unittest.TestCase):
+class ResourceTemplatesTestCase(unittest.TestCase):
+    """The 2025-era template probe gets an empty answer, not an
+    unknown-method error."""
 
+    def test_templates_list_is_empty(self):
+        server = McpServer()
+        response = server.handle(make_request('resources/templates/'
+                                              'list'))
+        self.assertNotIn('error', response)
+        self.assertEqual(response['result']['resourceTemplates'], [])
+
+
+class DiscoverTestCase(unittest.TestCase):
     def test_discover(self):
         server = McpServer()
         response = server.handle(make_request('server/discover'))

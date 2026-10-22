@@ -312,6 +312,20 @@ class UnixClientTestCase(unittest.TestCase):
             client.request_unix(os.path.join(self.tmpdir, 'absent.sock'),
                                 'server/discover')
 
+    def test_a_dead_server_drops_the_connection(self):
+        # The peer vanishes mid-session: the request fails, the dead
+        # connection is dropped, the next call reconnects
+        import socket as socket_module
+        connection = client.UnixClient(self.path)
+        client_sock, server_sock = socket_module.socketpair()
+        connection._connection = client_sock
+        connection._reader = client_sock.makefile('rb')
+        server_sock.close()
+        with self.assertRaises(EOFError):
+            connection.request('server/discover')
+        self.assertIsNone(connection._connection)
+        client_sock.close()
+
     def test_request_streaming_round_trip(self):
         # The stream: the ack, then the notifications, then the
         # completion ends it

@@ -56,13 +56,18 @@ NAME_PATTERN = re.compile(r'^[A-Za-z0-9_-]+$')
 DEFAULT_NAME = 'debops'
 
 
-def _serve_argv(verbosity=0, log=None, legacy=False, docs=False):
+def _serve_argv(verbosity=0, log=None, legacy=False, docs=False,
+                with_socket=False):
     """The argv of an entry which launches the server per call."""
     argv = ['debops', 'mcp', 'serve']
     if docs:
         # The documentation mode, enforced: read-only even inside a
         # project directory
         argv.append('--docs')
+    if with_socket:
+        # The launched server also answers the well-known socket;
+        # the REPL attaches while the harness session lives
+        argv.extend(['--socket', '--stdio'])
     if legacy:
         argv.append('--legacy')
     if log is not None:
@@ -327,12 +332,14 @@ def configure_agents_md(project_path, harness_name=None,
     return status, lines
 
 
-def _entry_argv(harness, connect, verbosity, log, docs=False):
+def _entry_argv(harness, connect, verbosity, log, docs=False,
+                with_socket=False):
     """The command an entry runs: the bridge, or the server launch."""
     if connect is not None:
         return _connect_argv(connect)
     return _serve_argv(verbosity=verbosity, log=log,
-                       legacy=harness.legacy, docs=docs)
+                       legacy=harness.legacy, docs=docs,
+                       with_socket=with_socket)
 
 
 def _harness_fragment(harness, argv, name):
@@ -344,11 +351,13 @@ def _harness_fragment(harness, argv, name):
 
 
 def fragment_for_display(harness_name, connect=None, name=DEFAULT_NAME,
-                         verbosity=0, log=None, docs=False):
+                         verbosity=0, log=None, docs=False,
+                         with_socket=False):
     """The harness configuration fragment as text, for hand-merging
     when a file cannot be rewritten safely."""
     harness = HARNESSES[harness_name]
-    argv = _entry_argv(harness, connect, verbosity, log, docs=docs)
+    argv = _entry_argv(harness, connect, verbosity, log, docs=docs,
+                       with_socket=with_socket)
     if harness.print_text is not None:
         return harness.print_text(argv)
     fragment = _harness_fragment(harness, argv, name)
@@ -472,7 +481,8 @@ def _check_connect_path(path, notes):
 
 def configure_harness(project_path, harness_name, filename=None,
                       user=False, print_only=False, name=DEFAULT_NAME,
-                      connect=None, verbosity=0, log=None, docs=False):
+                      connect=None, verbosity=0, log=None, docs=False,
+                      with_socket=False):
     """Write the harness configuration; return a (status, lines) pair
     for the caller to present.
 
@@ -484,7 +494,10 @@ def configure_harness(project_path, harness_name, filename=None,
     launched command; a bridge ignores them (the daemon's own flags
     govern). With 'docs' the launched server always runs in the
     documentation mode, even inside a project — an enforcement, so it
-    never combines with a bridge. The default mode writes the
+    never combines with a bridge. With 'with_socket' the launched
+    server also answers the well-known socket (the REPL attaches
+    while the harness session lives); it never combines with a
+    bridge. The default mode writes the
     project-local file of the harness (a project directory is
     required). With 'user' the account-level file of the harness is
     the target and needs no project; the spawned server serves a
@@ -508,6 +521,9 @@ def configure_harness(project_path, harness_name, filename=None,
     if docs and connect is not None:
         raise ValueError("a bridge takes the daemon's mode; --docs "
                          "needs a launched entry")
+    if with_socket and connect is not None:
+        raise ValueError('a bridge launches nothing; --with-socket '
+                         'needs a launched entry')
 
     path, relative, notes = _target_path(harness, project_path,
                                          filename, user,
@@ -532,7 +548,8 @@ def configure_harness(project_path, harness_name, filename=None,
     if harness.note_project is not None and not user:
         notes.append('note: ' + harness.note_project)
 
-    argv = _entry_argv(harness, connect, verbosity, log, docs=docs)
+    argv = _entry_argv(harness, connect, verbosity, log, docs=docs,
+                       with_socket=with_socket)
     command = ' '.join(argv)
     if print_only:
         if path is None and filename is None:
@@ -546,7 +563,8 @@ def configure_harness(project_path, harness_name, filename=None,
         lines.append(fragment_for_display(harness_name,
                                           connect=connect, name=name,
                                           verbosity=verbosity, log=log,
-                                          docs=docs))
+                                          docs=docs,
+                                          with_socket=with_socket))
         return 'printed', lines
 
     data = _read_for_rewrite(path, harness.format)

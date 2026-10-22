@@ -27,7 +27,8 @@ from .mcp.playbook_skills import PlaybookSkillSource
 from .mcp import client as mcp_client
 from .mcp.client import UnixClient, default_socket_path
 from .mcp.transport import StdioTransport, UnixSocketTransport
-from .mcp.transport import bridge_stdio_to_unix, ping_unix
+from .mcp.transport import (SHUTDOWN_DRAIN_TIMEOUT,
+                            bridge_stdio_to_unix, ping_unix)
 from .mcp.harnesses import (configure_agents_md, configure_harness,
                             disconnect_harness, fragment_for_display,
                             remove_harness)
@@ -45,6 +46,7 @@ import subprocess
 import sys
 import os
 import textwrap
+import threading
 import time
 
 # The kill switch file written by 'debops mcp disable'
@@ -667,23 +669,44 @@ class Interpreter(object):
             mcp_trust.ensure_passphrase(project)
 
         try:
+            stdio_transport = None
+            socket_transport = None
             if socket_path:
-                transport = UnixSocketTransport(
+                socket_transport = UnixSocketTransport(
                         socket_path, mode=args.socket_mode,
                         max_connections=args.max_connections,
                         idle_timeout=idle_timeout,
-                        # The pid sidecar belongs to the well-known
-                        # runtime directory only; an explicitly named
-                        # socket leaves no marks in arbitrary places.
-                        # A client-spawned daemon says so, so the
-                        # REPL's --stop can tell it apart
+                        # The split serve's liveness: the harness'
+                        # stdio channel counts (the lambda binds the
+                        # name, bound by the time it is called)
+                        idle_held=(lambda: stdio_transport.serving)
+                        if args.stdio else None,
                         pid_path=(socket_path + '.pid'
                                   if not args.socket else None),
                         pid_note=('spawned' if spawned else None))
+            if not socket_path or args.stdio:
+                stdio_transport = StdioTransport()
+            if socket_transport is None:
+                stdio_transport.serve(server, on_ready=on_ready,
+                                      on_stop=on_stop)
+            elif stdio_transport is None:
+                socket_transport.serve(server, on_ready=on_ready,
+                                       on_stop=on_stop)
             else:
-                transport = StdioTransport()
-            transport.serve(server, on_ready=on_ready,
-                            on_stop=on_stop)
+                # The split serve: the harness answers on stdio (the
+                # main thread, the signals), the socket serves the
+                # other clients from a thread
+                socket_thread = threading.Thread(
+                        target=socket_transport.serve,
+                        args=(server,), kwargs={'on_ready': on_ready},
+                        daemon=True)
+                socket_thread.start()
+                try:
+                    stdio_transport.serve(server, on_stop=on_stop)
+                finally:
+                    socket_transport.shutdown()
+                    socket_thread.join(timeout=SHUTDOWN_DRAIN_TIMEOUT
+                                       + 5)
         except (ValueError, FileExistsError, PermissionError,
                 OSError) as errmsg:
             # Errors go to stderr: in stdio mode stdout is reserved for
@@ -1054,7 +1077,8 @@ class Interpreter(object):
                             name=args.name or 'debops',
                             connect=args.connect,
                             verbosity=args.verbose or 0,
-                            log=args.log, docs=args.docs)
+                            log=args.log, docs=args.docs,
+                            with_socket=args.with_socket)
             except ValueError as errmsg:
                 print('Error:', errmsg, file=sys.stderr)
                 if args.disconnect is None and not args.remove:
@@ -1065,7 +1089,8 @@ class Interpreter(object):
                             args.harness, connect=args.connect,
                             name=args.name or 'debops',
                             verbosity=args.verbose or 0,
-                            log=args.log, docs=args.docs))
+                            log=args.log, docs=args.docs,
+                            with_socket=args.with_socket))
                 sys.exit(1)
             for line in lines:
                 print(line)

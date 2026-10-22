@@ -509,6 +509,24 @@ class TrustVerbsTestCase(unittest.TestCase):
         self.assertIn('^C', err.getvalue())
         self.assertEqual(closes, [True])
 
+    def test_a_dead_daemon_is_a_clean_error(self):
+        # The daemon died under the session: a clean error, not a
+        # traceback
+        client = FakeClient()
+        client.legacy = False
+        client.bearer = None
+        session, _out, _err = make_repl(client)
+
+        def dead(*args):
+            raise EOFError('the server closed the connection without '
+                           'a response')
+
+        client.request = dead
+        with self.assertRaises(ReplError) as context:
+            session.execute('status')
+        self.assertIn('the daemon is not answering',
+                      str(context.exception))
+
 
 class StopDaemonTestCase(unittest.TestCase):
     """The '--stop' guardrails: only a client-spawned daemon goes."""

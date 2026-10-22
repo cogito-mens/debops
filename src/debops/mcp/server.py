@@ -425,6 +425,11 @@ class McpServer(object):
             'tasks/get': self._tasks_get,
             'tasks/update': self._tasks_update,
             'tasks/cancel': self._tasks_cancel,
+            # The 2025-era resource-template probe; this server serves
+            # concrete 'skill://' URIs only, so the answer is empty —
+            # an unknown-method error reads as a startup failure to a
+            # lenient client
+            'resources/templates/list': self._resources_templates_list,
         }
         if self.legacy:
             # The 2025-era handshake and keepalive
@@ -1330,6 +1335,12 @@ class McpServer(object):
         # The skills are static package content; they change only with
         # a package upgrade
         return {'resources': self.skills.list(),
+                'ttlMs': 3600000, 'cacheScope': 'public'}
+
+    def _resources_templates_list(self, params, context):
+        """The 2025-era resource-template probe: this server serves
+        concrete 'skill://' URIs only, so the answer is empty."""
+        return {'resourceTemplates': [],
                 'ttlMs': 3600000, 'cacheScope': 'public'}
 
     def _paginate(self, items, key, params):

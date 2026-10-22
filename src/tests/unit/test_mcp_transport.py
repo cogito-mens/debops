@@ -125,6 +125,40 @@ class TransportLifecycleTestCase(unittest.TestCase):
         thread.join(timeout=10)
         self.assertFalse(thread.is_alive())
 
+    def test_a_flag_as_the_socket_path_is_refused(self):
+        # The telltale of a '--flag value' string captured as the
+        # socket's value by the argument parser (a string with a
+        # space is not an option to it)
+        with self.assertRaises(ValueError) as context:
+            UnixSocketTransport('--log /tmp/x')
+        self.assertIn('not an argument', str(context.exception))
+        self.assertIn('separate command arguments',
+                      str(context.exception))
+        self.assertFalse(os.path.exists('--log'))
+
+    def test_the_idle_watchdog_holds_while_the_other_channel_lives(
+            self):
+        # The split serve: the harness' stdio channel is activity for
+        # the socket's watchdog
+        path = os.path.join(self.tmpdir, 'split.sock')
+        held = {'stdio': True}
+        transport = UnixSocketTransport(
+                path, idle_timeout=1,
+                idle_held=lambda: held['stdio'])
+        thread = threading.Thread(target=transport.serve,
+                                  args=(McpServer(),), daemon=True)
+        thread.start()
+        for _ in range(500):
+            if os.path.exists(path):
+                break
+            time.sleep(0.01)
+        time.sleep(1.6)
+        # Past the timeout and still alive: the channel is held
+        self.assertTrue(thread.is_alive())
+        held['stdio'] = False
+        thread.join(timeout=10)
+        self.assertFalse(thread.is_alive())
+
     def test_stdio_ready_and_stop(self):
         events = []
         # An immediate EOF ends the stdio serving

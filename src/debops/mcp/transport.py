@@ -95,8 +95,18 @@ class StdioTransport(object):
     goes to stderr.
     """
 
+    def __init__(self):
+        self._serving = False
+
+    @property
+    def serving(self):
+        """Whether the stdio channel is open (read by a dual serve's
+        idle watchdog: the harness' channel is activity)."""
+        return self._serving
+
     def serve(self, server, on_ready=None, on_stop=None):
         logger.notice('MCP server serving on stdio')
+        self._serving = True
         reader = sys.stdin.buffer
         writer = sys.stdout.buffer
         write_lock = threading.Lock()
@@ -143,6 +153,7 @@ class StdioTransport(object):
                 worker.join(timeout=remaining)
             raise
         finally:
+            self._serving = False
             if previous_sigterm is not None:
                 signal.signal(signal.SIGTERM, previous_sigterm)
             # Long-lived streams (subscriptions) end with the channel
@@ -165,7 +176,14 @@ class UnixSocketTransport(object):
     """
 
     def __init__(self, path, mode=0o660, max_connections=32,
-                 pid_path=None, idle_timeout=0, pid_note=None):
+                 pid_path=None, idle_timeout=0, pid_note=None,
+                 idle_held=None):
+        if str(path).startswith('-'):
+            # A flag captured as the value: the argument parser took
+            # a space-joined '--flag value' string as one argument
+            raise ValueError('not an argument: {!r} (a flag and its '
+                             'value must be separate command arguments)'
+                             .format(path))
         self.path = os.path.abspath(os.path.expanduser(path))
         self.mode = mode
         # The pid sidecar of a well-known daemon socket: 'kill $(cat
@@ -176,8 +194,11 @@ class UnixSocketTransport(object):
         self._pid_path = pid_path
         self._pid_note = pid_note
         # Exit after this many seconds without a client (0: run
-        # forever). A connected client is activity; so is a call
+        # forever). A connected client is activity; so is a call.
+        # 'idle_held' marks an external channel alive (a split serve
+        # keeps the harness' stdio)
         self.idle_timeout = idle_timeout
+        self._idle_held = idle_held
         self._last_activity = time.monotonic()
         self._active = 0
         self._active_lock = threading.Lock()
@@ -296,6 +317,9 @@ class UnixSocketTransport(object):
         """Stop the accept loop when no client showed up in time."""
         while self._serving:
             time.sleep(min(self.idle_timeout, 5) / 2)
+            if self._idle_held is not None and self._idle_held():
+                # The split serve's other channel is alive
+                continue
             with self._active_lock:
                 active = self._active
             if active:

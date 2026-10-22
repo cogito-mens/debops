@@ -288,7 +288,13 @@ class Repl(object):
     # -- the wire -------------------------------------------------
 
     def _request(self, method, params):
-        response = self.client.request(method, params)
+        try:
+            response = self.client.request(method, params)
+        except (ConnectionError, EOFError, TimeoutError) as errmsg:
+            # A dead daemon is a line on the error channel, not a
+            # traceback; the next command reconnects
+            raise ReplError('the daemon is not answering ({}); is it '
+                            'running?'.format(errmsg))
         if 'error' in response:
             details = (response['error'].get('data', {}) or {})
             message = details.get('details') or response['error'].get(
