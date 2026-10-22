@@ -71,13 +71,22 @@ class UnixClient(object):
     """Send requests to an MCP server on a UNIX socket, one at a time.
 
     Requests are synchronous and answered in order, so no response
-    correlation is needed.
+    correlation is needed. With 'legacy' the client speaks the
+    2025-era revision: an 'initialize' handshake when the connection
+    opens, and no per-request '_meta' envelope after it.
     """
 
-    def __init__(self, path, timeout=5, capabilities=None):
+    def __init__(self, path, timeout=5, capabilities=None,
+                 legacy=False):
         self._path = os.path.abspath(os.path.expanduser(path))
         self._timeout = timeout
         self._capabilities = capabilities
+        self.legacy = legacy
+        # What the server said about itself (the version and the
+        # protocol revision), once known
+        self.server_version = None
+        self.protocol_version = None
+        self._handshaken = False
         self._connection = None
         self._reader = None
         self._next_id = 1
@@ -95,13 +104,37 @@ class UnixClient(object):
                                   .format(self._path, errmsg))
         self._connection = connection
         self._reader = connection.makefile('rb')
+        if self.legacy and not self._handshaken:
+            self._legacy_handshake()
+
+    def _legacy_handshake(self):
+        """The 2025-era opening: 'initialize', answered with the era's
+        revision, then the 'notifications/initialized' notification."""
+        response = self.request('initialize', {
+                'protocolVersion': _server.LEGACY_PROTOCOL_VERSIONS[0],
+                'capabilities': self._capabilities or {},
+                'clientInfo': {'name': 'debops',
+                               'version': _server.__version__}})
+        if 'error' in response:
+            raise ConnectionError('the legacy handshake was refused: {}'
+                                  .format(response['error'].get(
+                                          'message', 'unknown error')))
+        self._handshaken = True
+        # The answer carries the server's identity for the client UI
+        result = response.get('result') or {}
+        self.protocol_version = result.get('protocolVersion')
+        self.server_version = (result.get('serverInfo') or {}).get(
+                'version')
+        self.notify('notifications/initialized')
 
     def request_raw(self, method, params=None):
         """Send one request; return the raw response line (bytes)."""
         self._connect()
-        # The request metadata rides in 'params._meta', per the spec
+        # The request metadata rides in 'params._meta', per the spec;
+        # the legacy era carries the client state in the handshake
         request_params = dict(params or {})
-        request_params['_meta'] = request_meta(self._capabilities)
+        if not self.legacy:
+            request_params['_meta'] = request_meta(self._capabilities)
         message = {'jsonrpc': '2.0', 'id': self._next_id,
                    'method': method, 'params': request_params}
         self._next_id += 1
@@ -135,7 +168,8 @@ class UnixClient(object):
         """Send a notification; no response is expected or read."""
         self._connect()
         notify_params = dict(params or {})
-        notify_params['_meta'] = request_meta(self._capabilities)
+        if not self.legacy:
+            notify_params['_meta'] = request_meta(self._capabilities)
         message = {'jsonrpc': '2.0', 'method': method,
                    'params': notify_params}
         self._connection.sendall(json.dumps(message).encode('utf-8')

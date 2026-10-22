@@ -1,0 +1,379 @@
+# Copyright (C) 2026 Maciej Delmanowski <drybjed@gmail.com>
+# Copyright (C) 2026 DebOps <https://debops.org/>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+"""Tests for the 'mcp repl' interpreter."""
+
+import io
+import os
+import shutil
+import tempfile
+import unittest
+
+from unittest import mock
+
+from debops.mcp import repl
+from debops.mcp.repl import Repl, ReplError, execution_arguments
+
+
+class FakeClient(object):
+    """A scripted MCP client: (method, params) -> queued responses."""
+
+    def __init__(self):
+        self.calls = []
+        self._responses = {}
+
+    def queue(self, method, *responses):
+        self._responses[method] = list(responses)
+
+    def request(self, method, params):
+        self.calls.append((method, params))
+        queued = self._responses.get(method, [])
+        response = queued.pop(0) if queued else {'result': {}}
+        return {'result': response}
+
+
+def make_repl(client, interactive=False):
+    out = io.StringIO()
+    err = io.StringIO()
+    session = Repl(client, project_name='project', view='system',
+                   out=out, err=err, interactive=interactive)
+    return session, out, err
+
+
+class ExecutionArgumentsTestCase(unittest.TestCase):
+
+    def test_a_single_target(self):
+        self.assertEqual(execution_arguments(['site']),
+                         {'playbook': 'site'})
+
+    def test_multiple_targets_keep_the_order(self):
+        self.assertEqual(
+                execution_arguments(['service/nginx', 'site']),
+                {'playbook': ['service/nginx', 'site']})
+
+    def test_options(self):
+        arguments = execution_arguments(
+                ['site', '--limit', 'web1', '--forks', '4',
+                 '--list-hosts'])
+        self.assertEqual(arguments['limit'], 'web1')
+        self.assertEqual(arguments['forks'], '4')
+        self.assertIs(arguments['list_hosts'], True)
+        self.assertEqual(arguments['playbook'], 'site')
+
+    def test_an_unknown_option_is_a_clean_error(self):
+        with self.assertRaises(ReplError) as context:
+            execution_arguments(['site', '--background'])
+        self.assertIn('--background', str(context.exception))
+
+    def test_a_valued_option_needs_a_value(self):
+        with self.assertRaises(ReplError):
+            execution_arguments(['site', '--limit'])
+
+    def test_a_target_is_required(self):
+        with self.assertRaises(ReplError):
+            execution_arguments(['--list-hosts'])
+
+
+class VerbTestCase(unittest.TestCase):
+
+    def setUp(self):
+        self.client = FakeClient()
+        self.repl, self.out, self.err = make_repl(self.client)
+
+    def test_status_calls_the_tool(self):
+        self.client.queue('tools/call', {
+                'resultType': 'complete', 'isError': False,
+                'content': [{'type': 'text', 'text': 'Project: x'}]})
+        self.repl.execute('status')
+        self.assertEqual(self.client.calls[0],
+                         ('tools/call', {'name': 'project.status',
+                                         'arguments': {}}))
+        self.assertIn('Project: x', self.out.getvalue())
+
+    def test_an_error_result_is_marked_and_counted(self):
+        self.client.queue('tools/call', {
+                'resultType': 'complete', 'isError': True,
+                'content': [{'type': 'text', 'text': 'denied'}]})
+        self.repl.execute('status')
+        self.assertIn('error: denied', self.err.getvalue())
+        self.assertTrue(self.repl.had_error)
+
+    def test_an_unknown_verb_is_a_clean_error(self):
+        with self.assertRaises(ReplError) as context:
+            self.repl.execute('frobnicate')
+        self.assertIn("'frobnicate'", str(context.exception))
+
+    def test_exit_raises_eof(self):
+        with self.assertRaises(EOFError):
+            self.repl.execute('exit')
+
+    def test_view_switch_updates_the_prompt_and_the_cache(self):
+        self.repl._completion_cache['view'] = ['system']
+        self.client.queue('tools/call', {
+                'resultType': 'complete', 'isError': False,
+                'content': [{'type': 'text', 'text': 'switched'}]})
+        self.repl.execute('view web')
+        self.assertEqual(self.repl.view, 'web')
+        self.assertEqual(self.repl.prompt, 'debops project:web> ')
+        self.assertEqual(self.repl._completion_cache, {})
+
+    def test_a_failed_switch_keeps_the_view(self):
+        self.client.queue('tools/call', {
+                'resultType': 'complete', 'isError': True,
+                'content': [{'type': 'text', 'text': 'no such view'}]})
+        self.repl.execute('view web')
+        self.assertEqual(self.repl.view, 'system')
+
+
+class ConfirmationTestCase(unittest.TestCase):
+
+    def test_the_gate_asks_and_retries(self):
+        client = FakeClient()
+        repl_obj, _out, _err = make_repl(client, interactive=True)
+        client.queue('tools/call', {
+                'resultType': 'input_required',
+                'inputRequests': {'confirmation': {
+                        'params': {'message': 'run it?'}}}}, {
+                'resultType': 'complete', 'isError': False,
+                'content': [{'type': 'text', 'text': 'done'}]})
+        with mock.patch('debops.mcp.repl.input', return_value='y'):
+            repl_obj.execute('run site')
+        # The retry carries the acceptance
+        retry = client.calls[1][1]
+        self.assertEqual(retry['inputResponses']['confirmation'],
+                         {'action': 'accept',
+                          'content': {'confirmed': True}})
+
+    def test_a_pipe_declines_the_gate(self):
+        client = FakeClient()
+        repl_obj, _out, err = make_repl(client, interactive=False)
+        client.queue('tools/call', {
+                'resultType': 'input_required',
+                'inputRequests': {'confirmation': {
+                        'params': {'message': 'run it?'}}}}, {
+                'resultType': 'complete', 'isError': True,
+                'content': [{'type': 'text', 'text': 'declined'}]})
+        repl_obj.execute('run site')
+        retry = client.calls[1][1]
+        self.assertEqual(retry['inputResponses']['confirmation']
+                         ['action'], 'decline')
+        self.assertIn('a pipe cannot answer', err.getvalue())
+
+
+class TaskFlowTestCase(unittest.TestCase):
+
+    def test_the_task_is_polled_to_completion(self):
+        client = FakeClient()
+        repl_obj, out, err = make_repl(client)
+        client.queue('tools/call', {'resultType': 'task',
+                                    'taskId': 't1', 'status':
+                                    'working'})
+        client.queue('tasks/get',
+                     {'status': 'working',
+                      'statusMessage': 'PLAY [one]'},
+                     {'status': 'completed',
+                      'result': {'isError': False,
+                                 'content': [{'type': 'text',
+                                              'text': 'recap'}]}})
+        with mock.patch('debops.mcp.repl.POLL_INTERVAL', 0):
+            repl_obj.execute('check site')
+        # The status tail moved to the error channel, the recap to
+        # the answer
+        self.assertIn('PLAY [one]', err.getvalue())
+        self.assertIn('recap', out.getvalue())
+
+    def test_the_confirmation_inside_a_task(self):
+        client = FakeClient()
+        repl_obj, _out, _err = make_repl(client, interactive=True)
+        client.queue('tools/call', {'resultType': 'task',
+                                    'taskId': 't1'})
+        client.queue('tasks/get',
+                     {'status': 'input_required',
+                      'inputRequests': {'confirmation': {
+                          'params': {'message': 'run it?'}}}},
+                     {'status': 'completed',
+                      'result': {'isError': False,
+                                 'content': [{'type': 'text',
+                                              'text': 'recap'}]}})
+        with mock.patch('debops.mcp.repl.POLL_INTERVAL', 0), \
+                mock.patch('debops.mcp.repl.input', return_value='y'):
+            repl_obj.execute('run site')
+        update = [call for call in client.calls
+                  if call[0] == 'tasks/update']
+        self.assertEqual(update[0][1]['inputResponses']['confirmation']
+                         ['action'], 'accept')
+
+    def test_a_failed_task_is_a_clean_error(self):
+        client = FakeClient()
+        repl_obj, _out, _err = make_repl(client)
+        client.queue('tools/call', {'resultType': 'task',
+                                    'taskId': 't1'})
+        client.queue('tasks/get',
+                     {'status': 'failed',
+                      'error': {'message': 'boom'}})
+        with mock.patch('debops.mcp.repl.POLL_INTERVAL', 0), \
+                self.assertRaises(ReplError) as context:
+            repl_obj.execute('run site')
+        self.assertIn('boom', str(context.exception))
+
+
+class InteractiveLoopTestCase(unittest.TestCase):
+
+    def test_the_plain_loop_reads_executes_and_exits(self):
+        import sys as sys_module
+        client = FakeClient()
+        session, out, err = make_repl(client, interactive=True)
+        client.queue('tools/call', {'resultType': 'complete',
+                                    'isError': False,
+                                    'content': [{'type': 'text',
+                                                 'text': 'ok'}]})
+        with mock.patch('builtins.input',
+                        side_effect=['status', EOFError()]):
+            code = repl.run_interactive_plain(session)
+        self.assertEqual(code, 0)
+        self.assertIn('ok', out.getvalue())
+
+    def test_the_interactive_loop_falls_back_without_pt(self):
+        # A missing prompt_toolkit is the plain reader, not a refusal
+        import sys as sys_module
+        client = FakeClient()
+        session, _out, err = make_repl(client, interactive=True)
+        with mock.patch.dict(sys_module.modules,
+                             {'prompt_toolkit': None,
+                              'prompt_toolkit.history': None}), \
+                mock.patch('builtins.input', side_effect=[EOFError()]):
+            code = repl.run_interactive(session)
+        self.assertEqual(code, 0)
+        # The session ran, banner included
+        self.assertIn('debops mcp repl', err.getvalue())
+
+
+class ConnectEraTestCase(unittest.TestCase):
+    """The REPL checks the daemon's protocol era before talking."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-era-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        self.socket = os.path.join(self.tmpdir, 'x.sock')
+
+    def fake_client(self, answer):
+        instance = mock.Mock()
+        instance.request.return_value = answer
+        return instance
+
+    def test_a_legacy_daemon_needs_the_flag(self):
+        # The legacy answer has no resultType envelope marker
+        answer = {'result': {'supportedVersions': []}}
+        with mock.patch('debops.mcp.repl.UnixClient',
+                        return_value=self.fake_client(answer)):
+            with self.assertRaises(ReplError) as context:
+                repl.connect_or_spawn(self.socket, None)
+        self.assertIn('retry with --legacy', str(context.exception))
+
+    def test_a_native_daemon_refuses_the_flag(self):
+        answer = {'result': {'resultType': 'complete'}}
+        with mock.patch('debops.mcp.repl.UnixClient',
+                        return_value=self.fake_client(answer)):
+            with self.assertRaises(ReplError) as context:
+                repl.connect_or_spawn(self.socket, None, legacy=True)
+        self.assertIn('drop --legacy', str(context.exception))
+
+    def test_the_probe_carries_the_server_version(self):
+        answer = {'result': {'resultType': 'complete',
+                             '_meta': {'io.modelcontextprotocol/'
+                                       'serverInfo':
+                                       {'name': 'debops',
+                                        'version': '3.1.0'}}}}
+        with mock.patch('debops.mcp.repl.UnixClient',
+                        return_value=self.fake_client(answer)):
+            connected = repl.connect_or_spawn(self.socket, None)
+        self.assertEqual(connected.server_version, '3.1.0')
+        self.assertEqual(connected.protocol_version, '2026-07-28')
+
+
+class StopDaemonTestCase(unittest.TestCase):
+    """The '--stop' guardrails: only a client-spawned daemon goes."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-stop-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        self.socket = os.path.join(self.tmpdir, 'x.sock')
+
+    def _pid_file(self, *lines):
+        with open(self.socket + '.pid', 'w') as fp:
+            fp.write('\n'.join(lines) + '\n')
+
+    def test_no_pid_file(self):
+        with self.assertRaises(ReplError) as context:
+            repl.stop_daemon(self.socket)
+        self.assertIn('no pid file', str(context.exception))
+
+    def test_a_hand_started_daemon_is_refused(self):
+        # No origin line: the daemon came from a deliberate serve
+        self._pid_file(str(os.getpid()))
+        with self.assertRaises(ReplError) as context:
+            repl.stop_daemon(self.socket)
+        self.assertIn('not spawned by a client', str(context.exception))
+        # The refusal names the pid, so the operator can still act
+        self.assertIn('kill {}'.format(os.getpid()),
+                      str(context.exception))
+
+    def test_a_non_daemon_pid_is_refused(self):
+        # A recycled pid must not die: the test process is no daemon
+        self._pid_file(str(os.getpid()), 'spawned')
+        with self.assertRaises(ReplError) as context:
+            repl.stop_daemon(self.socket)
+        self.assertIn('not a debops-mcp process',
+                      str(context.exception))
+
+    def test_a_dead_daemon_is_reported(self):
+        # Beyond any pid_max: the stale file is reported, not killed
+        self._pid_file('99999999', 'spawned')
+        with self.assertRaises(ReplError) as context:
+            repl.stop_daemon(self.socket)
+        self.assertIn('already gone', str(context.exception))
+
+
+class BannerTestCase(unittest.TestCase):
+
+    def test_the_banner_names_the_version_and_the_protocol(self):
+        client = FakeClient()
+        client.server_version = '3.1.0'
+        client.protocol_version = '2026-07-28'
+        session, _out, err = make_repl(client, interactive=True)
+        with mock.patch('builtins.input', side_effect=[EOFError()]):
+            repl.run_interactive_plain(session)
+        self.assertIn('(DebOps 3.1.0, protocol 2026-07-28)',
+                      err.getvalue())
+
+
+class CompletionTestCase(unittest.TestCase):
+
+    def test_the_playbook_targets_complete(self):
+        client = FakeClient()
+        repl_obj, _out, _err = make_repl(client)
+        client.queue('tools/call', {
+                'resultType': 'complete',
+                'structuredContent': [{'target': 'site'},
+                                      {'target': 'service/nginx'}]})
+        self.assertEqual(repl_obj.complete_candidates('check'),
+                         ['site', 'service/nginx'])
+        # The cache held: one call only
+        self.assertEqual(repl_obj.complete_candidates('run'),
+                         ['site', 'service/nginx'])
+        self.assertEqual(len(client.calls), 1)
+
+    def test_a_dead_server_completes_nothing(self):
+        client = FakeClient()
+        repl_obj, _out, _err = make_repl(client)
+
+        def dead(method, params):
+            raise ConnectionError('gone')
+
+        client.request = dead
+        self.assertEqual(repl_obj.complete_candidates('check'), [])
+
+
+if __name__ == '__main__':
+    unittest.main()

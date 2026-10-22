@@ -2779,6 +2779,241 @@ def test_help_wraps_at_a_comfortable_width(run_debops, mcp_env,
     assert "--docs" in result.stdout
 
 
+def _serve_daemon(run_args, project_dir, socket_path, env):
+    """A daemon for the REPL tests; the caller terminates it."""
+    server = subprocess.Popen(run_args, cwd=str(project_dir), env=env,
+                              stdin=subprocess.DEVNULL,
+                              stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL)
+    import socket as socket_module
+    deadline = time.monotonic() + 15
+    while True:
+        try:
+            probe = socket_module.socket(socket_module.AF_UNIX,
+                                         socket_module.SOCK_STREAM)
+            probe.connect(socket_path)
+            probe.close()
+            return server
+        except (ConnectionRefusedError, FileNotFoundError):
+            if time.monotonic() > deadline:
+                server.kill()
+                raise RuntimeError("the daemon did not come up")
+            probe.close()
+            time.sleep(0.05)
+
+
+def test_repl_over_a_pipe_against_a_daemon(run_debops, mcp_env,
+                                           project_dir, tmp_path,
+                                           debops_source_dir):
+    """The scripted REPL: commands on stdin, answers on stdout."""
+    socket_path = str(tmp_path / "repl.sock")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+            [debops_source_dir,
+             env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    env.update(mcp_env)
+    server = _serve_daemon(
+            [sys.executable, "-m", "debops", "mcp", "serve",
+             "--socket", socket_path], project_dir, socket_path, env)
+    try:
+        result = subprocess.run(
+                [sys.executable, "-m", "debops", "mcp", "repl",
+                 "--socket", socket_path],
+                cwd=str(project_dir), env=env,
+                input="status\nexit\n", capture_output=True, text=True,
+                timeout=60)
+        assert result.returncode == 0
+        assert "Project:" in result.stdout
+        # The exit status notes a failing command
+        result = subprocess.run(
+                [sys.executable, "-m", "debops", "mcp", "repl",
+                 "--socket", socket_path],
+                cwd=str(project_dir), env=env,
+                input="read ../outside\n", capture_output=True,
+                text=True, timeout=60)
+        assert result.returncode == 1
+        assert "error:" in result.stderr
+    finally:
+        server.terminate()
+        server.wait(timeout=10)
+
+
+def test_repl_runs_a_check_through_the_daemon(run_debops, mcp_env,
+                                              project_dir, tmp_path,
+                                              debops_source_dir):
+    """The task flow end to end: the check becomes a task the REPL
+    polls; the confirmation gate declines in a pipe."""
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+    confd = project_dir / ".debops" / "conf.d"
+    confd.mkdir(parents=True, exist_ok=True)
+    (confd / "mcp-test.toml").write_text(
+            "[project.mcp]\nconfirm_required = false\nconfirm = []\n")
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+    playbooks = project_dir / "ansible" / "playbooks"
+    playbooks.mkdir(parents=True)
+    (playbooks / "custom.yml").write_text("""---
+- name: Test play
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Say hello
+      ansible.builtin.debug:
+        msg: hello from the repl
+""")
+
+    socket_path = str(tmp_path / "repl.sock")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+            [debops_source_dir,
+             env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    env.update(mcp_env)
+    server = _serve_daemon(
+            [sys.executable, "-m", "debops", "mcp", "serve",
+             "--socket", socket_path], project_dir, socket_path, env)
+    try:
+        result = subprocess.run(
+                [sys.executable, "-m", "debops", "mcp", "repl",
+                 "--socket", socket_path],
+                cwd=str(project_dir), env=env,
+                input="check custom\nexit\n", capture_output=True,
+                text=True, timeout=120)
+        assert result.returncode == 0
+        assert "exit code: 0" in result.stdout
+        assert "hello from the repl" in result.stdout
+    finally:
+        server.terminate()
+        server.wait(timeout=10)
+
+
+def test_repl_speaks_the_legacy_era(run_debops, mcp_env, project_dir,
+                                    tmp_path, debops_source_dir):
+    """A daemon started with '--legacy' answers the REPL started the
+    same way; the era mismatch is caught and named."""
+    socket_path = str(tmp_path / "legacy.sock")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+            [debops_source_dir,
+             env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    env.update(mcp_env)
+    server = _serve_daemon(
+            [sys.executable, "-m", "debops", "mcp", "serve",
+             "--socket", socket_path, "--legacy"],
+            project_dir, socket_path, env)
+    try:
+        # The native REPL is taught the flag
+        result = subprocess.run(
+                [sys.executable, "-m", "debops", "mcp", "repl",
+                 "--socket", socket_path],
+                cwd=str(project_dir), env=env,
+                input="status\nexit\n", capture_output=True, text=True,
+                timeout=60)
+        assert result.returncode == 1
+        assert "retry with --legacy" in result.stderr
+
+        result = subprocess.run(
+                [sys.executable, "-m", "debops", "mcp", "repl",
+                 "--socket", socket_path, "--legacy"],
+                cwd=str(project_dir), env=env,
+                input="status\nexit\n", capture_output=True, text=True,
+                timeout=60)
+        assert result.returncode == 0
+        assert "Project:" in result.stdout
+    finally:
+        server.terminate()
+        server.wait(timeout=10)
+
+
+def test_repl_spawns_a_daemon_on_the_well_known_socket(
+        run_debops, mcp_env, project_dir, tmp_path):
+    """No daemon running: the pipe mode spawns one on the well-known
+    runtime path."""
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    env = dict(mcp_env, XDG_RUNTIME_DIR=str(runtime))
+    result = run_debops("mcp", "repl", env=env, cwd=str(project_dir),
+                        input_text="status\nexit\n")
+    sockets = []
+    try:
+        assert result.returncode == 0, result.stderr
+        assert "Project:" in result.stdout
+        # The daemon is detached: it outlives the interpreter, and the
+        # pid sidecar rides next to the well-known socket
+        sockets = list((runtime / "debops" / "mcp").glob("*.sock"))
+        assert len(sockets) == 1
+        pid_path = Path(str(sockets[0]) + ".pid")
+        assert pid_path.read_text().split()[1] == "spawned"
+    finally:
+        # Clean up the spawned daemon via its pid file
+        if sockets:
+            pid_path = Path(str(sockets[0]) + ".pid")
+            if pid_path.exists():
+                os.kill(int(pid_path.read_text().split()[0]), 15)
+
+
+def test_repl_stop_reaps_the_spawned_daemon(run_debops, mcp_env,
+                                            project_dir, tmp_path):
+    """'repl --stop' reaps the client-spawned daemon and refuses a
+    hand-started one."""
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    env = dict(mcp_env, XDG_RUNTIME_DIR=str(runtime))
+    result = run_debops("mcp", "repl", env=env, cwd=str(project_dir),
+                        input_text="status\nexit\n")
+    assert result.returncode == 0
+    sockets = list((runtime / "debops" / "mcp").glob("*.sock"))
+    assert len(sockets) == 1
+    pid_path = Path(str(sockets[0]) + ".pid")
+    assert pid_path.read_text().split()[1] == "spawned"
+
+    result = run_debops("mcp", "repl", "--stop", env=env,
+                        cwd=str(project_dir))
+    assert result.returncode == 0
+    assert "stopped" in result.stdout
+    # The socket and the sidecars went with the daemon
+    assert not sockets[0].exists()
+    assert not pid_path.exists()
+    # A second stop is a clean refusal
+    result = run_debops("mcp", "repl", "--stop", env=env,
+                        cwd=str(project_dir))
+    assert result.returncode == 1
+    assert "no pid file" in result.stderr
+
+
+def test_repl_stop_refuses_a_hand_started_daemon(run_debops, mcp_env,
+                                                 project_dir,
+                                                 tmp_path):
+    """A daemon from 'serve --detach' is not the REPL's to reap."""
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    env = dict(mcp_env, XDG_RUNTIME_DIR=str(runtime))
+    result = run_debops("mcp", "serve", "--socket", "--detach",
+                        cwd=str(project_dir), env=env)
+    assert result.returncode == 0
+    sockets = list((runtime / "debops" / "mcp").glob("*.sock"))
+    assert len(sockets) == 1
+    pid_path = Path(str(sockets[0]) + ".pid")
+    lines = pid_path.read_text().split()
+    pid = int(lines[0])
+    # The hand-started daemon carries no origin note
+    assert len(lines) == 1
+    try:
+        result = run_debops("mcp", "repl", "--stop", env=env,
+                            cwd=str(project_dir))
+        assert result.returncode == 1
+        assert "not spawned by a client" in result.stderr
+        assert "kill {}".format(pid) in result.stderr
+        # And it is still alive
+        os.kill(pid, 0)
+    finally:
+        os.kill(pid, 15)
+
+
 def test_serve_detach_reports_and_serves(run_debops, mcp_env,
                                          project_dir, tmp_path):
     """'serve --socket --detach': the command returns once the daemon

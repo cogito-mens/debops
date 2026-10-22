@@ -346,3 +346,57 @@ class SocketPathTestCase(unittest.TestCase):
             self.assertIn('-example', path)
 
 
+class LegacyUnixClientTestCase(unittest.TestCase):
+    """The client speaks the 2025-era revision with 'legacy'."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-legacy-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        self.path = os.path.join(self.tmpdir, 'legacy.sock')
+        self.transport = None
+        self.thread = None
+
+    def _serve(self, legacy):
+        server = McpServer(legacy=legacy)
+        self.transport = UnixSocketTransport(self.path)
+        self.thread = threading.Thread(
+                target=self.transport.serve, args=(server,),
+                daemon=True)
+        self.thread.start()
+        wait_for_socket(self.path)
+
+    def tearDown(self):
+        if self.transport is not None:
+            self.transport.shutdown()
+        if self.thread is not None:
+            self.thread.join(timeout=5)
+
+    def test_the_handshake_then_plain_requests(self):
+        self._serve(legacy=True)
+        with client.UnixClient(self.path, legacy=True) as connection:
+            response = connection.request('tools/list')
+        # The handshake happened once: the ids went initialize (1),
+        # then this request (2)
+        self.assertEqual(response['id'], 2)
+        self.assertEqual(response['result']['tools'], [])
+
+    def test_legacy_requests_carry_no_meta_envelope(self):
+        self._serve(legacy=True)
+        with client.UnixClient(self.path, legacy=True) as connection:
+            raw = connection.request_raw('tools/list')
+        # The 2025-era answer: no resultType marker
+        self.assertNotIn(b'resultType', raw)
+
+    def test_the_handshake_is_refused_by_a_native_server(self):
+        self._serve(legacy=False)
+        with self.assertRaises(ConnectionError) as context:
+            client.UnixClient(self.path, legacy=True).request(
+                    'tools/list')
+        self.assertIn('2026-07-28', str(context.exception))
+
+    def test_the_handshake_learns_the_server_identity(self):
+        self._serve(legacy=True)
+        with client.UnixClient(self.path, legacy=True) as connection:
+            connection.request('tools/list')
+        self.assertEqual(connection.protocol_version, '2025-11-25')
+        self.assertTrue(connection.server_version)

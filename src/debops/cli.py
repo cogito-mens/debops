@@ -124,6 +124,8 @@ class Interpreter(object):
         elif self.parsed_args.section == 'mcp':
             if self.parsed_args.command == 'serve':
                 self.do_mcp_serve(self.parsed_args.args)
+            elif self.parsed_args.command == 'repl':
+                self.do_mcp_repl(self.parsed_args.args)
             elif self.parsed_args.command == 'connect':
                 self.do_mcp_connect(self.parsed_args.args)
             elif self.parsed_args.command == 'inspect':
@@ -940,6 +942,50 @@ class Interpreter(object):
         elif step == 'resources':
             print('\n'.join(mcp_client.format_resources(
                     result.get('resources', []))))
+
+    def do_mcp_repl(self, args):
+        self._mcp_refuse_if_disabled()
+        from .mcp import repl as repl_mod
+        project = None
+        if not args.docs:
+            # ProjectDir chdirs into the directory it probes, even
+            # when it then fails; capture the invocation directory
+            # first
+            invoked_in = os.getcwd()
+            try:
+                project = ProjectDir(path=args.project_dir,
+                                     config=self.config)
+            except (IsADirectoryError, NotADirectoryError) as errmsg:
+                os.chdir(invoked_in)
+                print('Error:', errmsg, file=sys.stderr)
+                sys.exit(1)
+        socket_path = (os.path.abspath(os.path.expanduser(args.socket))
+                       if args.socket else default_socket_path(project))
+        if args.stop:
+            try:
+                repl_mod.stop_daemon(socket_path)
+            except repl_mod.ReplError as errmsg:
+                print('Error:', errmsg, file=sys.stderr)
+                sys.exit(1)
+            return
+        interactive = sys.stdin.isatty()
+        try:
+            client = repl_mod.connect_or_spawn(
+                    socket_path, project, docs=args.docs,
+                    spawn=args.spawn, interactive=interactive,
+                    legacy=args.legacy)
+        except repl_mod.ReplError as errmsg:
+            print('Error:', errmsg, file=sys.stderr)
+            sys.exit(1)
+        with client:
+            code = repl_mod.run(
+                    client,
+                    project_name=(project.name if project is not None
+                                  else None),
+                    view=(project.view if project is not None
+                          else None),
+                    interactive=interactive)
+        sys.exit(code)
 
     def do_mcp_configure(self, args):
         self._mcp_refuse_if_disabled()

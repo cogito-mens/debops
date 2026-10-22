@@ -107,6 +107,9 @@ setup(
     extras_require={
         'ansible': ['ansible', 'netaddr', 'passlib',
                     'python-ldap', 'dnspython', 'pyopenssl'],
+        # The interactive REPL reader (history, tab completion);
+        # without it the REPL runs the plain readline/input loop
+        'repl': ['prompt_toolkit'],
         'tests': ['pytest>=7', 'pytest-cov']
     },
     package_dir={'': 'src'},
