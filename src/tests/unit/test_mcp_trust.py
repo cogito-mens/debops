@@ -78,9 +78,21 @@ class PassphraseTestCase(unittest.TestCase):
                 os.path.dirname(path)).st_mode), 0o700)
         with open(path) as fp:
             self.assertEqual(len(fp.read().split()), 4)
+        # The marker ignores the whole directory, itself included —
+        # 'git status' never mentions it
         with open(os.path.join(os.path.dirname(path),
                                '.gitignore')) as fp:
-            self.assertEqual(fp.read(), '*\n!.gitignore\n')
+            self.assertEqual(fp.read(), '*\n')
+
+    def test_the_marker_is_repaired_to_the_invisible_form(self):
+        trust.ensure_passphrase(self.project)
+        path = os.path.join(self.tmpdir, trust.TRUST_PATH)
+        marker = os.path.join(os.path.dirname(path), '.gitignore')
+        with open(marker, 'w') as fp:
+            fp.write('*\n!.gitignore\n')  # the first form
+        self.assertFalse(trust.ensure_passphrase(self.project))
+        with open(marker) as fp:
+            self.assertEqual(fp.read(), '*\n')
 
     def test_git_never_sees_the_passphrase(self):
         # The operator's 'git add -A' and the MCP commit machinery
@@ -97,10 +109,8 @@ class PassphraseTestCase(unittest.TestCase):
         status = subprocess.run(['git', 'status', '--porcelain'],
                                 cwd=self.tmpdir, env=env,
                                 capture_output=True, text=True)
-        staged = status.stdout
-        self.assertNotIn('trust', staged)
-        # The ignore marker itself may be committed; the secret never
-        self.assertIn('.gitignore', staged)
+        # Nothing staged at all: the marker stays invisible too
+        self.assertEqual(status.stdout, '')
 
 
 class DenyListTestCase(unittest.TestCase):

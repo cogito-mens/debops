@@ -62,19 +62,30 @@ def passphrase_matches(presented, stored):
 def ensure_passphrase(project):
     """Create the trust passphrase of a project when it has none.
 
-    The directory is 0700, the file 0600, and the '.gitignore' next
-    to it keeps the whole directory out of git — the MCP commit
-    machinery included. Returns True when one was generated.
+    The directory is 0700 and the file 0600. The '.gitignore' next to
+    it marks the whole directory out of git — the MCP commit machinery
+    included — and carries no self-exception: even the marker stays
+    invisible, so 'git status' never mentions the directory. Returns
+    True when a passphrase was generated.
     """
-    path = os.path.join(project.path, TRUST_PATH)
-    if os.path.exists(path):
-        return False
-    directory = os.path.dirname(path)
+    directory = os.path.join(project.path, os.path.dirname(TRUST_PATH))
     os.makedirs(directory, mode=0o700, exist_ok=True)
     os.chmod(directory, 0o700)
     gitignore = os.path.join(directory, '.gitignore')
-    with open(gitignore, 'w') as fp:
-        fp.write('*\n!.gitignore\n')
+    try:
+        with open(gitignore) as fp:
+            if fp.read() == '*\n':
+                write = False
+            else:
+                write = True
+    except OSError:
+        write = True
+    if write:
+        with open(gitignore, 'w') as fp:
+            fp.write('*\n')
+    path = os.path.join(project.path, TRUST_PATH)
+    if os.path.exists(path):
+        return False
     with open(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600),
               'w') as fp:
         fp.write(word_passphrase() + '\n')
