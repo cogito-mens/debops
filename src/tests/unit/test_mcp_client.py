@@ -327,6 +327,28 @@ class UnixClientTestCase(unittest.TestCase):
             with self.assertRaises(StopIteration):
                 next(stream)
 
+    def test_request_streaming_idles_past_the_request_timeout(self):
+        # A quiet stream must not die on the per-request timeout: the
+        # read timeout is off for the stream and restored after
+        with client.UnixClient(self.path, timeout=1) as connection:
+            stream = connection.request_streaming(
+                    'subscriptions/listen',
+                    {'notifications': {'toolsListChanged': True}})
+            next(stream)  # the ack
+            self.assertIsNone(connection._connection.gettimeout())
+            # Longer than the client timeout, no event
+            time.sleep(1.5)
+            self.server.emit_list_changed('tools')
+            for message in stream:
+                self.assertEqual(message['method'],
+                                 'notifications/tools/list_changed')
+                break
+            connection.notify('notifications/cancelled',
+                              {'requestId': connection.inflight_id})
+            with self.assertRaises(StopIteration):
+                next(stream)
+            self.assertEqual(connection._connection.gettimeout(), 1)
+
 
 class SocketPathTestCase(unittest.TestCase):
 

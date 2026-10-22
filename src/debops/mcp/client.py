@@ -184,7 +184,8 @@ class UnixClient(object):
     def request_streaming(self, method, params=None):
         """Send a request which answers with a notification stream,
         closed by the completion; iterate it. Closing the connection
-        ends the stream server-side."""
+        ends the stream server-side. The per-request timeout does not
+        apply: a stream idles indefinitely between events."""
         self._connect()
         request_params = dict(params or {})
         if not self.legacy:
@@ -198,19 +199,28 @@ class UnixClient(object):
                    'method': method, 'params': request_params}
         self._connection.sendall(json.dumps(message).encode('utf-8')
                                  + b'\n')
-        while True:
-            data = rpc.read_message(self._reader)
-            if data is None:
-                raise EOFError('the server closed the connection')
-            message = json.loads(data)
-            if message.get('id') == request_id:
-                if 'error' in message:
-                    details = (message['error'].get('data', {}) or {})
-                    raise RuntimeError(details.get(
-                            'details') or message['error'].get(
-                                    'message', 'unknown error'))
-                return
-            yield message
+        self._connection.settimeout(None)
+        try:
+            while True:
+                data = rpc.read_message(self._reader)
+                if data is None:
+                    raise EOFError('the server closed the connection')
+                message = json.loads(data)
+                if message.get('id') == request_id:
+                    if 'error' in message:
+                        details = (message['error'].get('data', {})
+                                   or {})
+                        raise RuntimeError(details.get(
+                                'details') or message['error'].get(
+                                        'message', 'unknown error'))
+                    return
+                yield message
+        finally:
+            if self._connection is not None:
+                try:
+                    self._connection.settimeout(self._timeout)
+                except OSError:
+                    pass
 
     def close(self):
         if self._connection is not None:

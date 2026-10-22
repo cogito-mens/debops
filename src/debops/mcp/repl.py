@@ -471,7 +471,7 @@ class Repl(object):
             # Closing the channel ends the stream server-side
             self.client.close()
             print('watch ended', file=self._err)
-        except (EOFError, RuntimeError) as errmsg:
+        except (EOFError, RuntimeError, TimeoutError) as errmsg:
             raise ReplError(str(errmsg))
 
     def cmd_edit(self, args):

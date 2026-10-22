@@ -394,6 +394,22 @@ class TrustVerbsTestCase(unittest.TestCase):
         self.assertIn('Tool check(site) -> ok', out.getvalue())
         self.assertEqual(client.calls, [])  # the stream bypasses them
 
+    def test_a_stalled_stream_is_a_clean_error(self):
+        # The read timeout of a quiet stream is a line on the error
+        # channel, not a traceback
+        client = FakeClient()
+        client.legacy = False
+        client.bearer = 'the-token'
+        session, _out, _err = make_repl(client)
+
+        def stalled(*args, **kwargs):
+            raise TimeoutError('timed out')
+
+        client.request_streaming = stalled
+        with self.assertRaises(ReplError) as context:
+            session.execute('watch')
+        self.assertIn('timed out', str(context.exception))
+
     def test_bootstrap_trust_with_a_readable_file(self):
         self._write_passphrase()
         client = FakeClient()
