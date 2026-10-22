@@ -76,16 +76,109 @@ class GalaxyListTestCase(unittest.TestCase):
 
 
 class DocsProviderTestCase(unittest.TestCase):
-    """The documentation-mode collection index and its confinement."""
+    """The documentation-mode collection index and its roots."""
 
-    def test_effective_collections_path(self):
-        from debops.mcp.tools.collections import (BUNDLED_COLLECTIONS_ROOT,
-                                                  effective_collections_path)
-        self.assertEqual(effective_collections_path({}),
-                         BUNDLED_COLLECTIONS_ROOT)
-        self.assertEqual(effective_collections_path(
-                {'ANSIBLE_COLLECTIONS_PATH': '/srv/collections'}),
-                '/srv/collections')
+    def setUp(self):
+        from debops.mcp.tools import collections
+        collections._account_roots_cache['roots'] = None
+        self.addCleanup(collections._account_roots_cache.update,
+                        roots=None)
+
+    def test_parse_collections_paths(self):
+        from debops.mcp.tools.collections import _parse_collections_paths
+        self.assertEqual(_parse_collections_paths(
+                "CONFIGURABLE TEXT\n"
+                "COLLECTIONS_PATHS(default) = "
+                "['/home/x/.ansible/collections', "
+                "'/usr/share/ansible/collections']\n"),
+                ['/home/x/.ansible/collections',
+                 '/usr/share/ansible/collections'])
+        self.assertEqual(_parse_collections_paths(
+                "COLLECTIONS_PATHS(env: ANSIBLE_COLLECTIONS_PATH) = "
+                "['/srv/x']\n"), ['/srv/x'])
+        with self.assertRaises(ValueError):
+            _parse_collections_paths('garbage\n')
+        with self.assertRaises(ValueError):
+            _parse_collections_paths("COLLECTIONS_PATHS(default) = 42\n")
+
+    def test_account_roots_without_ansible_fall_back_to_defaults(self):
+        from debops.mcp.tools import collections
+        with mock.patch.object(collections, 'account_ansible_binary',
+                               return_value=None):
+            roots = collections.account_collection_roots()
+        self.assertEqual(roots,
+                         [os.path.expanduser('~/.ansible/collections'),
+                          '/usr/share/ansible/collections'])
+
+    def test_account_roots_come_from_the_ansible_config_dump(self):
+        from debops.mcp.tools import collections
+        dump = ("COLLECTIONS_PATHS(default) = "
+                "['/acct/.ansible/collections', "
+                "'/usr/share/ansible/collections']\n")
+        with mock.patch.object(collections, 'account_ansible_binary',
+                               return_value='/x/bin/ansible-config'), \
+                mock.patch.object(collections.subprocess,
+                                  'run') as run:
+            run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout=dump, stderr='')
+            roots = collections.account_collection_roots()
+            # The discovery result is cached for the process
+            self.assertEqual(collections.account_collection_roots(),
+                             roots)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args[0][0],
+                         ['/x/bin/ansible-config', 'dump'])
+        self.assertEqual(roots, ['/acct/.ansible/collections',
+                                 '/usr/share/ansible/collections'])
+        # No variable, no ANSIBLE_HOME: the defaults are the account's
+        # real ones; the neutral config blocks config smuggling
+        env = run.call_args[1]['env']
+        self.assertNotIn('ANSIBLE_COLLECTIONS_PATH', env)
+        self.assertNotIn('ANSIBLE_HOME', env)
+        self.assertTrue(env['ANSIBLE_CONFIG'].endswith(
+                os.path.join('mcp', 'ansible.cfg')))
+
+    def test_documentation_roots_with_a_defined_variable(self):
+        from debops.mcp.tools import collections
+        roots = collections.documentation_collection_roots(
+                {'ANSIBLE_COLLECTIONS_PATH': '/srv/a:/srv/b'})
+        # The variable rules; the bundled collection rides last
+        self.assertEqual(roots, ['/srv/a', '/srv/b',
+                                 collections.BUNDLED_COLLECTIONS_ROOT])
+        # ... and is not duplicated when the operator named it
+        roots = collections.documentation_collection_roots(
+                {'ANSIBLE_COLLECTIONS_PATH':
+                 collections.BUNDLED_COLLECTIONS_ROOT})
+        self.assertEqual(roots, [collections.BUNDLED_COLLECTIONS_ROOT])
+
+    def test_documentation_roots_without_a_variable(self):
+        from debops.mcp.tools import collections
+        with mock.patch.object(collections, 'account_collection_roots',
+                               return_value=['/acct/collections']):
+            roots = collections.documentation_collection_roots({})
+        self.assertEqual(roots, ['/acct/collections',
+                                 collections.BUNDLED_COLLECTIONS_ROOT])
+
+    def test_collection_content_dirs(self):
+        from debops.mcp.tools import collections
+        tmpdir = tempfile.mkdtemp(prefix='debops-mcp-roots-')
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        for root in ('a', 'b'):
+            os.makedirs(os.path.join(tmpdir, root, 'ansible_collections',
+                                     'ns{}'.format(root),
+                                     'coll', 'roles'))
+        # A collection without a roles directory is skipped
+        os.makedirs(os.path.join(tmpdir, 'b', 'ansible_collections',
+                                 'nsb', 'noroles'))
+        dirs = collections.collection_content_dirs(
+                [os.path.join(tmpdir, 'a'), os.path.join(tmpdir, 'b')],
+                'roles')
+        self.assertEqual([os.path.relpath(entry, tmpdir)
+                          for entry in dirs],
+                         [os.path.join('a', 'ansible_collections',
+                                       'nsa', 'coll', 'roles'),
+                          os.path.join('b', 'ansible_collections',
+                                       'nsb', 'coll', 'roles')])
 
     def test_filter_collections_under(self):
         from debops.mcp.tools.collections import filter_collections_under
@@ -121,13 +214,18 @@ class DocsProviderTestCase(unittest.TestCase):
             provider = collections.docs_collection_provider(
                     environ={'ANSIBLE_COLLECTIONS_PATH': '/bundled'})
             index = provider()
-        # The ambient account's collections never leak in
         self.assertEqual(sorted(index), ['debops.debops'])
-        # The subprocess environment agrees with the filter
-        self.assertEqual(seen['environ']['ANSIBLE_COLLECTIONS_PATH'],
-                         '/bundled')
+        # The subprocess environment agrees with the filter: the
+        # operator's root rules, the bundled one rides last, and the
+        # neutral config blocks a stray ansible.cfg
+        self.assertEqual(
+                seen['environ']['ANSIBLE_COLLECTIONS_PATH'],
+                os.pathsep.join(['/bundled',
+                                 collections.BUNDLED_COLLECTIONS_ROOT]))
+        self.assertTrue(seen['environ']['ANSIBLE_CONFIG'].endswith(
+                os.path.join('mcp', 'ansible.cfg')))
 
-    def test_docs_provider_defaults_to_the_bundled_collection(self):
+    def test_docs_provider_serves_the_account_collections(self):
         from debops.mcp.tools import collections
         bundled = os.path.join(collections.BUNDLED_COLLECTIONS_ROOT,
                                'ansible_collections')
@@ -140,10 +238,28 @@ class DocsProviderTestCase(unittest.TestCase):
             }
 
         with mock.patch.object(collections, 'galaxy_collection_list',
-                               fake_list):
+                               fake_list), \
+                mock.patch.object(collections,
+                                  'account_collection_roots',
+                                  return_value=['/ambient']):
             provider = collections.docs_collection_provider(environ={})
             index = provider()
-        self.assertEqual(sorted(index), ['debops.debops'])
+        # The account's collections are served next to the bundled one
+        self.assertEqual(sorted(index),
+                         ['community.sops', 'debops.debops'])
+
+    def test_docs_mode_galaxy_uses_the_account_binary(self):
+        from debops.mcp.tools import collections
+        with mock.patch.object(
+                collections, 'account_ansible_binary',
+                return_value='/home/x/.local/bin/ansible-galaxy'), \
+                mock.patch.object(collections.subprocess,
+                                  'run') as run:
+            run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout='{}', stderr='')
+            collections.galaxy_collection_list(None, environ={})
+        self.assertEqual(run.call_args[0][0][0],
+                         '/home/x/.local/bin/ansible-galaxy')
 
 
 class KillSwitchTestCase(unittest.TestCase):

@@ -17,13 +17,14 @@ import json
 import logging
 import os
 import re
-import shutil
 import subprocess
 
 from ...constants import DEBOPS_PACKAGE_DATA
-from .collections import BUNDLED_COLLECTIONS_ROOT
-from .common import (document_result, error_result, mcp_environ,
-                     parse_output_format, text_result)
+from .collections import (BUNDLED_COLLECTIONS_ROOT,
+                          documentation_collection_roots)
+from .common import (account_ansible_binary, document_result,
+                     error_result, mcp_environ, parse_output_format,
+                     text_result)
 
 logger = logging.getLogger(__name__)
 
@@ -41,51 +42,26 @@ PLUGIN_NAME_PATTERN = re.compile(r'^[a-zA-Z0-9_.]+$')
 
 DOC_TIMEOUT = 60  # seconds; a full plugin scan can take a while
 
-# Where the account's own ansible-doc lives, in preference order: the
-# pipx or pip --user install, the administrator's /usr/local install,
-# the distribution package. The harness which spawns a server may
-# carry a PATH without the user locations
-ACCOUNT_ANSIBLE_DOC = ('~/.local/bin/ansible-doc',
-                       '/usr/local/bin/ansible-doc',
-                       '/usr/bin/ansible-doc')
-
-# The collection roots ansible-doc searches by default. With no
-# operator-chosen ANSIBLE_COLLECTIONS_PATH the documentation mode
-# serves them next to the bundled collection
-ACCOUNT_COLLECTION_ROOTS = ('~/.ansible/collections',
-                            '/usr/share/ansible/collections')
-
 
 def account_ansible_doc():
-    """The ansible-doc of the account's own environment, or None.
-
-    The user locations in preference order, then the inherited PATH;
-    None when nothing is found, so the caller decides how to report
-    the absence.
-    """
-    for candidate in ACCOUNT_ANSIBLE_DOC:
-        path = os.path.expanduser(candidate)
-        if os.path.isfile(path) and os.access(path, os.X_OK):
-            logger.debug('Resolved ansible-doc: %s', path)
-            return path
-    found = shutil.which('ansible-doc')
-    logger.debug('Resolved ansible-doc: %s', found or '(not found)')
-    return found
+    """The ansible-doc of the account's own environment, or None."""
+    return account_ansible_binary('ansible-doc')
 
 
 def _doc_environ(project, policy):
     """The environment for the ansible-doc subprocess.
 
     The project environment in a project. In the documentation mode
-    the account's own environment is consulted: an operator-chosen
-    ANSIBLE_COLLECTIONS_PATH is inherited as is, and without one the
-    account's default collection roots are served next to the bundled
-    collection, so the system-wide or pipx-installed ansible-doc
-    answers for the content the account actually has. A stray
-    ansible.cfg from the harness' launch directory must not smuggle
-    ambient plugin paths in either way. When the content policy
-    restricts the visible collections, the variable is computed from
-    the allowed roots instead of inherited.
+    the account's own environment is consulted: the collection roots
+    of documentation_collection_roots() — the operator-chosen
+    ANSIBLE_COLLECTIONS_PATH entries when it is defined, the account's
+    discovered defaults otherwise, the bundled collection always last
+    — so the system-wide or pipx-installed ansible-doc answers for
+    the content the account actually has. A stray ansible.cfg from
+    the harness' launch directory must not smuggle ambient plugin
+    paths in either way. When the content policy restricts the
+    visible collections, the variable is computed from the allowed
+    roots instead of inherited.
     """
     if project is not None:
         env = mcp_environ(project)
@@ -98,11 +74,8 @@ def _doc_environ(project, policy):
         neutral = os.path.join(DEBOPS_PACKAGE_DATA, 'mcp')
         env['ANSIBLE_CONFIG'] = os.path.join(neutral, 'ansible.cfg')
         env['ANSIBLE_HOME'] = neutral
-        if 'ANSIBLE_COLLECTIONS_PATH' not in os.environ:
-            roots = [BUNDLED_COLLECTIONS_ROOT]
-            roots.extend(os.path.expanduser(root)
-                         for root in ACCOUNT_COLLECTION_ROOTS)
-            env['ANSIBLE_COLLECTIONS_PATH'] = os.pathsep.join(roots)
+        env['ANSIBLE_COLLECTIONS_PATH'] = os.pathsep.join(
+                documentation_collection_roots())
     if policy is not None and not (policy.bundled_content
                                    and policy.external_content):
         roots = []

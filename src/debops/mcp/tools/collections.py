@@ -10,6 +10,8 @@ ansible.cfg, the project virtual environment's implicit site-packages
 path and '~' expansion.
 """
 
+import ast
+import glob
 import json
 import logging
 import os
@@ -19,7 +21,8 @@ import time
 
 from ...constants import DEBOPS_PACKAGE_DATA
 from ..policy import confine_under
-from .common import error_result, mcp_environ, text_result
+from .common import (account_ansible_binary, error_result, mcp_environ,
+                     text_result)
 from .playbooks import (list_playbooks, parse_playbook, playbook_summary,
                         render_playbook_info, target_form)
 
@@ -36,21 +39,111 @@ COLLECTION_FQCN_PATTERN = re.compile(r'^[a-z0-9_]+\.[a-z0-9_]+$')
 COLLECTION_INDEX_TTL = 60  # seconds
 
 # The collections root of the bundled DebOps collection; the
-# documentation mode defaults to it when the environment does not
-# provide one
+# documentation mode serves it next to the account's own roots
 BUNDLED_COLLECTIONS_ROOT = os.path.join(
         DEBOPS_PACKAGE_DATA, 'ansible', 'collections')
 
+# The collection roots ansible searches by default; the answer when
+# no ansible installation is around to ask
+ACCOUNT_COLLECTION_ROOTS = ('~/.ansible/collections',
+                            '/usr/share/ansible/collections')
 
-def effective_collections_path(environ):
-    """The ANSIBLE_COLLECTIONS_PATH of the documentation mode.
+# The discovery result of the account's default roots; static for the
+# process — a server restart picks up a new ansible installation
+_account_roots_cache = {'roots': None}
 
-    The environment's value when set, the bundled DebOps collection
-    otherwise — the mode is useful with zero configuration, and the
-    ambient account defaults ('~/.ansible/collections', ...) never leak
-    into it.
+
+def account_collection_roots():
+    """The collection roots the account's ansible searches by default.
+
+    Discovered with 'ansible-config dump' — the installation's own
+    answer, version-proof. The subprocess runs with the neutral
+    packaged configuration, so a stray ansible.cfg from the harness'
+    launch directory cannot smuggle roots in, and without an
+    ANSIBLE_HOME override, so the defaults are the account's real
+    ones. The compiled-in defaults answer when no ansible is around
+    to ask (or it fails): the documentation mode degrades, it never
+    breaks.
     """
-    return environ.get('ANSIBLE_COLLECTIONS_PATH') or BUNDLED_COLLECTIONS_ROOT
+    if _account_roots_cache['roots'] is not None:
+        return _account_roots_cache['roots']
+    roots = [os.path.expanduser(root) for root in
+             ACCOUNT_COLLECTION_ROOTS]
+    binary = account_ansible_binary('ansible-config')
+    if binary is not None:
+        env = dict(os.environ)
+        env.pop('ANSIBLE_COLLECTIONS_PATH', None)
+        env.pop('ANSIBLE_HOME', None)
+        neutral = os.path.join(DEBOPS_PACKAGE_DATA, 'mcp')
+        env['ANSIBLE_CONFIG'] = os.path.join(neutral, 'ansible.cfg')
+        try:
+            result = subprocess.run(
+                    [binary, 'dump'], env=env, cwd=neutral,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    universal_newlines=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as errmsg:
+            logger.warning('Cannot ask ansible-config for the '
+                           'collection roots: %s', errmsg)
+        else:
+            try:
+                roots = _parse_collections_paths(result.stdout)
+                logger.debug('The account collection roots per %s: %s',
+                             binary, os.pathsep.join(roots))
+            except ValueError as errmsg:
+                logger.warning('Cannot parse the ansible-config '
+                               'output: %s', errmsg)
+    _account_roots_cache['roots'] = roots
+    return roots
+
+
+def _parse_collections_paths(dump):
+    """The COLLECTIONS_PATHS of an 'ansible-config dump' output.
+
+    The line carries the value's origin ('env: ...', a config file
+    path, 'default'); only the list matters here.
+    """
+    for line in dump.splitlines():
+        if line.startswith('COLLECTIONS_PATHS(') and ' = ' in line:
+            value = ast.literal_eval(line.split(' = ', 1)[1])
+            if isinstance(value, list) and all(
+                    isinstance(entry, str) for entry in value):
+                return value
+            break
+    raise ValueError('no COLLECTIONS_PATHS in the output')
+
+
+def documentation_collection_roots(environ=None):
+    """The collection roots of the documentation mode, in search order.
+
+    The operator-chosen ANSIBLE_COLLECTIONS_PATH entries when it is
+    defined, the account's discovered default roots otherwise; the
+    bundled DebOps collection always last, so the account's own
+    content shadows it. One rule for every documentation-mode
+    consumer — the index, the ansible.doc tool, the role and
+    playbook resolvers — so they agree by construction.
+    """
+    environ = os.environ if environ is None else environ
+    defined = environ.get('ANSIBLE_COLLECTIONS_PATH')
+    if defined:
+        roots = [entry for entry in defined.split(os.pathsep) if entry]
+    else:
+        roots = account_collection_roots()
+    if BUNDLED_COLLECTIONS_ROOT not in roots:
+        roots.append(BUNDLED_COLLECTIONS_ROOT)
+    return roots
+
+
+def collection_content_dirs(roots, kind):
+    """The per-collection '<kind>' directories under the roots ('roles'
+    or 'playbooks'), in root order."""
+    dirs = []
+    for root in roots:
+        for collection in sorted(glob.glob(os.path.join(
+                root, 'ansible_collections', '*', '*'))):
+            candidate = os.path.join(collection, kind)
+            if os.path.isdir(candidate):
+                dirs.append(candidate)
+    return dirs
 
 
 def galaxy_collection_list(project=None, environ=None):
@@ -60,17 +153,24 @@ def galaxy_collection_list(project=None, environ=None):
     virtual environment when one is enabled, which is what makes the
     collections installed there visible. No hooks run and the inventory
     stays locked: listing collections needs neither. Without a project
-    (the documentation mode) the ambient environment is used as given.
+    (the documentation mode) the account's own ansible-galaxy answers:
+    the harness which spawned the server may carry a PATH without the
+    user installs.
     """
     if environ is None:
         env = mcp_environ(project) if project is not None \
             else dict(os.environ)
     else:
         env = environ
+    command = ['ansible-galaxy', 'collection', 'list',
+               '--format', 'json']
+    if project is None:
+        command[0] = (account_ansible_binary('ansible-galaxy')
+                      or 'ansible-galaxy')
     try:
         result = subprocess.run(
-                ['ansible-galaxy', 'collection', 'list', '--format', 'json'],
-                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                command, env=env, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 universal_newlines=True, timeout=60)
     except FileNotFoundError:
         raise RuntimeError('the ansible-galaxy command was not found')
@@ -144,17 +244,19 @@ def filter_collections_under(provider, roots):
 def docs_collection_provider(environ=None):
     """The collection index of the documentation mode.
 
-    Only the collections under the effective ANSIBLE_COLLECTIONS_PATH
-    are served: the variable when the environment sets it, the bundled
-    DebOps collection otherwise. The variable is set for the galaxy
-    subprocess as well, so that the listing and the filter agree; the
-    ambient account defaults never leak into a server running outside
-    of a project.
+    The collections under the documentation_collection_roots() are
+    served: the operator-chosen ANSIBLE_COLLECTIONS_PATH entries when
+    defined, the account's discovered defaults otherwise, the bundled
+    DebOps collection always. The variable is set for the galaxy
+    subprocess as well, so that the listing and the filter agree.
     """
     environ = dict(os.environ if environ is None else environ)
-    effective = effective_collections_path(environ)
-    environ['ANSIBLE_COLLECTIONS_PATH'] = effective
-    roots = [entry for entry in effective.split(os.pathsep) if entry]
+    roots = documentation_collection_roots(environ)
+    environ['ANSIBLE_COLLECTIONS_PATH'] = os.pathsep.join(roots)
+    # The same hermetic base the ansible.doc lookups get: no stray
+    # ansible.cfg narrows the listing below what the tool serves
+    neutral = os.path.join(DEBOPS_PACKAGE_DATA, 'mcp')
+    environ['ANSIBLE_CONFIG'] = os.path.join(neutral, 'ansible.cfg')
     provider = make_galaxy_index_provider(environ=environ)
     return filter_collections_under(provider, roots)
 

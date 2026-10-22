@@ -20,6 +20,29 @@ logger = logging.getLogger(__name__)
 # Fold markers used in DebOps defaults files
 FOLD_MARKER = re.compile(r'^\s*#\s*(\[{3}|\]{3})\d?\s*$')
 
+# Where the account's own Ansible binaries live, in preference order:
+# the pipx or pip --user install, the administrator's /usr/local
+# install, the distribution package. The harness which spawns a
+# server may carry a PATH without the user locations
+ACCOUNT_ANSIBLE_BIN = ('~/.local/bin', '/usr/local/bin', '/usr/bin')
+
+
+def account_ansible_binary(name):
+    """The Ansible binary of the account's own environment, or None.
+
+    The user locations in preference order, then the inherited PATH;
+    None when nothing is found, so the caller decides how to report
+    the absence.
+    """
+    for directory in ACCOUNT_ANSIBLE_BIN:
+        path = os.path.expanduser(os.path.join(directory, name))
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            logger.debug('Resolved %s: %s', name, path)
+            return path
+    found = shutil.which(name)
+    logger.debug('Resolved %s: %s', name, found or '(not found)')
+    return found
+
 
 def text_result(text, structured=None):
     """A tool result with the text content; 'structured' adds the

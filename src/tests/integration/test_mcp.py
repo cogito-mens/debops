@@ -306,10 +306,10 @@ def test_docs_mode_consults_the_accounts_ansible_doc(
     assert text.startswith("stub says: ")
     assert str(home / ".ansible" / "collections") in text
     assert "/usr/share/ansible/collections" in text
-    # The resolution is in the log for debugging
+    # The resolution and the roots are in the log for debugging
     log_content = log_path.read_text()
     assert "ansible-doc: {}".format(stub) in log_content
-    assert "ansible.doc serves the account's collection roots" \
+    assert "the account defaults and the bundled collection" \
         in log_content
 
 
@@ -336,12 +336,95 @@ def test_docs_mode_relies_on_an_operator_chosen_path(
     assert result.returncode == 0
     (response,) = read_json_lines(result.stdout)
     text = response["result"]["content"][0]["text"]
-    assert text.rstrip() == "stub says: /srv/operator/collections"
-    # The log names the binary; the account-roots widening stays out
-    # of it when the operator chose the path
+    # The variable rules the lookup; the bundled collection rides last
+    from debops.mcp.tools.collections import BUNDLED_COLLECTIONS_ROOT
+    assert text.rstrip() == "stub says: " + os.pathsep.join(
+            ["/srv/operator/collections", BUNDLED_COLLECTIONS_ROOT])
+    # The log names the binary and the operator-chosen origin
     log_content = log_path.read_text()
     assert "ansible-doc: {}".format(stub) in log_content
-    assert "account's collection roots" not in log_content
+    assert "from the environment" in log_content
+
+
+def test_docs_mode_tools_agree_on_the_account_collections(
+        run_debops, mcp_env, project_dir, tmp_path, monkeypatch,
+        debops_source_dir):
+    """The parity of the documentation mode: with no operator-chosen
+    ANSIBLE_COLLECTIONS_PATH the ansible.doc, collection.* and role.*
+    tools all serve the account's own collections."""
+    from debops.mcp.tools.collections import BUNDLED_COLLECTIONS_ROOT
+    monkeypatch.delenv("ANSIBLE_COLLECTIONS_PATH", raising=False)
+    home = tmp_path / "home"
+    account_root = home / ".ansible" / "collections"
+
+    # The account's collection: one role with one default
+    role = (account_root / "ansible_collections" / "fake" / "ns"
+            / "roles" / "myrole")
+    (role / "defaults").mkdir(parents=True)
+    (role / "defaults" / "main.yml").write_text("myrole__answer: 42\n")
+
+    # The stubs: the discovery, the doc lookup and the galaxy index
+    # of the account's ansible installation
+    user_bin = home / ".local" / "bin"
+    user_bin.mkdir(parents=True)
+    (user_bin / "ansible-config").write_text(
+            "#!/bin/sh\nprintf '%s\\n' \"COLLECTIONS_PATHS(default) = "
+            "['{}', '/usr/share/ansible/collections']\"\n".format(
+                    account_root))
+    (user_bin / "ansible-doc").write_text(
+            "#!/bin/sh\nprintf '%s\\n' \"stub says: "
+            "$ANSIBLE_COLLECTIONS_PATH\"\n")
+    galaxy_json = json.dumps(
+            {str(account_root / "ansible_collections"):
+             {"fake.ns": {"version": "1.0.0"}}})
+    (user_bin / "ansible-galaxy").write_text(
+            "#!/bin/sh\nprintf '%s\\n' '{}'\n".format(galaxy_json))
+    for stub in ("ansible-config", "ansible-doc", "ansible-galaxy"):
+        (user_bin / stub).chmod(0o755)
+    env = _account_env(mcp_env, debops_source_dir, home)
+
+    def request(request_id, name, arguments):
+        return json.dumps({
+            "jsonrpc": "2.0", "id": request_id,
+            "method": "tools/call",
+            "params": {"_meta": REQUEST_META, "name": name,
+                       "arguments": arguments}}) + "\n"
+
+    requests = (
+            request(1, "ansible.doc",
+                    {"plugin": "ansible.builtin.service"})
+            + request(2, "collection.roles", {})
+            + request(3, "role.defaults", {"name": "fake.ns.myrole"})
+            + request(4, "role.defaults", {"name": "myrole"}))
+    result = run_debops("mcp", "serve", "--docs", cwd=str(project_dir),
+                        env=env, input_text=requests)
+
+    assert result.returncode == 0
+    by_id = {}
+    for response in read_json_lines(result.stdout):
+        if "result" in response:
+            by_id[response["id"]] = response["result"]
+
+    # ansible.doc got the account root and the bundled collection
+    assert by_id[1].get("isError", False) is False
+    text = by_id[1]["content"][0]["text"]
+    assert str(account_root) in text
+    assert BUNDLED_COLLECTIONS_ROOT in text
+
+    # The collection index lists the account's collection
+    assert by_id[2].get("isError", False) is False
+    text = by_id[2]["content"][0]["text"]
+    assert "fake.ns" in text
+    assert "myrole" in text
+
+    # The role tools resolve the account's role, by the fully
+    # qualified name (the index) and by the short one (the roles
+    # directories of the roots)
+    for request_id in (3, 4):
+        assert by_id[request_id].get("isError", False) is False, \
+            by_id[request_id]["content"][0]["text"]
+        assert "myrole__answer" in \
+            by_id[request_id]["content"][0]["text"]
 
 
 def test_serve_log_file(run_debops, mcp_env, project_dir):

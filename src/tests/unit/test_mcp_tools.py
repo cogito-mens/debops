@@ -2276,10 +2276,14 @@ class DocumentationModeTestCase(unittest.TestCase):
 
         self.server = McpServer(project=None,
                                 policy=McpPolicy.for_documentation())
-        register_documentation_tools(
-                self.server, roles_path=self.roles_path,
-                playbooks_path=self.playbooks_path,
-                collection_index_provider=lambda: {})
+        # The registration computes the documentation roots; keep the
+        # discovery subprocess out of the unit suite
+        with mock.patch('debops.mcp.tools.documentation_collection_roots',
+                        return_value=[]):
+            register_documentation_tools(
+                    self.server, roles_path=self.roles_path,
+                    playbooks_path=self.playbooks_path,
+                    collection_index_provider=lambda: {})
 
     def call_tool(self, name, arguments=None):
         return self.server.handle({

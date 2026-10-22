@@ -15,7 +15,9 @@ A harness may show the model only the structured content of such a tool
 is the human rendering of the same answer.
 """
 
-from .collections import (docs_collection_provider,
+from .collections import (collection_content_dirs,
+                          docs_collection_provider,
+                          documentation_collection_roots,
                           make_galaxy_index_provider, restrict_content,
                           tool_collection_playbooks,
                           tool_collection_roles)
@@ -429,12 +431,17 @@ def _wrap_resource_errors(handler):
 
 
 def _documentation_entries(server, policy, project, roles_path,
-                           playbooks_path, collection_index_provider):
+                           playbooks_path, collection_index_provider,
+                           extra_roles_paths=()):
     """The documentation tool entries: the bundled DebOps content and
     the collections the index provides.
 
     With a project its own roles and playbooks resolve first; without
     one (the documentation mode) only the shipped content is served.
+    'extra_roles_paths' extends the short-name resolution of the role
+    tools — the documentation mode passes the roles directories of
+    every visible collection; the fully qualified names follow the
+    collection index either way.
     """
     bundled_content = policy is None or policy.bundled_content
     # The roles the document tools resolve; ansible.doc searches the
@@ -444,6 +451,7 @@ def _documentation_entries(server, policy, project, roles_path,
         roles_paths = project_role_paths(project)
     if bundled_content:
         roles_paths.append(roles_path)
+    roles_paths.extend(extra_roles_paths)
     entries = [
         ('playbook.list',
          'List the playbook targets which "run" and "check" can execute '
@@ -1495,8 +1503,13 @@ def register_documentation_tools(server, roles_path=COLLECTION_ROLES,
     policy = server.policy
     if collection_index_provider is None:
         collection_index_provider = docs_collection_provider()
+    # The role tools' short-name resolution spans the same roots the
+    # ansible.doc lookups and the collection index serve
+    extra_roles = collection_content_dirs(
+            documentation_collection_roots(), 'roles')
     entries = _documentation_entries(server, policy, None, roles_path,
                                      playbooks_path,
-                                     collection_index_provider)
+                                     collection_index_provider,
+                                     extra_roles_paths=extra_roles)
     _register_entries(server.tools, entries, policy)
     _apply_aliases(server)

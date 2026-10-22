@@ -17,7 +17,8 @@ from .mcp.prompts import PromptLibrary
 from .mcp.skills import SkillLibrary, match_skill
 from .mcp.tools import (register_documentation_tools,
                         register_project_tools)
-from .mcp.tools.collections import BUNDLED_COLLECTIONS_ROOT
+from .mcp.tools.collections import documentation_collection_roots
+from .mcp.tools.common import account_ansible_binary
 from .mcp.tools.doc import account_ansible_doc
 from .mcp.tools.roles import COLLECTION_ROLES, project_role_paths
 from .mcp.tools.playbooks import COLLECTION_PLAYBOOKS
@@ -39,7 +40,6 @@ import logging
 from logging.handlers import SysLogHandler
 import platform
 import getpass
-import shutil
 import sys
 import os
 import textwrap
@@ -428,27 +428,26 @@ class Interpreter(object):
             register_documentation_tools(server)
             logger.notice('Serving DebOps documentation (no project '
                           'directory, pid %s)', os.getpid())
-            # The provider's galaxy subprocess and its server-side
-            # filter agree on the collections roots through the
-            # fallback in effective_collections_path(); the environment
-            # stays unpinned, so the ansible.doc tool can tell an
-            # operator-chosen collections path apart from none
-            if 'ANSIBLE_COLLECTIONS_PATH' in os.environ:
-                effective = os.environ['ANSIBLE_COLLECTIONS_PATH']
-                origin = 'from the environment'
-            else:
-                effective = BUNDLED_COLLECTIONS_ROOT
-                origin = 'the bundled default'
-            roots = [entry for entry in effective.split(os.pathsep)
-                     if entry]
+            # One roots rule for every documentation-mode consumer —
+            # the collection index, the ansible.doc tool, the role
+            # and playbook resolvers — so the tools agree by
+            # construction
+            defined = 'ANSIBLE_COLLECTIONS_PATH' in os.environ
+            roots = documentation_collection_roots()
+            origin = ('from the environment' if defined else
+                      'the account defaults and the bundled '
+                      'collection')
             logger.notice('Collections: %s (%s)',
                           os.pathsep.join(roots) or '(none)', origin)
             for root in roots:
                 if not os.path.isdir(root):
-                    logger.warning('Collections root not found: %s',
-                                   root)
-            if shutil.which('ansible-galaxy') is None:
-                logger.warning('ansible-galaxy is not installed; the '
+                    # An operator-chosen root which is missing is a
+                    # configuration error; a missing account default
+                    # is an account which has nothing there
+                    (logger.warning if defined else logger.debug)(
+                            'Collections root not found: %s', root)
+            if account_ansible_binary('ansible-galaxy') is None:
+                logger.warning('ansible-galaxy was not found; the '
                                'collection tools will not answer')
             # The ansible.doc tool resolves the account's own binary;
             # the resolution is in the log for debugging
@@ -458,11 +457,6 @@ class Interpreter(object):
                                'ansible.doc tool will not answer')
             else:
                 logger.notice('ansible-doc: %s', doc_binary)
-            if 'ANSIBLE_COLLECTIONS_PATH' not in os.environ:
-                # The tool widens the lookup past the index roots
-                logger.notice('ansible.doc serves the account\'s '
-                              'collection roots next to the bundled '
-                              'one')
         else:
             logger.notice('Serving project \'%s\' at %s, view \'%s\' '
                           '(pid %s)', project.name, project.path,

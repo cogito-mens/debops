@@ -184,22 +184,25 @@ class AnsibleDocTestCase(unittest.TestCase):
                          os.path.dirname(env['ANSIBLE_CONFIG']))
 
     def test_docs_mode_serves_the_account_collections_by_default(self):
-        # No operator-chosen collections path: the account's default
-        # roots are served next to the bundled collection, so the
+        # The lookup serves the roots of documentation_collection_roots
+        # — the account's defaults and the bundled collection — so the
         # tool answers for the content the account actually has
         without = {key: value for key, value in os.environ.items()
                    if key != 'ANSIBLE_COLLECTIONS_PATH'}
-        with mock.patch.dict(os.environ, without, clear=True):
+        with mock.patch.dict(os.environ, without, clear=True), \
+                mock.patch('debops.mcp.tools.doc.'
+                           'documentation_collection_roots',
+                           return_value=['/acct/collections',
+                                         BUNDLED_COLLECTIONS_ROOT]):
             _result, run = self.run_doc({'plugin': 'x'})
         env = run.call_args[1]['env']
-        roots = env['ANSIBLE_COLLECTIONS_PATH'].split(os.pathsep)
-        self.assertEqual(roots[0], BUNDLED_COLLECTIONS_ROOT)
-        self.assertIn(os.path.expanduser('~/.ansible/collections'),
-                      roots)
-        self.assertIn('/usr/share/ansible/collections', roots)
+        self.assertEqual(env['ANSIBLE_COLLECTIONS_PATH'],
+                         os.pathsep.join(['/acct/collections',
+                                          BUNDLED_COLLECTIONS_ROOT]))
 
     def test_docs_mode_inherits_an_operator_chosen_path(self):
-        # The variable, when defined, rules the lookup alone
+        # The variable rules the lookup; the bundled collection rides
+        # last, so the DebOps documentation stays served
         with mock.patch.dict(
                 os.environ,
                 {'ANSIBLE_COLLECTIONS_PATH': '/srv/collections'},
@@ -207,7 +210,8 @@ class AnsibleDocTestCase(unittest.TestCase):
             _result, run = self.run_doc({'plugin': 'x'})
         env = run.call_args[1]['env']
         self.assertEqual(env['ANSIBLE_COLLECTIONS_PATH'],
-                         '/srv/collections')
+                         os.pathsep.join(['/srv/collections',
+                                          BUNDLED_COLLECTIONS_ROOT]))
 
     def test_docs_mode_prefers_the_accounts_ansible_doc(self):
         # The pipx or pip --user install wins; the harness which
@@ -226,18 +230,19 @@ class AnsibleDocTestCase(unittest.TestCase):
         self.assertEqual(resolved, binary)
 
     def test_docs_mode_falls_back_to_the_path(self):
-        from debops.mcp.tools import doc
-        with mock.patch.object(doc, 'ACCOUNT_ANSIBLE_DOC',
-                               ('/nonexistent/ansible-doc',)):
-            with mock.patch('debops.mcp.tools.doc.shutil.which',
+        from debops.mcp.tools import common
+        with mock.patch.object(common, 'ACCOUNT_ANSIBLE_BIN',
+                               ('/nonexistent',)):
+            with mock.patch('debops.mcp.tools.common.shutil.which',
                             return_value='/x/bin/ansible-doc'):
-                self.assertEqual(doc.account_ansible_doc(),
-                                 '/x/bin/ansible-doc')
+                self.assertEqual(common.account_ansible_binary(
+                        'ansible-doc'), '/x/bin/ansible-doc')
             # Nothing anywhere: None, so the caller decides how to
             # report the absence
-            with mock.patch('debops.mcp.tools.doc.shutil.which',
+            with mock.patch('debops.mcp.tools.common.shutil.which',
                             return_value=None):
-                self.assertIsNone(doc.account_ansible_doc())
+                self.assertIsNone(common.account_ansible_binary(
+                        'ansible-doc'))
 
     def test_docs_mode_runs_the_resolved_binary(self):
         with mock.patch('debops.mcp.tools.doc.account_ansible_doc',
