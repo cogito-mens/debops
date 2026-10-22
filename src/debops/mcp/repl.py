@@ -15,6 +15,7 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 
 from . import server as _server
@@ -500,7 +501,6 @@ class Repl(object):
         else:
             current = ''.join(block.get('text', '') for block in
                               result.get('content', []))
-        import tempfile
         fd, tmp = tempfile.mkstemp(prefix='debops-edit-',
                                    suffix='-' + os.path.basename(path))
         try:
