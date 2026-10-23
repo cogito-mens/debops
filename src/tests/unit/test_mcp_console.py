@@ -209,6 +209,21 @@ class ConsoleSessionTestCase(unittest.TestCase):
         self.assertTrue(wait_for(lambda: app.exit.called))
         self.assertFalse(session._busy)
 
+    def test_an_internal_error_lands_in_the_scrollback(self):
+        session, client = make_session()
+        attach_buffers(session)
+        client.request.side_effect = RuntimeError('boom')
+        session.submit('status')
+        self.assertTrue(wait_for(lambda: not session._busy))
+        text = session._scroll_buffer.text
+        self.assertIn('error: internal: boom', text)
+        self.assertIn('Traceback', text)
+        # The session survived
+        client.request.side_effect = None
+        session.submit('status')
+        self.assertTrue(wait_for(lambda: 'Project: x'
+                                 in session._scroll_buffer.text))
+
 
 class EditorSuspensionTestCase(unittest.TestCase):
     """The console's 'edit' suspends the interface — scheduled on

@@ -16,6 +16,7 @@ reader.
 """
 
 import threading
+import traceback
 
 from .repl import (Repl, ReplError, _banner, _execute_line,
                    run_interactive_plain)
@@ -163,11 +164,17 @@ class ConsoleRepl(Repl):
 
     def _execute_guarded(self, line):
         """Run one command on the worker thread; the interface stays
-        alive and repaints as the answer lands."""
+        alive and repaints as the answer lands. An unexpected error
+        lands in the scrollback — a traceback on the raw terminal
+        would corrupt the display and cost the session its worker."""
         self._echo('debops> ' + line + '\n')
         try:
             done = _execute_line(self, line)
         except KeyboardInterrupt:
+            done = False
+        except Exception as errmsg:
+            self._echo('error: internal: {}\n'.format(errmsg))
+            self._echo(traceback.format_exc())
             done = False
         finally:
             self._busy = False
