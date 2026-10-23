@@ -210,6 +210,86 @@ class ConsoleSessionTestCase(unittest.TestCase):
         self.assertFalse(session._busy)
 
 
+class EditorSuspensionTestCase(unittest.TestCase):
+    """The console's 'edit' suspends the interface — scheduled on
+    the application's event loop, never on the worker thread."""
+
+    def test_the_editor_runs_directly_when_headless(self):
+        session, _client = make_session()
+        session._app = None
+        with mock.patch.object(repl.Repl, '_run_editor',
+                               return_value=0) as editor:
+            self.assertEqual(session._run_editor('/tmp/x'), 0)
+        editor.assert_called_once_with('/tmp/x')
+
+    def test_the_editor_runs_directly_when_the_loop_is_closed(self):
+        session, _client = make_session()
+        app = mock.MagicMock()
+        app.loop.is_closed.return_value = True
+        session._app = app
+        with mock.patch.object(repl.Repl, '_run_editor',
+                               return_value=0) as editor:
+            self.assertEqual(session._run_editor('/tmp/x'), 0)
+        self.assertTrue(editor.called)
+
+    def test_the_editor_is_scheduled_on_the_app_loop(self):
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        session, _client = make_session()
+        loop = mock.MagicMock()
+        loop.is_closed.return_value = False
+        # The test double runs the scheduled callback at once, as
+        # the live loop would on its own thread
+        loop.call_soon_threadsafe.side_effect = lambda cb: cb()
+        app = mock.MagicMock()
+        app.loop = loop
+        session._app = app
+        with mock.patch('prompt_toolkit.application.run_in_terminal'
+                        '.run_in_terminal') as run_in_terminal, \
+                mock.patch.object(repl.Repl, '_run_editor',
+                                  return_value=0) as editor:
+            future = mock.MagicMock()
+
+            def run(func):
+                func()
+                return future
+
+            run_in_terminal.side_effect = run
+            self.assertEqual(session._run_editor('/tmp/x'), 0)
+        loop.call_soon_threadsafe.assert_called_once()
+        self.assertTrue(editor.called)
+
+    def test_an_editor_failure_is_a_terse_error(self):
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        session, _client = make_session()
+        loop = mock.MagicMock()
+        loop.is_closed.return_value = False
+        loop.call_soon_threadsafe.side_effect = lambda cb: cb()
+        app = mock.MagicMock()
+        app.loop = loop
+        session._app = app
+        with mock.patch('prompt_toolkit.application.run_in_terminal'
+                        '.run_in_terminal') as run_in_terminal, \
+                mock.patch.object(repl.Repl, '_run_editor',
+                                  side_effect=OSError('no editor')):
+            future = mock.MagicMock()
+
+            def run(func):
+                func()
+                return future
+
+            run_in_terminal.side_effect = run
+            with self.assertRaises(repl.ReplError) as context:
+                session._run_editor('/tmp/x')
+        self.assertIn('the editor could not run: no editor',
+                      str(context.exception))
+
+
 class ConsoleBuildTestCase(unittest.TestCase):
 
     def test_the_application_builds_headless(self):

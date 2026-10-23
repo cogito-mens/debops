@@ -220,7 +220,16 @@ class ConsoleRepl(Repl):
 
     def _run_editor(self, path):
         """The editor owns the terminal for a while: the interface
-        suspends, runs it above the scrollback, and repaints."""
+        suspends, runs it above the scrollback, and repaints. The
+        suspension is scheduled on the application's event loop —
+        this method runs on the command's worker thread, which has
+        no loop of its own ('ensure_future' would fail there)."""
+        app = self._app
+        loop = getattr(app, 'loop', None)
+        if loop is None or loop.is_closed():
+            # No live interface (the headless tests); the editor
+            # just runs
+            return super()._run_editor(path)
         from prompt_toolkit.application.run_in_terminal import (
                 run_in_terminal)
         finished = threading.Event()
@@ -230,11 +239,42 @@ class ConsoleRepl(Repl):
             try:
                 outcome['returncode'] = super(ConsoleRepl,
                                               self)._run_editor(path)
+            except Exception as errmsg:
+                outcome['error'] = errmsg
             finally:
                 finished.set()
 
-        run_in_terminal(edit)
+        def completed(fut):
+            if not fut.cancelled():
+                # Retrieve the exception of the suspension machinery
+                # itself ('edit' captures its own), so it is not
+                # reported as never retrieved
+                exc = fut.exception()
+                if exc is not None and 'error' not in outcome:
+                    outcome['error'] = exc
+            finished.set()
+
+        def suspend_and_edit():
+            try:
+                future = run_in_terminal(edit)
+            except Exception as errmsg:
+                outcome['error'] = errmsg
+                finished.set()
+                return
+            future.add_done_callback(completed)
+
+        try:
+            loop.call_soon_threadsafe(suspend_and_edit)
+        except RuntimeError:
+            # The loop closed between the check and the call
+            return super()._run_editor(path)
         finished.wait()
+        error = outcome.get('error')
+        if error is not None:
+            raise ReplError('the editor could not run: {}'.format(
+                    error))
+        if 'returncode' not in outcome:
+            raise ReplError('the editor never ran')
         return outcome['returncode']
 
 
