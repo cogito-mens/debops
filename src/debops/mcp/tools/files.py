@@ -776,6 +776,67 @@ def tool_project_mkdir(project, policy, arguments, context=None):
                        structured={'path': display, 'state': state})
 
 
+def tool_file_move(project, policy, arguments, server=None,
+                   context=None):
+    """Rename a file, one commit for both paths.
+
+    The target must not exist — a move never overwrites; delete the
+    target first when replacing it. Git records the rename, so the
+    history follows the content.
+    """
+    source_relative = str(arguments.get('source') or '').rstrip('/')
+    target_relative = str(arguments.get('target') or '').rstrip('/')
+    if not source_relative:
+        return error_result('the "source" argument is required')
+    if not target_relative:
+        return error_result('the "target" argument is required')
+    elevated = bool(getattr(context, 'elevated', False))
+
+    # Renames are recoverable and attributable only with git
+    refused = require_git_tracked(project)
+    if refused is not None:
+        return refused
+
+    try:
+        source, source_display = _authorized_write_path(
+                project, policy, source_relative, elevated=elevated)
+        target, target_display = _authorized_write_path(
+                project, policy, target_relative, elevated=elevated)
+    except ValueError as errmsg:
+        return error_result(str(errmsg))
+    if os.path.isdir(source):
+        return error_result('not a regular file: ' + source_display)
+
+    note = 'file.move {} -> {}'.format(source_display, target_display)
+    with exclusive_project(project, policy, note=note,
+                           paths=[source, target]):
+        if not os.path.isfile(source):
+            return error_result('file not found: ' + source_display)
+        if os.path.lexists(target):
+            return error_result('the target exists: ' + target_display)
+        try:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            os.rename(source, target)
+        except OSError as errmsg:
+            return error_result('cannot move {} to {}: {}'.format(
+                    source_display, target_display, errmsg))
+        _announce_mcp_content_change(server, source_display.lstrip('/'))
+        _announce_mcp_content_change(server, target_display.lstrip('/'))
+        # The commit is part of the tool's contract, as for
+        # file.write; when it fails the file is moved but NOT recorded
+        # in git
+        commit_error = commit_or_report(
+                project, note,
+                'moved: {} -> {}'.format(source_display, target_display),
+                paths=[source, target])
+        if commit_error is not None:
+            return commit_error
+        return text_result('moved: {} -> {}'.format(
+                source_display, target_display),
+                structured={'source': source_display,
+                            'target': target_display})
+
+
 def _inventory_spec_report(result, inventory_path, dry_run):
     """Render the result of an inventory spec application as text,
     plus its machine-readable form."""

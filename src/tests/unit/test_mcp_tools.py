@@ -676,6 +676,100 @@ class ViewWriteTestCase(unittest.TestCase):
         self.assertIn('denied by policy',
                       response['content'][0]['text'])
 
+    # -- file.move -------------------------------------------------------
+
+    def move(self, source, target, context=None):
+        from debops.mcp.tools.files import tool_file_move
+        return tool_file_move(self.project, self.policy,
+                              {'source': source, 'target': target},
+                              context=context)
+
+    def test_move(self):
+        self.write('playbooks/deploy.yml', content='---\n')
+        response = self.move('playbooks/deploy.yml',
+                             'resources/deploy.yml')
+        text = self.result_text(response)
+        self.assertIn('moved: playbooks/deploy.yml -> '
+                      'resources/deploy.yml', text)
+        self.assertEqual(self.written('resources/deploy.yml'), '---\n')
+        self.assertFalse(os.path.exists(
+                os.path.join(self.view_root, 'playbooks',
+                             'deploy.yml')))
+        # One commit records the rename, both paths in the note
+        self.assertEqual(self.commits[-1],
+                         'DebOps MCP: file.move playbooks/deploy.yml '
+                         '-> resources/deploy.yml')
+
+    def test_move_creates_the_target_parents(self):
+        self.write('playbooks/deploy.yml', content='---\n')
+        response = self.move('playbooks/deploy.yml',
+                             'resources/archived/2026/deploy.yml')
+        self.assertFalse(response['isError'])
+        self.assertEqual(self.written('resources/archived/2026/'
+                                      'deploy.yml'), '---\n')
+
+    def test_move_needs_both_paths(self):
+        self.assertTrue(self.move('', 'playbooks/x.yml')['isError'])
+        self.assertTrue(self.move('playbooks/x.yml', '')['isError'])
+
+    def test_move_missing_source_is_an_error(self):
+        response = self.move('playbooks/nosuch.yml',
+                             'playbooks/x.yml')
+        self.assertTrue(response['isError'])
+        self.assertIn('not found', response['content'][0]['text'])
+
+    def test_move_refuses_an_existing_target(self):
+        self.write('playbooks/a.yml')
+        self.write('playbooks/b.yml', content='y\n')
+        response = self.move('playbooks/a.yml', 'playbooks/b.yml')
+        self.assertTrue(response['isError'])
+        self.assertIn('the target exists', response['content'][0]['text'])
+        # Both files are untouched
+        self.assertEqual(self.written('playbooks/a.yml'), 'x\n')
+        self.assertEqual(self.written('playbooks/b.yml'), 'y\n')
+
+    def test_move_refuses_a_directory(self):
+        self.mkdir('resources/scripts')
+        response = self.move('resources/scripts',
+                             'resources/elsewhere')
+        self.assertTrue(response['isError'])
+        self.assertIn('not a regular file',
+                      response['content'][0]['text'])
+
+    def test_move_scopes_both_paths(self):
+        self.write('playbooks/deploy.yml')
+        response = self.move('playbooks/deploy.yml',
+                             'inventory/deploy.yml')
+        self.assertTrue(response['isError'])
+        self.assertIn('not writable', response['content'][0]['text'])
+
+    def test_move_elevated_at_project_scope(self):
+        # Elevated paths are project-rooted, the view's own files
+        # included — the operator spells the project-relative path
+        self.write('playbooks/deploy.yml', content='---\n')
+        response = self.move('/ansible/playbooks/deploy.yml',
+                             '/deploy.yml', context=self.ELEVATED)
+        self.assertIn('moved: /ansible/playbooks/deploy.yml -> '
+                      '/deploy.yml', self.result_text(response))
+        with open(os.path.join(self.tmpdir, 'deploy.yml')) as fp:
+            self.assertEqual(fp.read(), '---\n')
+
+    def test_move_elevated_still_denies_the_deny_list(self):
+        self.write('playbooks/deploy.yml')
+        response = self.move('playbooks/deploy.yml',
+                             '/ansible/secret/deploy.yml',
+                             context=self.ELEVATED)
+        self.assertTrue(response['isError'])
+        self.assertIn('denied by policy',
+                      response['content'][0]['text'])
+
+    def test_move_non_git_project_is_refused(self):
+        shutil.rmtree(os.path.join(self.tmpdir, '.git'))
+        response = self.move('playbooks/a.yml', 'playbooks/b.yml')
+        self.assertTrue(response['isError'])
+        self.assertIn('not a git repository',
+                      response['content'][0]['text'])
+
     # -- scoped writes into '.debops/mcp/' and the anchors --------------
 
     GOOD_SKILL = ('---\nname: demo\ndescription: A demo skill\n---\n\n'
@@ -1422,7 +1516,7 @@ class ToolsTestCase(unittest.TestCase):
                           'environment.set', 'environment.unset',
                           'execution.list', 'execution.output',
                           'execution.purge',
-                          'file.delete', 'file.write',
+                          'file.delete', 'file.move', 'file.write',
                           'inventory.query',
                           'inventory.spec', 'keyring.fetch',
                           'playbook.info',

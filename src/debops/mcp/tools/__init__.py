@@ -30,7 +30,8 @@ from .executions import (tool_execution_list, tool_execution_output,
 from .files import (tool_config_get, tool_inventory_query,
                     tool_inventory_spec, tool_project_files,
                     tool_project_list, tool_project_mkdir,
-                    tool_project_read, tool_file_delete, tool_file_write)
+                    tool_project_read, tool_file_delete, tool_file_move,
+                    tool_file_write)
 from .galaxy import (tool_collection_remove, tool_collection_require,
                      tool_collection_sync)
 from .keyring import tool_keyring_fetch
@@ -215,6 +216,9 @@ TOOL_OUTPUT_SCHEMAS = {
         'path': {'type': 'string'},
         'state': {'type': 'string', 'enum': ['created', 'unchanged']}},
         'required': ['path', 'state']},
+    'file.move': {'type': 'object', 'properties': {
+        'source': {'type': 'string'}, 'target': {'type': 'string'}},
+        'required': ['source', 'target']},
     'config.get': {'type': 'object', 'properties': {
         'key': {'type': 'string'}, 'value': {}},
         'required': ['key', 'value']},
@@ -390,6 +394,10 @@ TOOL_ANNOTATIONS = {
     # Creating a directory destroys nothing, and re-creating is a no-op
     'project.mkdir': {'destructiveHint': False, 'idempotentHint': True,
                       'openWorldHint': False},
+    # A move destroys nothing and refuses to overwrite, but a repeat
+    # finds the source gone, so it is not idempotent
+    'file.move': {'destructiveHint': False, 'idempotentHint': False,
+                  'openWorldHint': False},
     # A specification can remove inventory paths
     'inventory.spec': {'destructiveHint': True, 'idempotentHint': True,
                        'openWorldHint': False},
@@ -801,7 +809,8 @@ def _apply_aliases(server):
 
 # The tools which cannot work without an active infrastructure view
 VIEW_BOUND_TOOLS = frozenset((
-    'file.write', 'file.delete', 'project.mkdir', 'inventory.query',
+    'file.write', 'file.delete', 'file.move', 'project.mkdir',
+    'inventory.query',
     'inventory.spec',
     'secret.paths', 'check', 'run', 'ansible.ping', 'ansible.facts',
     'execution.list', 'execution.output', 'execution.purge',
@@ -1031,6 +1040,27 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
           'required': ['path']},
          lambda arguments, context: tool_project_mkdir(
                  project, policy, arguments, context=context),
+         True),
+        ('file.move',
+         'Move (rename) a file in the current infrastructure view, in '
+         'allowed locations only (the project.mcp.write_allow '
+         'policy); both paths are scoped the same way. The target '
+         'must not exist — a move never overwrites. One commit '
+         'records the rename, so the history follows the content. '
+         'The change is complete when this call returns; a dependent '
+         'call must wait for it (batched requests run concurrently).',
+         {'type': 'object',
+          'properties': {'source': {'type': 'string',
+                                    'description': 'File to move, '
+                                    'relative to the view root, e.g. '
+                                    '"playbooks/deploy.yml"'},
+                         'target': {'type': 'string',
+                                    'description': 'The new path, '
+                                    'relative to the view root'}},
+          'required': ['source', 'target']},
+         lambda arguments, context: tool_file_move(
+                 project, policy, arguments, server=server,
+                 context=context),
          True),
         ('inventory.spec',
          'Apply an inventory specification to the inventory of the '

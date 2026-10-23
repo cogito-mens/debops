@@ -287,6 +287,8 @@ TOOL_CALL_EXAMPLES = {
     'file.write': ['path=resources/scripts/hello.sh '
                    'content="#!/bin/sh" mode=0755'],
     'file.delete': ['path=playbooks/deploy.yml'],
+    'file.move': ['source=playbooks/deploy.yml '
+                  'target=playbooks/web.yml'],
     'project.mkdir': ['path=resources/scripts'],
     'view.list': [''],
     'view.switch': ['view=webservers'],
