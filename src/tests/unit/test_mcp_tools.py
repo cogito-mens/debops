@@ -296,12 +296,13 @@ class ViewWriteTestCase(unittest.TestCase):
         self.assertEqual(content[0]['type'], 'text')
         return content[0]['text']
 
-    def write(self, path, content='x\n', mode=None):
+    def write(self, path, content='x\n', mode=None, context=None):
         from debops.mcp.tools.files import tool_file_write
         arguments = {'path': path, 'content': content}
         if mode is not None:
             arguments['mode'] = mode
-        return tool_file_write(self.project, self.policy, arguments)
+        return tool_file_write(self.project, self.policy, arguments,
+                               context=context)
 
     def written(self, relative):
         with open(os.path.join(self.view_root, relative)) as fp:
@@ -524,10 +525,10 @@ class ViewWriteTestCase(unittest.TestCase):
 
     # -- file.delete ---------------------------------------------------
 
-    def delete(self, path):
+    def delete(self, path, context=None):
         from debops.mcp.tools.files import tool_file_delete
         return tool_file_delete(self.project, self.policy,
-                                {'path': path})
+                                {'path': path}, context=context)
 
     def test_delete(self):
         self.write('playbooks/deploy.yml', content='---\n')
@@ -573,6 +574,106 @@ class ViewWriteTestCase(unittest.TestCase):
         response = self.delete('playbooks/deploy.yml')
         self.assertTrue(response['isError'])
         self.assertIn('not a git repository',
+                      response['content'][0]['text'])
+
+    # -- the elevated write scope (a trusted operator) -------------------
+
+    ELEVATED = type('Context', (), {'elevated': True})()
+
+    def test_elevated_write_at_project_scope(self):
+        response = self.write('/notes.txt', content='n\n',
+                              context=self.ELEVATED)
+        self.assertIn('created: /notes.txt', self.result_text(response))
+        with open(os.path.join(self.tmpdir, 'notes.txt')) as fp:
+            self.assertEqual(fp.read(), 'n\n')
+        self.assertEqual(self.commits,
+                         ['DebOps MCP: file.write /notes.txt'])
+
+    def test_elevated_write_into_the_configuration(self):
+        # The operator tunes the project configuration through the
+        # same tools the model uses for the view
+        response = self.write('/.debops/conf.d/custom.toml',
+                              content='[project]\n',
+                              context=self.ELEVATED)
+        self.assertIn('created: /.debops/conf.d/custom.toml',
+                      self.result_text(response))
+
+    def test_elevated_write_ansible_cfg_is_allowed(self):
+        # The machinery rule guards the model; the operator is trusted
+        response = self.write('/ansible.cfg', content='[defaults]\n',
+                              context=self.ELEVATED)
+        self.assertIn('created: /ansible.cfg', self.result_text(response))
+
+    def test_elevated_write_still_denies_the_deny_list(self):
+        for path in ('/ansible/secret/passwords.yml', '/.git/config',
+                     '/.debops/venv/lib/x.py'):
+            response = self.write(path, context=self.ELEVATED)
+            self.assertTrue(response['isError'], path)
+            self.assertIn('denied by policy',
+                          response['content'][0]['text'])
+
+    def test_elevated_write_rejects_traversal(self):
+        response = self.write('/../outside.txt', context=self.ELEVATED)
+        self.assertTrue(response['isError'])
+        self.assertIn('escapes its allowed directory',
+                      response['content'][0]['text'])
+
+    def test_elevated_delete_at_project_scope(self):
+        self.write('/notes.txt', content='n\n', context=self.ELEVATED)
+        response = self.delete('/notes.txt', context=self.ELEVATED)
+        self.assertIn('deleted: /notes.txt', self.result_text(response))
+        self.assertFalse(os.path.exists(
+                os.path.join(self.tmpdir, 'notes.txt')))
+
+    # -- project.mkdir ---------------------------------------------------
+
+    def mkdir(self, path, context=None):
+        from debops.mcp.tools.files import tool_project_mkdir
+        return tool_project_mkdir(self.project, self.policy,
+                                  {'path': path}, context=context)
+
+    def test_mkdir_creates_with_parents(self):
+        response = self.mkdir('resources/scripts/backup')
+        self.assertIn('created: resources/scripts/backup',
+                      self.result_text(response))
+        self.assertTrue(os.path.isdir(os.path.join(
+                self.view_root, 'resources', 'scripts', 'backup')))
+        # A directory is not recorded in git — nothing to commit
+        self.assertEqual(self.commits, [])
+
+    def test_mkdir_unchanged_when_present(self):
+        self.mkdir('resources/scripts')
+        response = self.mkdir('resources/scripts')
+        self.assertIn('unchanged: resources/scripts',
+                      self.result_text(response))
+
+    def test_mkdir_needs_a_path(self):
+        response = self.mkdir('')
+        self.assertTrue(response['isError'])
+        self.assertIn('required', response['content'][0]['text'])
+
+    def test_mkdir_outside_the_allowlist_is_rejected(self):
+        response = self.mkdir('inventory/group_vars/newgroup')
+        self.assertTrue(response['isError'])
+        self.assertIn('not writable', response['content'][0]['text'])
+
+    def test_mkdir_refuses_an_existing_file(self):
+        self.write('playbooks/deploy.yml')
+        response = self.mkdir('playbooks/deploy.yml')
+        self.assertTrue(response['isError'])
+        self.assertIn('not a directory', response['content'][0]['text'])
+
+    def test_mkdir_elevated_at_project_scope(self):
+        response = self.mkdir('/.debops/conf.d', context=self.ELEVATED)
+        self.assertIn('created: /.debops/conf.d',
+                      self.result_text(response))
+        self.assertTrue(os.path.isdir(
+                os.path.join(self.tmpdir, '.debops', 'conf.d')))
+
+    def test_mkdir_elevated_still_denies_the_deny_list(self):
+        response = self.mkdir('/ansible/secret/x', context=self.ELEVATED)
+        self.assertTrue(response['isError'])
+        self.assertIn('denied by policy',
                       response['content'][0]['text'])
 
     # -- scoped writes into '.debops/mcp/' and the anchors --------------
@@ -1325,7 +1426,8 @@ class ToolsTestCase(unittest.TestCase):
                           'inventory.query',
                           'inventory.spec', 'keyring.fetch',
                           'playbook.info',
-                          'playbook.list', 'project.files', 'project.pull',
+                          'playbook.list', 'project.files', 'project.list',
+                          'project.mkdir', 'project.pull',
                           'project.push', 'project.read', 'project.status',
                           'role.argspec', 'role.defaults', 'role.files',
                           'role.handlers', 'role.info', 'role.tasks',

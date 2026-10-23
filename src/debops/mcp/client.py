@@ -282,10 +282,12 @@ def parse_call_arguments(pairs):
 TOOL_CALL_EXAMPLES = {
     'project.status': [''],
     'project.files': ['path=ansible/inventory'],
+    'project.list': ['path=ansible/inventory'],
     'project.read': ['path=ansible/inventory/hosts'],
     'file.write': ['path=resources/scripts/hello.sh '
                    'content="#!/bin/sh" mode=0755'],
     'file.delete': ['path=playbooks/deploy.yml'],
+    'project.mkdir': ['path=resources/scripts'],
     'view.list': [''],
     'view.switch': ['view=webservers'],
     'view.create': ['view=webservers'],

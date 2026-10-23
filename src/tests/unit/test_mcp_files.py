@@ -126,6 +126,57 @@ class FilesTestCase(unittest.TestCase):
         self.assertIn('escapes its allowed directory',
                       self.result_text(response))
 
+    # -- project.list ----------------------------------------------------
+
+    def test_project_list(self):
+        response = self.call_tool('project.list')
+        text = self.result_text(response)
+        self.assertIn('- ansible/', text)
+        self.assertIn('- .debops/', text)
+        # Denied subtrees are not listed
+        self.assertNotIn('.git', text)
+        entries = response['result']['structuredContent']
+        by_name = {entry['name']: entry['type'] for entry in entries}
+        self.assertEqual(by_name['ansible'], 'dir')
+        self.assertEqual(by_name['.debops'], 'dir')
+
+    def test_project_list_one_level_only(self):
+        response = self.call_tool('project.list',
+                                  {'path': 'ansible/inventory'})
+        text = self.result_text(response)
+        self.assertIn('- group_vars/', text)
+        self.assertIn('- hosts', text)
+        # One level only: the group content is not listed
+        self.assertNotIn('ferm.yml', text)
+        entries = response['result']['structuredContent']
+        by_name = {entry['name']: entry['type'] for entry in entries}
+        self.assertEqual(by_name['group_vars'], 'dir')
+        self.assertEqual(by_name['hosts'], 'file')
+
+    def test_project_list_prunes_denied_entries(self):
+        text = self.result_text(
+                self.call_tool('project.list', {'path': 'ansible'}))
+        self.assertIn('- inventory/', text)
+        self.assertNotIn('secret', text)
+
+    def test_project_list_rejects_traversal(self):
+        response = self.call_tool('project.list', {'path': '../..'})
+        self.assertTrue(response['result']['isError'])
+        self.assertIn('escapes its allowed directory',
+                      self.result_text(response))
+
+    def test_project_list_denies_the_deny_list(self):
+        response = self.call_tool('project.list',
+                                  {'path': 'ansible/secret'})
+        self.assertTrue(response['result']['isError'])
+        self.assertIn('denied', self.result_text(response))
+
+    def test_project_list_rejects_a_file(self):
+        response = self.call_tool(
+                'project.list', {'path': 'ansible/inventory/hosts'})
+        self.assertTrue(response['result']['isError'])
+        self.assertIn('directory not found', self.result_text(response))
+
     # -- project.read ------------------------------------------------------
 
     def test_project_read(self):

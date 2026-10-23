@@ -29,6 +29,7 @@ from .executions import (tool_execution_list, tool_execution_output,
                          tool_execution_purge)
 from .files import (tool_config_get, tool_inventory_query,
                     tool_inventory_spec, tool_project_files,
+                    tool_project_list, tool_project_mkdir,
                     tool_project_read, tool_file_delete, tool_file_write)
 from .galaxy import (tool_collection_remove, tool_collection_require,
                      tool_collection_sync)
@@ -139,7 +140,8 @@ FORMAT_PROPERTY = {'type': 'string', 'enum': ['text', 'json', 'yaml',
 # Tools which read the project directory; they run under the shared
 # project lock so a writer (a run, a sync, secrets) cannot interleave
 READ_LOCKED_TOOLS = frozenset((
-    'project.status', 'project.files', 'project.read', 'config.get',
+    'project.status', 'project.files', 'project.list', 'project.read',
+    'config.get',
     'environment.list', 'inventory.query', 'playbook.list', 'playbook.info',
     'view.list', 'role.info',
     'role.defaults', 'role.vars', 'role.argspec', 'role.tasks',
@@ -203,6 +205,16 @@ TOOL_OUTPUT_SCHEMAS = {
                      'viewLocked', 'viewRoot', 'viewRootPresent',
                      'inventory', 'secrets', 'encryption']},
     'project.files': {'type': 'array', 'items': {'type': 'string'}},
+    'project.list': {'type': 'array', 'items': {
+        'type': 'object',
+        'properties': {'name': {'type': 'string'},
+                       'type': {'type': 'string',
+                                'enum': ['dir', 'file']}},
+        'required': ['name', 'type']}},
+    'project.mkdir': {'type': 'object', 'properties': {
+        'path': {'type': 'string'},
+        'state': {'type': 'string', 'enum': ['created', 'unchanged']}},
+        'required': ['path', 'state']},
     'config.get': {'type': 'object', 'properties': {
         'key': {'type': 'string'}, 'value': {}},
         'required': ['key', 'value']},
@@ -338,6 +350,7 @@ TOOL_ANNOTATIONS = {
     # Pure reads of project or package content
     'project.status': _READ_ONLY,
     'project.files': _READ_ONLY,
+    'project.list': _READ_ONLY,
     'environment.list': _READ_ONLY,
     'project.read': _READ_ONLY,
     'config.get': _READ_ONLY,
@@ -374,6 +387,9 @@ TOOL_ANNOTATIONS = {
     # Deleting an absent file is an error, so not idempotent
     'file.delete': {'destructiveHint': True, 'idempotentHint': False,
                     'openWorldHint': False},
+    # Creating a directory destroys nothing, and re-creating is a no-op
+    'project.mkdir': {'destructiveHint': False, 'idempotentHint': True,
+                      'openWorldHint': False},
     # A specification can remove inventory paths
     'inventory.spec': {'destructiveHint': True, 'idempotentHint': True,
                        'openWorldHint': False},
@@ -785,7 +801,8 @@ def _apply_aliases(server):
 
 # The tools which cannot work without an active infrastructure view
 VIEW_BOUND_TOOLS = frozenset((
-    'file.write', 'file.delete', 'inventory.query', 'inventory.spec',
+    'file.write', 'file.delete', 'project.mkdir', 'inventory.query',
+    'inventory.spec',
     'secret.paths', 'check', 'run', 'ansible.ping', 'ansible.facts',
     'execution.list', 'execution.output', 'execution.purge',
 ))
@@ -914,6 +931,19 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                     'description': 'Only include paths '
                                     'containing this string'}}},
          lambda arguments: tool_project_files(project, policy, arguments)),
+        ('project.list',
+         'List one directory level of the DebOps project, entries '
+         'marked as file or directory, minus denied paths (secrets, '
+         'key material, virtual environments). Use this to navigate '
+         'the project directory by level; project.files lists the '
+         'whole tree at once.',
+         {'type': 'object',
+          'properties': {'path': {'type': 'string',
+                                  'description': 'Directory to list, '
+                                  'relative to the project directory '
+                                  '(default: the project directory '
+                                  'itself)'}}},
+         lambda arguments: tool_project_list(project, policy, arguments)),
         ('project.read',
          'Read a file of the DebOps project (inventory, configuration, '
          'playbooks, ...), minus denied paths (secrets, key material, '
@@ -966,8 +996,10 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                    'batch (instead of "path"/'
                                    '"content"); every entry is '
                                    'validated before any write'}}},
-         lambda arguments: tool_file_write(project, policy, arguments,
-                                           server=server)),
+         lambda arguments, context: tool_file_write(
+                 project, policy, arguments, server=server,
+                 context=context),
+         True),
         ('file.delete',
          'Delete a file from the current infrastructure view, in '
          'allowed locations only (the project.mcp.write_allow policy). '
@@ -981,8 +1013,25 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                   'relative to the view root, e.g. '
                                   '"playbooks/deploy.yml"'}},
           'required': ['path']},
-         lambda arguments: tool_file_delete(project, policy, arguments,
-                                            server=server)),
+         lambda arguments, context: tool_file_delete(
+                 project, policy, arguments, server=server,
+                 context=context),
+         True),
+        ('project.mkdir',
+         'Create a directory in the current infrastructure view, in '
+         'allowed locations only (the project.mcp.write_allow '
+         'policy), with parents as needed. A directory is not '
+         'recorded in git — only its content is — so nothing is '
+         'committed; the creation is reported.',
+         {'type': 'object',
+          'properties': {'path': {'type': 'string',
+                                  'description': 'Directory to create, '
+                                  'relative to the view root, e.g. '
+                                  '"resources/scripts"'}},
+          'required': ['path']},
+         lambda arguments, context: tool_project_mkdir(
+                 project, policy, arguments, context=context),
+         True),
         ('inventory.spec',
          'Apply an inventory specification to the inventory of the '
          'current view: define groups, hosts and variables the DebOps '

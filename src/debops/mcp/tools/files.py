@@ -6,7 +6,9 @@
 
 Read tools are confined to the project directory, minus a deny list of
 sensitive paths (secrets, key material, virtual environments); write
-tools stay confined to the infrastructure view. Inventory queries run
+tools stay confined to the infrastructure view. For a trusted operator
+(an elevated session) the write scope widens to the whole project
+directory; the deny list applies either way. Inventory queries run
 'ansible-inventory', which inspects the inventory the same way the
 'project init --graph/--list/--host' options do.
 """
@@ -132,6 +134,47 @@ def tool_project_read(project, policy, arguments):
     return text_result('# {}\n\n```\n{}```'.format(relative, content))
 
 
+def tool_project_list(project, policy, arguments):
+    """List one directory level, entries marked as file or directory."""
+    relative = str(arguments.get('path') or '').strip('/')
+    try:
+        base = confine_under(project.path, relative or '.')
+    except ValueError as errmsg:
+        return error_result(str(errmsg))
+    if policy.is_read_denied(relative):
+        return error_result('path is denied by policy: '
+                            + (relative or '.'))
+    if not os.path.isdir(base):
+        return error_result('directory not found or invalid: {}'
+                            .format(relative or '.'))
+
+    entries = []
+    truncated = False
+    for name in sorted(os.listdir(base)):
+        entry_relative = os.path.join(relative, name) if relative \
+            else name
+        if policy.is_read_denied(entry_relative):
+            continue
+        entries.append({
+                'name': name,
+                'type': 'dir' if os.path.isdir(os.path.join(base, name))
+                        else 'file'})
+        if len(entries) >= LIST_ENTRY_LIMIT:
+            truncated = True
+            break
+
+    header = '# Entries of \'{}/\' ({}{})'.format(
+            relative or '.', len(entries),
+            ', truncated at {} entries'.format(LIST_ENTRY_LIMIT)
+            if truncated else '')
+    if not entries:
+        return text_result(header + ' — none found', structured=[])
+    return text_result('\n'.join([header, ''] + [
+            '- {}{}'.format(entry['name'],
+                            '/' if entry['type'] == 'dir' else '')
+            for entry in entries]), structured=entries)
+
+
 # Configuration keys whose segments name a secret value are never
 # served: the configuration tree is not for secrets (the secret/
 # directories and the MCP .env files exist for those), and a value
@@ -218,7 +261,7 @@ def tool_inventory_query(project, arguments):
     return text_result(output)
 
 
-def _authorized_write_path(project, policy, relative):
+def _authorized_write_path(project, policy, relative, elevated=False):
     """Resolve a write path, enforcing the write policy.
 
     Anchors: a leading '/' resolves at the project directory (spelled
@@ -228,11 +271,32 @@ def _authorized_write_path(project, policy, relative):
     root. Patterns follow the same anchoring: a pattern only ever
     applies to paths anchored the same way.
 
+    An elevated session (a trusted operator at the wheel) writes
+    anywhere in the project directory: the allowlist and the project
+    machinery rules apply to the unelevated path only. The deny list
+    applies either way, so secrets, key material, the git metadata and
+    the trust passphrase stay out of reach.
+
     Returns (absolute path, display path). Raises ValueError with the
     refusal reason.
     """
     if not relative:
         raise ValueError('the "path" argument is required')
+    if elevated:
+        relative = relative.lstrip('/')
+        if not relative:
+            raise ValueError('the "path" argument is required')
+        try:
+            path = confine_under(project.path, relative)
+        except ValueError:
+            raise ValueError('path escapes its allowed directory: '
+                             + relative)
+        canonical_relative = os.path.relpath(
+                path, os.path.realpath(project.path))
+        for part in canonical_relative.split('/'):
+            if is_denied_component(part):
+                raise ValueError('path is denied by policy: ' + relative)
+        return path, '/' + canonical_relative
     if relative.startswith('/'):
         root = project.path
         relative = relative.lstrip('/')
@@ -350,10 +414,13 @@ def _parse_write_mode(arguments):
     return int(raw_mode, 8)
 
 
-def tool_file_write(project, policy, arguments, server=None):
+def tool_file_write(project, policy, arguments, server=None,
+                    context=None):
+    elevated = bool(getattr(context, 'elevated', False))
     files = arguments.get('files')
     if files is not None:
-        return _write_batch(project, policy, files, server)
+        return _write_batch(project, policy, files, server,
+                            elevated=elevated)
     # A leading slash anchors at the project root; keep it
     relative = str(arguments.get('path') or '').rstrip('/')
     content = arguments.get('content')
@@ -375,34 +442,38 @@ def tool_file_write(project, policy, arguments, server=None):
 
     try:
         path, view_relative = _authorized_write_path(project, policy,
-                                                     relative)
+                                                     relative,
+                                                     elevated=elevated)
     except ValueError as errmsg:
         return error_result(str(errmsg))
 
-    if (view_relative.startswith('.debops/mcp/')
+    # Elevated paths display anchored at the project root; the MCP
+    # content checks match the path itself either way
+    content_relative = view_relative.lstrip('/')
+    if (content_relative.startswith('.debops/mcp/')
             and not policy.project_content):
         return error_result('project MCP content is disabled by the '
                             'policy (project.mcp.project_content)')
 
     # Content served to the model is validated at write time
-    invalid = _validate_mcp_content(view_relative, content)
+    invalid = _validate_mcp_content(content_relative, content)
     if invalid is not None:
         return error_result(invalid)
 
     if (mode is None and content.startswith('#!')
-            and view_relative.startswith('.debops/mcp/tools/')
-            and view_relative.count('/') == 3):
+            and content_relative.startswith('.debops/mcp/tools/')
+            and content_relative.count('/') == 3):
         # A custom script tool is only discovered when it is executable
         mode = 0o755
 
     def announce():
-        _announce_mcp_content_change(server, view_relative)
+        _announce_mcp_content_change(server, content_relative)
     return _write_committed(project, policy, path, view_relative,
                             content, mode, 'file.write ' + view_relative,
                             after=announce)
 
 
-def _validate_write_entry(project, policy, entry):
+def _validate_write_entry(project, policy, entry, elevated=False):
     """Validate one write entry; ((path, display, content, mode), None)
     or (None, error text)."""
     if not isinstance(entry, dict):
@@ -421,19 +492,21 @@ def _validate_write_entry(project, policy, entry):
         return None, str(errmsg)
     try:
         path, view_relative = _authorized_write_path(project, policy,
-                                                     relative)
+                                                     relative,
+                                                     elevated=elevated)
     except ValueError as errmsg:
         return None, str(errmsg)
-    if (view_relative.startswith('.debops/mcp/')
+    content_relative = view_relative.lstrip('/')
+    if (content_relative.startswith('.debops/mcp/')
             and not policy.project_content):
         return None, ('project MCP content is disabled by the policy '
                       '(project.mcp.project_content)')
-    invalid = _validate_mcp_content(view_relative, content)
+    invalid = _validate_mcp_content(content_relative, content)
     if invalid is not None:
         return None, invalid
     if (mode is None and content.startswith('#!')
-            and view_relative.startswith('.debops/mcp/tools/')
-            and view_relative.count('/') == 3):
+            and content_relative.startswith('.debops/mcp/tools/')
+            and content_relative.count('/') == 3):
         # A custom script tool is only discovered when it is executable
         mode = 0o755
     return (path, view_relative, content, mode), None
@@ -467,7 +540,7 @@ def _write_file(path, display, content, mode):
             size), None
 
 
-def _write_batch(project, policy, files, server):
+def _write_batch(project, policy, files, server, elevated=False):
     """Write a batch of files, one commit for the lot.
 
     Every entry is validated before anything is written — a refused
@@ -482,7 +555,8 @@ def _write_batch(project, policy, files, server):
         return refused
     validated = []
     for entry in files:
-        prepared, problem = _validate_write_entry(project, policy, entry)
+        prepared, problem = _validate_write_entry(project, policy, entry,
+                                                  elevated=elevated)
         if problem is not None:
             return error_result(problem)
         validated.append(prepared)
@@ -499,7 +573,8 @@ def _write_batch(project, policy, files, server):
                                     'are left uncommitted)'.format(
                                             problem, index))
             outcomes.append('{}: {}'.format(outcome, view_relative))
-            _announce_mcp_content_change(server, view_relative)
+            _announce_mcp_content_change(server,
+                                         view_relative.lstrip('/'))
         commit_error = commit_or_report(
                 project, note,
                 '{} file(s) written'.format(len(paths)), paths=paths)
@@ -620,9 +695,11 @@ def _announce_mcp_content_change(server, view_relative):
         server.reload()
 
 
-def tool_file_delete(project, policy, arguments, server=None):
+def tool_file_delete(project, policy, arguments, server=None,
+                     context=None):
     # A leading slash anchors at the project root; keep it
     relative = str(arguments.get('path') or '').rstrip('/')
+    elevated = bool(getattr(context, 'elevated', False))
 
     # Deletions are recoverable and attributable only with git
     refused = require_git_tracked(project)
@@ -631,11 +708,12 @@ def tool_file_delete(project, policy, arguments, server=None):
 
     try:
         path, view_relative = _authorized_write_path(project, policy,
-                                                     relative)
+                                                     relative,
+                                                     elevated=elevated)
     except ValueError as errmsg:
         return error_result(str(errmsg))
 
-    if (view_relative.startswith('.debops/mcp/')
+    if (view_relative.lstrip('/').startswith('.debops/mcp/')
             and not policy.project_content):
         return error_result('project MCP content is disabled by the '
                             'policy (project.mcp.project_content)')
@@ -652,7 +730,7 @@ def tool_file_delete(project, policy, arguments, server=None):
         except OSError as errmsg:
             return error_result('cannot delete {}: {}'.format(
                     view_relative, errmsg))
-        _announce_mcp_content_change(server, view_relative)
+        _announce_mcp_content_change(server, view_relative.lstrip('/'))
         # The commit is part of the tool's contract, as for file.write;
         # when it fails the file is gone but NOT recorded in git
         commit_error = commit_or_report(
@@ -661,6 +739,41 @@ def tool_file_delete(project, policy, arguments, server=None):
         if commit_error is not None:
             return commit_error
         return text_result('deleted: {}'.format(view_relative))
+
+
+def tool_project_mkdir(project, policy, arguments, context=None):
+    """Create a directory (with parents), in the writable locations.
+
+    A directory is not recorded in git — only its content is — so
+    there is nothing to commit; the creation is reported. An elevated
+    session creates directories anywhere in the project.
+    """
+    relative = str(arguments.get('path') or '')
+    if not relative.strip('/'):
+        return error_result('the "path" argument is required')
+    elevated = bool(getattr(context, 'elevated', False))
+    try:
+        path, display = _authorized_write_path(
+                project, policy, relative.rstrip('/'), elevated=elevated)
+    except ValueError as errmsg:
+        return error_result(str(errmsg))
+
+    with exclusive_project(project, policy,
+                           note='project.mkdir ' + display,
+                           paths=[path]):
+        if os.path.isdir(path):
+            state = 'unchanged'
+        elif os.path.lexists(path):
+            return error_result('not a directory: ' + display)
+        else:
+            try:
+                os.makedirs(path)
+            except OSError as errmsg:
+                return error_result('cannot create {}: {}'.format(
+                        display, errmsg))
+            state = 'created'
+    return text_result('{}: {}'.format(state, display),
+                       structured={'path': display, 'state': state})
 
 
 def _inventory_spec_report(result, inventory_path, dry_run):

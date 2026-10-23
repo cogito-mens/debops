@@ -753,6 +753,7 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
                              "inventory.spec", "keyring.fetch",
                              "playbook.info",
                              "playbook.list", "project.files",
+                             "project.list", "project.mkdir",
                              "project.pull", "project.push", "project.read",
                              "project.status", "role.argspec",
                              "role.defaults", "role.files",
