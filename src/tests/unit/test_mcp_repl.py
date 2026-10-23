@@ -649,12 +649,14 @@ class HistoryFormatTestCase(unittest.TestCase):
         self.assertEqual(repl._read_history_strings(self.path), [])
 
     def test_the_plain_loop_loads_and_appends(self):
-        os.makedirs(os.path.dirname(self.path))
-        with open(self.path, 'w') as fp:
-            fp.write('\n# 2026-10-23 10:00:00.000000\n+seed command\n')
         fake_readline = mock.MagicMock()
         client = FakeClient()
         session, _out, _err = make_repl(client, interactive=True)
+        # A documentation session shares the documentation file
+        path = session.history_file
+        self.assertTrue(path.endswith('mcp-history-documentation'))
+        with open(path, 'w') as fp:
+            fp.write('\n# 2026-10-23 10:00:00.000000\n+seed command\n')
         with mock.patch.dict(sys.modules, {'readline': fake_readline}), \
                 mock.patch('builtins.input',
                            side_effect=['help', EOFError()]):
@@ -664,8 +666,119 @@ class HistoryFormatTestCase(unittest.TestCase):
         # the shared format
         fake_readline.add_history.assert_called_once_with(
                 'seed command')
-        with open(self.path) as fp:
+        with open(path) as fp:
             self.assertIn('+help', fp.read())
+
+
+class HistoryKeyTestCase(unittest.TestCase):
+    """The per-project, per-view history files: the key naming of
+    the run logs, moved by the view switch."""
+
+    def setUp(self):
+        self.tmpdir = tmp_history_home(self)
+        self.project_path = os.path.join(self.tmpdir, 'project')
+
+    def make_project_session(self, view='system'):
+        client = FakeClient()
+        session, _out, _err = make_repl(client)
+        session.project_path = self.project_path
+        session.view = view
+        return session, client
+
+    def history_name(self, view):
+        from debops.mcp.runs import path_key
+        return 'mcp-history-' + path_key(self.project_path,
+                                         'project', view)
+
+    def test_the_history_is_keyed_per_project_and_view(self):
+        session, _client = self.make_project_session()
+        name = os.path.basename(session.history_file)
+        self.assertEqual(name, self.history_name('system'))
+        # A view switch moves the file; the path hash stays
+        session.view = 'admin'
+        self.assertEqual(os.path.basename(session.history_file),
+                         self.history_name('admin'))
+        self.assertNotEqual(self.history_name('admin'),
+                            self.history_name('system'))
+
+    def test_a_project_without_a_view_has_a_viewless_key(self):
+        session, _client = self.make_project_session(view=None)
+        self.assertEqual(os.path.basename(session.history_file),
+                         self.history_name(''))
+
+    def test_the_docs_history_is_shared(self):
+        client = FakeClient()
+        session, _out, _err = make_repl(client)
+        self.assertEqual(os.path.basename(session.history_file),
+                         'mcp-history-documentation')
+
+    def test_a_view_switch_fires_the_history_hook(self):
+        session, client = self.make_project_session()
+        fired = []
+        session._history_changed = lambda: fired.append(True)
+        client.queue('tools/call', {'resultType': 'complete',
+                                    'isError': False, 'content': []})
+        session.execute('view admin')
+        self.assertEqual(fired, [True])
+        self.assertEqual(session.view, 'admin')
+
+    def test_a_failed_view_switch_keeps_the_history(self):
+        session, client = self.make_project_session()
+        fired = []
+        session._history_changed = lambda: fired.append(True)
+        client.queue('tools/call', {'resultType': 'complete',
+                                    'isError': True,
+                                    'content': [{'type': 'text',
+                                                 'text': 'no'}]})
+        session.execute('view admin')
+        self.assertEqual(fired, [])
+        self.assertEqual(session.view, 'system')
+
+    def test_the_pt_loop_follows_the_view_switch(self):
+        try:
+            from prompt_toolkit.history import FileHistory
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        session, client = self.make_project_session()
+        client.queue('tools/call', {'resultType': 'complete',
+                                    'isError': False, 'content': []})
+        with mock.patch('prompt_toolkit.PromptSession') as pt:
+            pt.return_value.prompt.side_effect = EOFError()
+            code = repl.run_interactive(session)
+        self.assertEqual(code, 0)
+        # The initial file is the startup view's
+        _args, kwargs = pt.call_args
+        self.assertTrue(kwargs['history'].filename.endswith(
+                self.history_name('system')))
+        # The hook re-points the buffer at the current view's file
+        session.execute('view admin')
+        history = pt.return_value.default_buffer.history
+        self.assertIsInstance(history, FileHistory)
+        self.assertTrue(history.filename.endswith(
+                self.history_name('admin')))
+
+    def test_the_plain_loop_reloads_on_a_view_switch(self):
+        session, client = self.make_project_session()
+        for view, command in (('system', 'system command'),
+                              ('admin', 'admin command')):
+            path = os.path.join(self.tmpdir, 'debops',
+                                self.history_name(view))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w') as fp:
+                fp.write('\n# 2026-10-23 10:00:00.000000\n'
+                         '+{}\n'.format(command))
+        fake_readline = mock.MagicMock()
+        client.queue('tools/call', {'resultType': 'complete',
+                                    'isError': False, 'content': []})
+        with mock.patch.dict(sys.modules, {'readline': fake_readline}), \
+                mock.patch('builtins.input',
+                           side_effect=['view admin', EOFError()]):
+            code = repl.run_interactive_plain(session)
+        self.assertEqual(code, 0)
+        self.assertEqual(fake_readline.add_history.call_args_list,
+                         [mock.call('system command'),
+                          mock.call('admin command')])
+        fake_readline.clear_history.assert_called_once_with()
 
 
 class BannerTestCase(unittest.TestCase):

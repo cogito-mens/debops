@@ -322,9 +322,6 @@ class ConsoleBuildTestCase(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def history_path(self):
-        return os.path.join(self.tmpdir, 'debops', 'mcp-repl-history')
-
     def build_sized_app(self, session, rows=10, cols=30):
         """Build the console headless, pinned to a fixed terminal
         size."""
@@ -490,6 +487,8 @@ class ConsoleBuildTestCase(unittest.TestCase):
             self.skipTest('prompt_toolkit is not installed')
         from debops.mcp import console
         session, _client = make_session()
+        # A project session records in the project-and-view file
+        session.project_path = os.path.join(self.tmpdir, 'project')
         app = console._build_app(session)
         buffer = app.layout.current_buffer
         buffer.text = 'status'
@@ -497,7 +496,9 @@ class ConsoleBuildTestCase(unittest.TestCase):
         # Recorded, and the line cleared for the next command
         self.assertIn('status', buffer.history.get_strings())
         self.assertEqual(buffer.text, '')
-        with open(self.history_path()) as fp:
+        self.assertTrue(session.history_file.endswith(
+                '-project-system'))
+        with open(session.history_file) as fp:
             self.assertIn('+status', fp.read())
 
     def test_the_console_loads_the_shared_history(self):
@@ -507,16 +508,16 @@ class ConsoleBuildTestCase(unittest.TestCase):
             self.skipTest('prompt_toolkit is not installed')
         from prompt_toolkit.history import FileHistory
         from debops.mcp import console
+        session, _client = make_session()
+        session.project_path = os.path.join(self.tmpdir, 'project')
         # As written by another front end (the repl, the shell)
-        os.makedirs(os.path.dirname(self.history_path()))
-        with open(self.history_path(), 'w') as fp:
+        with open(session.history_file, 'w') as fp:
             fp.write('\n# 2026-10-23 10:00:00.000000\n'
                      '+run containers\n')
-        session, _client = make_session()
         app = console._build_app(session)
         history = app.layout.current_buffer.history
         self.assertIsInstance(history, FileHistory)
-        self.assertEqual(history.filename, self.history_path())
+        self.assertEqual(history.filename, session.history_file)
         self.assertEqual(list(history.load_history_strings()),
                          ['run containers'])
 
@@ -537,8 +538,8 @@ class ConsoleBuildTestCase(unittest.TestCase):
             buffer.validate_and_handle()
             session._gate = None
         self.assertNotIn('supersecret', buffer.history.get_strings())
-        if os.path.exists(self.history_path()):
-            with open(self.history_path()) as fp:
+        if os.path.exists(session.history_file):
+            with open(session.history_file) as fp:
                 self.assertNotIn('supersecret', fp.read())
 
     def test_blank_lines_stay_out_of_the_history(self):
@@ -553,6 +554,27 @@ class ConsoleBuildTestCase(unittest.TestCase):
         buffer.text = '   '
         buffer.validate_and_handle()
         self.assertEqual(buffer.history.get_strings(), [])
+
+    def test_the_history_follows_the_view_switch(self):
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        from prompt_toolkit.history import FileHistory
+        from debops.mcp import console
+        session, _client = make_session()
+        session.project_path = os.path.join(self.tmpdir, 'project')
+        console._build_app(session)
+        # The initial file is the startup view's
+        self.assertIsInstance(session._input_buffer.history,
+                              FileHistory)
+        self.assertTrue(session._input_buffer.history.filename
+                        .endswith('-project-system'))
+        session.execute('view admin')
+        self.assertTrue(session._input_buffer.history.filename
+                        .endswith('-project-admin'))
+        self.assertEqual(session._input_buffer.history.filename,
+                         session.history_file)
 
     def test_the_console_falls_back_without_prompt_toolkit(self):
         from debops.mcp import console

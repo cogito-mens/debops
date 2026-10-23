@@ -22,6 +22,7 @@ import time
 
 from . import server as _server
 from .client import UnixClient, default_socket_path
+from .runs import path_key
 from .trust import TRUST_PATH
 
 # The capabilities the interactive clients (the REPL, the shell)
@@ -336,6 +337,24 @@ class Repl(object):
             place = ':/' + self.cwd
         return 'debops{} {}{}{}> '.format(marker, name, view, place)
 
+    @property
+    def history_file(self):
+        """The command history of the session: one file per project
+        and view (the run-log key naming), a shared one for the
+        documentation mode. Recomputed on access — a view switch
+        moves the recall and the record."""
+        if self.project_path is None:
+            name = 'mcp-history-documentation'
+        else:
+            name = 'mcp-history-' + path_key(
+                    self.project_path, self.project_name,
+                    self.view or '')
+        return os.path.join(_history_dir(), name)
+
+    def _history_changed(self):
+        """The history dimension (the view) switched; the front ends
+        re-point the input history at the current file."""
+
     def status_line(self):
         """The session state for a status bar: the place on the left,
         the trust state on the right. The shell renders it below the
@@ -512,6 +531,7 @@ class Repl(object):
             self.cwd = self._view_root_rel or ''
             self._previous_cwd = None
             self._completion_cache.clear()
+            self._history_changed()
         return result
 
     def cmd_check(self, args):
@@ -1321,14 +1341,17 @@ def run_interactive(repl):
         # The plain reader carries the session; completion just is
         # not there
         return run_interactive_plain(repl)
-    history_dir = _history_dir()
     session = PromptSession(
             completer=_Completer(repl),
             # The shell habit: Tab inserts the completion, a double
             # Tab lists the candidates
             complete_style=CompleteStyle.READLINE_LIKE,
-            history=FileHistory(os.path.join(history_dir,
-                                             'mcp-repl-history')))
+            history=FileHistory(repl.history_file))
+    # A view switch moves the recall and the record to the view's
+    # own history file
+    repl._history_changed = lambda: setattr(
+            session.default_buffer, 'history',
+            FileHistory(repl.history_file))
     print(_banner(repl), file=repl._err)
     while True:
         try:
@@ -1408,15 +1431,21 @@ def run_interactive_plain(repl):
         import readline
     except ImportError:
         readline = None
-    history = None
     if readline is not None:
-        # The shared file, in the prompt_toolkit format the other
-        # front ends read and write; readline keeps the session's
-        # recall in memory, fed from and appended to it per command
-        history = os.path.join(_history_dir(), 'mcp-repl-history')
-        for entry in _read_history_strings(history):
-            readline.add_history(entry)
+        # The per-view file, in the prompt_toolkit format the other
+        # front ends read and write; readline keeps the recall in
+        # memory, fed from it and appended to it per command, and
+        # re-fed when a view switch moves the file
+        def _feed_history():
+            for entry in _read_history_strings(repl.history_file):
+                readline.add_history(entry)
+
+        def _reload_history():
+            readline.clear_history()
+            _feed_history()
+        _feed_history()
         readline.set_history_length(1000)
+        repl._history_changed = _reload_history
     print(_banner(repl), file=repl._err)
     while True:
         try:
@@ -1427,9 +1456,9 @@ def run_interactive_plain(repl):
             continue
         except EOFError:
             break
-        if history is not None and line.strip():
+        if readline is not None and line.strip():
             try:
-                _append_history_string(history, line)
+                _append_history_string(repl.history_file, line)
             except OSError:
                 pass
         try:

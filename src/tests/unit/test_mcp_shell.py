@@ -9,7 +9,10 @@ dependencies.
 """
 
 import io
+import os
+import shutil
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -151,6 +154,29 @@ class ShellTestCase(unittest.TestCase):
                             interactive=False, frontend='shell')
         self.assertEqual(code, 0)
         self.assertTrue(pipe.called)
+
+    def test_the_history_follows_the_view_switch(self):
+        try:
+            from prompt_toolkit.history import FileHistory
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        tmpdir = tempfile.mkdtemp(prefix='debops-mcp-history-')
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        session, _client, _out, _err = make_session()
+        session.project_path = os.path.join(tmpdir, 'project')
+        with mock.patch.dict(os.environ, {'XDG_DATA_HOME': tmpdir}):
+            _code, pt_session = run_shell_once(session)
+            _args, kwargs = pt_session.call_args
+            self.assertTrue(kwargs['history'].filename.endswith(
+                    '-project-system'))
+            # The hook re-points the buffer at the current view's
+            # file
+            session.view = 'admin'
+            session._history_changed()
+            history = pt_session.return_value.default_buffer.history
+            self.assertIsInstance(history, FileHistory)
+            self.assertTrue(history.filename.endswith(
+                    '-project-admin'))
 
     def test_a_terminal_gets_the_shell(self):
         client = mock.MagicMock()

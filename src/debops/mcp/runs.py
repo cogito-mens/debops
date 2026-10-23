@@ -60,26 +60,31 @@ def cache_root():
     return os.path.join(_cache_base(), CACHE_SUBDIRECTORY)
 
 
+def path_key(path, name, view):
+    """The key of a project path and view: the path hash keeps two
+    projects with the same name apart, the view keeps the views of
+    one project apart, and the sanitized name keeps the key
+    recognizable. With view='' the name carries no view — the daemon
+    socket's naming, one per project, its view switchable inside."""
+    digest = hashlib.sha256(
+            '{}\0{}'.format(os.path.realpath(path),
+                            view).encode('utf-8', 'replace'))
+    key = re.sub(r'[^A-Za-z0-9._-]', '-', str(name or 'project'))
+    if view:
+        key += '-' + re.sub(r'[^A-Za-z0-9._-]', '-', str(view))
+    return '{}-{}'.format(digest.hexdigest()[:8], key)
+
+
 def project_key(project, view=None):
     """The name of the run log directory of a project view.
 
-    The hash of the project path keeps two projects with the same name
-    apart, and the view keeps the views of one project apart: the
-    executions of one view are serialized by its lock, so the logs in
-    one directory are never pruned while a run of that view writes
-    them. The name itself is only there to make the directory
-    recognizable. With view='' the name carries no view — the daemon
-    socket's naming, one per project, its view switchable inside.
+    The executions of one view are serialized by its lock, so the
+    logs in one directory are never pruned while a run of that view
+    writes them.
     """
-    path = os.path.realpath(project.path)
     if view is None:
         view = getattr(project, 'view', None) or ''
-    digest = hashlib.sha256(
-            '{}\0{}'.format(path, view).encode('utf-8', 'replace'))
-    name = re.sub(r'[^A-Za-z0-9._-]', '-', str(project.name or 'project'))
-    if view:
-        name += '-' + re.sub(r'[^A-Za-z0-9._-]', '-', str(view))
-    return '{}-{}'.format(digest.hexdigest()[:8], name)
+    return path_key(project.path, project.name, view)
 
 
 def project_directory(project, keep=KEEP_LOGS, max_age=MAX_LOG_AGE):

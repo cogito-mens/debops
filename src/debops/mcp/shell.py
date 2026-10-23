@@ -11,10 +11,9 @@ tramples the input line. Without prompt_toolkit the shell degrades
 to the plain reader.
 """
 
-import os
 import sys
 
-from .repl import (_banner, _Completer, _execute_line, _history_dir,
+from .repl import (_banner, _Completer, _execute_line,
                    run_interactive_plain)
 
 
@@ -45,10 +44,14 @@ def run_shell(session):
             # The shell habit: Tab inserts the completion, a double
             # Tab lists the candidates
             complete_style=CompleteStyle.READLINE_LIKE,
-            history=FileHistory(os.path.join(_history_dir(),
-                                             'mcp-repl-history')),
+            history=FileHistory(session.history_file),
             bottom_toolbar=lambda: _toolbar(session),
             style=Style.from_dict({'bottom-toolbar': 'reverse'}))
+    # A view switch moves the recall and the record to the view's
+    # own history file
+    session._history_changed = lambda: setattr(
+            prompt_session.default_buffer, 'history',
+            FileHistory(session.history_file))
     print(_banner(session), file=session._err)
     # The shell streams the watch in the background: a reader thread
     # on its own connection, the lines printed above the prompt

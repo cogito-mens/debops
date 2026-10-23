@@ -15,12 +15,11 @@ declines. Without prompt_toolkit the console degrades to the plain
 reader.
 """
 
-import os
 import threading
 import traceback
 
 from .repl import (Repl, ReplError, _banner, _execute_line,
-                   _history_dir, run_interactive_plain)
+                   run_interactive_plain)
 
 # The scrollback keeps this many lines; the activity pane this many
 _SCROLLBACK_LINES = 5000
@@ -63,6 +62,7 @@ class ConsoleRepl(Repl):
         # The prompt_toolkit buffers, attached by _build_app
         self._scroll_buffer = None
         self._activity_buffer = None
+        self._input_buffer = None
 
     # -- the scrollback plumbing -------------------------------------
 
@@ -333,8 +333,13 @@ def _build_app(session):
             completer=_Completer(session), multiline=False,
             accept_handler=accept,
             # The history file is shared with the other front ends
-            history=FileHistory(os.path.join(
-                    _history_dir(), 'mcp-repl-history')))
+            # of this project and view
+            history=FileHistory(session.history_file))
+    session._input_buffer = input_buffer
+    # A view switch moves the recall and the record to the view's
+    # own history file
+    session._history_changed = lambda: setattr(
+            input_buffer, 'history', FileHistory(session.history_file))
     # A pending secret gate (the passphrase prompt) masks the input
     password = PasswordProcessor()
     input_control = BufferControl(
