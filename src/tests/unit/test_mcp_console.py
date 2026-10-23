@@ -307,6 +307,80 @@ class EditorSuspensionTestCase(unittest.TestCase):
 
 class ConsoleBuildTestCase(unittest.TestCase):
 
+    def build_sized_app(self, session, rows=10, cols=30):
+        """Build the console headless, pinned to a fixed terminal
+        size."""
+        from prompt_toolkit.data_structures import Size
+        from prompt_toolkit.output import DummyOutput
+        from debops.mcp import console
+
+        class SmallOutput(DummyOutput):
+            def get_size(self):
+                return Size(rows=rows, columns=cols)
+
+        app = console._build_app(session)
+        app.renderer.output = SmallOutput()
+        return app
+
+    def render_app(self, app, rows=10, cols=30):
+        """Render one frame; return the screen's rows as text and
+        the window positions."""
+        app.renderer.render(app, app.layout)
+        screen = app.renderer.last_rendered_screen
+        lines = [''.join(
+                screen.data_buffer.get(r, {}).get(c).char
+                if c in screen.data_buffer.get(r, {}) else ' '
+                for c in range(cols)).rstrip()
+                for r in range(rows)]
+        return lines, screen.visible_windows_to_write_positions
+
+    def scroll_position(self, session, positions):
+        """The write position of the session's scrollback window."""
+        for window, point in positions.items():
+            content = getattr(window, 'content', None)
+            if getattr(content, 'buffer', None) is \
+                    session._scroll_buffer:
+                return point
+        return None
+
+    def test_the_scrollback_hugs_the_input_line(self):
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        session, _client = make_session()
+        app = self.build_sized_app(session)
+        session._echo('one\ntwo\nthree\n')
+        lines, positions = self.render_app(app)
+        point = self.scroll_position(session, positions)
+        self.assertIsNotNone(point)
+        # Not at the top of the screen, and directly above the
+        # input line and the status bar
+        self.assertGreater(point.ypos, 0)
+        self.assertEqual(point.ypos + point.height, 10 - 2)
+        # The trailing newline leaves one empty row under the text
+        self.assertEqual(lines[6], 'three')
+        self.assertEqual(lines[7], '')
+        self.assertEqual(lines[0], '')
+
+    def test_the_scrollback_claims_the_area_when_full(self):
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        session, _client = make_session()
+        app = self.build_sized_app(session)
+        session._echo(''.join('line{:02d}\n'.format(i)
+                              for i in range(25)))
+        lines, positions = self.render_app(app)
+        point = self.scroll_position(session, positions)
+        self.assertIsNotNone(point)
+        # The filler collapses; the tail stays visible
+        self.assertEqual(point.ypos, 0)
+        self.assertEqual(point.height, 10 - 2)
+        self.assertIn('line24', ''.join(lines))
+        self.assertNotIn('line00', ''.join(lines))
+
     def test_the_application_builds_headless(self):
         try:
             from prompt_toolkit.application import Application

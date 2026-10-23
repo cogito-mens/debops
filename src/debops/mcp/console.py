@@ -323,9 +323,14 @@ def _build_app(session):
                     or '(empty directory)'),
                     width=30, style='class:pane')
         if session.pane == 'activity':
-            return Window(BufferControl(buffer=activity_buffer,
-                                        focusable=False),
-                          width=40, style='class:pane')
+            # The feed grows upward from the input line, like the
+            # scrollback next to it
+            return HSplit([
+                    Window(style='class:pane'),
+                    Window(BufferControl(buffer=activity_buffer,
+                                         focusable=False),
+                           dont_extend_height=True,
+                           style='class:pane')], width=40)
         return Window()
 
     bindings = KeyBindings()
@@ -350,9 +355,12 @@ def _build_app(session):
         else:
             event.app.current_buffer.reset()
 
+    # 'dont_extend_height' under an empty filler window: the
+    # scrollback grows upward from the input line like a terminal,
+    # and claims the whole area once the content overflows
     scroll_window = Window(BufferControl(buffer=scroll_buffer,
                                          focusable=False),
-                           wrap_lines=True)
+                           wrap_lines=True, dont_extend_height=True)
 
     @bindings.add('pageup')
     def _pageup(event):
@@ -371,7 +379,7 @@ def _build_app(session):
     from prompt_toolkit.layout.menus import CompletionsMenu
     panes = HSplit([
             VSplit([
-                    scroll_window,
+                    HSplit([Window(), scroll_window]),
                     ConditionalContainer(
                             DynamicContainer(pane_container),
                             filter=Condition(
