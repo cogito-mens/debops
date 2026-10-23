@@ -383,6 +383,26 @@ TOOL_ANNOTATIONS = {
                         'openWorldHint': False},
     # Plugin documentation is a local read
     'ansible.doc': _READ_ONLY,
+    # The queue tools steer the queue, never the project content:
+    # they read no view-anchored path, so the view guard does not
+    # apply to them
+    'queue.list': _READ_ONLY,
+    'batch.info': _READ_ONLY,
+    'queue.start': {'idempotentHint': True,
+                    'org.debops/viewNeutral': True},
+    'queue.stop': {'idempotentHint': True,
+                   'org.debops/viewNeutral': True},
+    'queue.clear': {'org.debops/viewNeutral': True},
+    'batch.create': {'org.debops/viewNeutral': True},
+    'batch.remove': {'org.debops/viewNeutral': True},
+    'batch.prune': {'destructiveHint': True,
+                    'org.debops/viewNeutral': True},
+    'batch.pending': {'idempotentHint': True,
+                      'org.debops/viewNeutral': True},
+    'job.add': {'org.debops/viewNeutral': True},
+    'job.prune': {'destructiveHint': True,
+                  'org.debops/viewNeutral': True},
+    'job.pop': {'org.debops/viewNeutral': True},
     # Secrets are mounted and unmounted; the project may be committed
     'secret.paths': {'destructiveHint': False, 'idempotentHint': True,
                      'openWorldHint': False},
@@ -1592,6 +1612,14 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
 
     _register_entries(target, tools, policy, confirm=confirm,
                       project=project)
+
+    # The execution queue tools, when the daemon runs with the queue
+    # (a standalone serve, or --queue); the legacy era predates them
+    if not server.legacy and getattr(server, 'job_queue', None) \
+            is not None:
+        from .jobs import queue_tool_entries
+        _register_entries(target, queue_tool_entries(server), policy,
+                          project=project)
     _apply_aliases(server)
 
 

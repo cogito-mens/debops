@@ -799,6 +799,37 @@ def _probe_tally(runner, project, timeout=30):
                                                  hosts_per_play)}
 
 
+def _make_runner(project, arguments, check, policy):
+    """The playbook runner for a planned execution; a bad plan's
+    ValueError carries the text worth an error result.
+
+    The runner is command-line machinery: some of its error paths
+    print to stdout and call sys.exit(). Both would damage a server
+    (stdout is the protocol channel, and an exit kills the daemon),
+    so its construction is captured and its aborts become errors.
+    """
+    args = _build_ansible_args(arguments, check,
+                               policy.execute_options,
+                               diff=policy.execute_diff,
+                               debug=bool(arguments.get('debug')))
+    if arguments.get('user') is not None:
+        # The run's default connection user: a host's own
+        # ansible_user in the inventory still takes precedence,
+        # and without an override the run connects as this account
+        args.extend(['--user', arguments['user']])
+    runner_stdout = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(runner_stdout):
+            return AnsiblePlaybookRunner(project, ansible_args=args)
+    except (ValueError, FileNotFoundError,
+            ChildProcessError) as errmsg:
+        raise ValueError(str(errmsg))
+    except SystemExit as errmsg:
+        details = runner_stdout.getvalue().strip()
+        raise ValueError('the playbook runner aborted (code {}): {}'
+                         .format(errmsg.code, details))
+
+
 def _execute_playbook(project, policy, arguments, context, check,
                       enabled_check=None, on_disabled=None):
     mode = 'check' if check else 'run'
@@ -832,33 +863,9 @@ def _execute_playbook(project, policy, arguments, context, check,
     with exclusive_project(project, policy,
                            note='{} {}'.format(mode, ' '.join(targets))):
         try:
-            args = _build_ansible_args(arguments, check,
-                                       policy.execute_options,
-                                       diff=policy.execute_diff,
-                                       debug=debug)
+            runner = _make_runner(project, arguments, check, policy)
         except ValueError as errmsg:
             return error_result(str(errmsg))
-        if user is not None:
-            # The run's default connection user: a host's own
-            # ansible_user in the inventory still takes precedence,
-            # and without an override the run connects as this account
-            args.extend(['--user', user])
-
-        # The runner is command-line machinery: some of its error paths
-        # print to stdout and call sys.exit(). Both would damage a server
-        # (stdout is the protocol channel, and an exit kills the daemon),
-        # so its construction is captured and its aborts become results
-        runner_stdout = io.StringIO()
-        try:
-            with contextlib.redirect_stdout(runner_stdout):
-                runner = AnsiblePlaybookRunner(project, ansible_args=args)
-        except (ValueError, FileNotFoundError,
-                ChildProcessError) as errmsg:
-            return error_result(str(errmsg))
-        except SystemExit as errmsg:
-            details = runner_stdout.getvalue().strip()
-            return error_result('the playbook runner aborted (code {}): {}'
-                                .format(errmsg.code, details))
         command = runner.command()
 
         # A playbook from the project is agent-writable content: its

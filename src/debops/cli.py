@@ -623,6 +623,20 @@ class Interpreter(object):
                                transport='unix' if socket_path
                                else 'stdio',
                                legacy=args.legacy)
+            # The execution queue: the default is on for a daemon
+            # started by hand, off for a spawned one; --queue and
+            # --no-queue override. Never in the legacy era or the
+            # documentation mode. Created before the registration so
+            # the queue tools join the first surface
+            if args.queue is not None:
+                queue_wanted = args.queue
+            else:
+                queue_wanted = not spawned
+            if queue_wanted and not args.legacy and not docs_mode:
+                from .mcp.jobs import JobQueue
+                server.job_queue = JobQueue(server)
+                logger.notice('The execution queue is enabled '
+                              '(parked until queue.start)')
             register_project_tools(server,
                                    enabled_check=killswitch.is_enabled)
 
@@ -748,6 +762,8 @@ class Interpreter(object):
                         pid_note=('spawned' if spawned else None))
             if not socket_path or args.stdio:
                 stdio_transport = StdioTransport()
+            if server.job_queue is not None:
+                server.job_queue.start_thread()
             if socket_transport is None:
                 stdio_transport.serve(server, on_ready=on_ready,
                                       on_stop=on_stop)
@@ -779,6 +795,8 @@ class Interpreter(object):
             # 128 + SIGINT; the transport cleans up after itself
             sys.exit(130)
         finally:
+            if server.job_queue is not None:
+                server.job_queue.stop_thread()
             if started:
                 if not run_hooks(project.path, 'mcp-post-stop', timeout=30,
                                  extra_env=hook_env):

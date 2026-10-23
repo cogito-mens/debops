@@ -405,6 +405,9 @@ class McpServer(object):
         self.prompts = prompts
         # The kill switch; None means always enabled
         self.killswitch = killswitch
+        # The execution queue (debops.mcp.jobs.JobQueue), when the
+        # daemon was started with it — None otherwise
+        self.job_queue = None
         self.tools = {}
         # Hidden aliases, answered by their canonical tools and never
         # listed; the registration entry points fill them in
@@ -1178,7 +1181,9 @@ class McpServer(object):
             if (VIEW_META_KEY in declared
                     and declared[VIEW_META_KEY] != self.project.view
                     and not (tool.annotations or {}).get(
-                            'readOnlyHint')):
+                            'readOnlyHint')
+                    and not (tool.annotations or {}).get(
+                            'org.debops/viewNeutral')):
                 current = self.project.view or '(none)'
                 logger.notice('Tool %s(%s) -> refused, the view is '
                               'now %s%s', name, ','.join(

@@ -741,7 +741,9 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
     (response,) = read_json_lines(result.stdout)
     names = [tool["name"] for tool in response["result"]["tools"]]
     assert sorted(names) == ["ansible.doc", "ansible.facts",
-                             "ansible.ping", "check",
+                             "ansible.ping", "batch.create",
+                             "batch.info", "batch.pending",
+                             "batch.prune", "batch.remove", "check",
                              "collection.playbooks", "collection.remove",
                              "collection.require", "collection.roles",
                              "collection.sync", "config.get",
@@ -751,17 +753,38 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
                              "execution.purge",
                              "file.delete", "file.move", "file.write",
                              "inventory.query",
-                             "inventory.spec", "keyring.fetch",
+                             "inventory.spec", "job.add", "job.pop",
+                             "job.prune", "keyring.fetch",
                              "playbook.info",
                              "playbook.list", "project.files",
                              "project.list", "project.mkdir",
                              "project.pull", "project.push", "project.read",
-                             "project.status", "role.argspec",
+                             "project.status", "queue.clear",
+                             "queue.list", "queue.start", "queue.stop",
+                             "role.argspec",
                              "role.defaults", "role.files",
                              "role.handlers", "role.info", "role.tasks",
                              "role.templates", "role.vars",
                              "run", "secret.paths", "view.create",
                              "view.list", "view.switch"]
+
+
+def test_tools_list_without_the_queue(run_debops, mcp_env,
+                                      project_dir):
+    """A spawned daemon carries no queue; --no-queue pins the same
+    for a hand-started one."""
+    request = (json.dumps({"jsonrpc": "2.0",
+                           "id": 1, "method": "tools/list",
+                           "params": {"_meta": REQUEST_META}}) + "\n")
+    result = run_debops("mcp", "serve", "--no-queue",
+                        cwd=str(project_dir), env=mcp_env,
+                        input_text=request)
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    names = [tool["name"] for tool in response["result"]["tools"]]
+    assert "queue.list" not in names
+    assert "job.add" not in names
+    assert "batch.create" not in names
 
 
 def test_role_defaults_via_stdio(run_debops, mcp_env, project_dir):

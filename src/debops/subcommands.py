@@ -618,6 +618,16 @@ Commands:
                             metavar='COUNT',
                             help='maximum number of concurrent connections '
                                  '(default: %(default)s)')
+        queue = parser.add_mutually_exclusive_group()
+        queue.add_argument('--queue', dest='queue',
+                           action='store_true', default=None,
+                           help='enable the execution queue (the '
+                                'default for a daemon started by '
+                                'hand)')
+        queue.add_argument('--no-queue', dest='queue',
+                           action='store_false',
+                           help='disable the execution queue (the '
+                                'default for a spawned daemon)')
         parser.add_argument('--log', nargs='?', const='', default=None,
                             metavar='PATH',
                             help='the server audit log (startup, tool '
