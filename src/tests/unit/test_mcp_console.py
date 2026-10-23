@@ -8,7 +8,10 @@ Written with 'unittest' so that the suite runs under pytest without extra
 dependencies.
 """
 
+import os
+import shutil
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -309,6 +312,19 @@ class EditorSuspensionTestCase(unittest.TestCase):
 
 class ConsoleBuildTestCase(unittest.TestCase):
 
+    def setUp(self):
+        # Building the interface reads the command history; keep the
+        # session's files in a temporary data home, never the user's
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-console-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        patcher = mock.patch.dict(os.environ,
+                                  {'XDG_DATA_HOME': self.tmpdir})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def history_path(self):
+        return os.path.join(self.tmpdir, 'debops', 'mcp-repl-history')
+
     def build_sized_app(self, session, rows=10, cols=30):
         """Build the console headless, pinned to a fixed terminal
         size."""
@@ -466,6 +482,77 @@ class ConsoleBuildTestCase(unittest.TestCase):
                     self.fail('the console did not exit')
         self.assertIn('debops mcp repl', session._scroll_buffer.text)
         self.assertIn('> exit', session._scroll_buffer.text)
+
+    def test_commands_are_recorded_in_the_shared_history(self):
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        from debops.mcp import console
+        session, _client = make_session()
+        app = console._build_app(session)
+        buffer = app.layout.current_buffer
+        buffer.text = 'status'
+        buffer.validate_and_handle()
+        # Recorded, and the line cleared for the next command
+        self.assertIn('status', buffer.history.get_strings())
+        self.assertEqual(buffer.text, '')
+        with open(self.history_path()) as fp:
+            self.assertIn('+status', fp.read())
+
+    def test_the_console_loads_the_shared_history(self):
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        from prompt_toolkit.history import FileHistory
+        from debops.mcp import console
+        # As written by another front end (the repl, the shell)
+        os.makedirs(os.path.dirname(self.history_path()))
+        with open(self.history_path(), 'w') as fp:
+            fp.write('\n# 2026-10-23 10:00:00.000000\n'
+                     '+run containers\n')
+        session, _client = make_session()
+        app = console._build_app(session)
+        history = app.layout.current_buffer.history
+        self.assertIsInstance(history, FileHistory)
+        self.assertEqual(history.filename, self.history_path())
+        self.assertEqual(list(history.load_history_strings()),
+                         ['run containers'])
+
+    def test_gate_answers_stay_out_of_the_history(self):
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        from debops.mcp import console
+        session, _client = make_session()
+        app = console._build_app(session)
+        buffer = app.layout.current_buffer
+        for secret in (True, False):
+            session._gate = {'secret': secret,
+                             'answered': threading.Event(),
+                             'value': None}
+            buffer.text = 'supersecret'
+            buffer.validate_and_handle()
+            session._gate = None
+        self.assertNotIn('supersecret', buffer.history.get_strings())
+        if os.path.exists(self.history_path()):
+            with open(self.history_path()) as fp:
+                self.assertNotIn('supersecret', fp.read())
+
+    def test_blank_lines_stay_out_of_the_history(self):
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        from debops.mcp import console
+        session, _client = make_session()
+        app = console._build_app(session)
+        buffer = app.layout.current_buffer
+        buffer.text = '   '
+        buffer.validate_and_handle()
+        self.assertEqual(buffer.history.get_strings(), [])
 
     def test_the_console_falls_back_without_prompt_toolkit(self):
         from debops.mcp import console

@@ -15,11 +15,12 @@ declines. Without prompt_toolkit the console degrades to the plain
 reader.
 """
 
+import os
 import threading
 import traceback
 
 from .repl import (Repl, ReplError, _banner, _execute_line,
-                   run_interactive_plain)
+                   _history_dir, run_interactive_plain)
 
 # The scrollback keeps this many lines; the activity pane this many
 _SCROLLBACK_LINES = 5000
@@ -302,6 +303,7 @@ def _build_app(session):
                                        DynamicContainer,
                                        FormattedTextControl, HSplit,
                                        Layout, VSplit, Window)
+    from prompt_toolkit.history import FileHistory
     from prompt_toolkit.layout.processors import (
             DynamicProcessor, PasswordProcessor)
     from prompt_toolkit.styles import Style
@@ -317,11 +319,22 @@ def _build_app(session):
     session._err = writer
 
     def accept(buffer):
-        session.submit(buffer.text)
+        line = buffer.text
+        # Gate answers (the trust passphrase!) never enter the
+        # history. The reset comes before the submit: the caller
+        # ('validate_and_handle') appends to the history after the
+        # handler returns, and an empty buffer stores nothing
+        if session._gate is None and line.strip():
+            buffer.append_to_history()
         buffer.reset()
+        session.submit(line)
 
-    input_buffer = Buffer(completer=_Completer(session),
-                          multiline=False, accept_handler=accept)
+    input_buffer = Buffer(
+            completer=_Completer(session), multiline=False,
+            accept_handler=accept,
+            # The history file is shared with the other front ends
+            history=FileHistory(os.path.join(
+                    _history_dir(), 'mcp-repl-history')))
     # A pending secret gate (the passphrase prompt) masks the input
     password = PasswordProcessor()
     input_control = BufferControl(
