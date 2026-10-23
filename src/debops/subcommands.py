@@ -661,6 +661,10 @@ Commands:
                             help='run the commands (newline-separated) '
                                  'and exit; the ssh forced-command form '
                                  'of a login shell')
+        parser.add_argument('--plain', action='store_true',
+                            help='the plain reader, even when '
+                                 'prompt_toolkit is available (a '
+                                 'friend to slow links)')
         spawn = parser.add_mutually_exclusive_group()
         spawn.add_argument('--spawn', dest='spawn',
                            action='store_true', default=None,
@@ -715,6 +719,10 @@ Commands:
                             help='run the commands (newline-separated) '
                                  'and exit; the ssh forced-command form '
                                  'of a login shell')
+        parser.add_argument('--plain', action='store_true',
+                            help='the plain reader, even when '
+                                 'prompt_toolkit is available (a '
+                                 'friend to slow links)')
         spawn = parser.add_mutually_exclusive_group()
         spawn.add_argument('--spawn', dest='spawn',
                            action='store_true', default=None,
@@ -748,6 +756,10 @@ Commands:
                             help='run the commands (newline-separated) '
                                  'and exit; the ssh forced-command form '
                                  'of a login shell')
+        parser.add_argument('--plain', action='store_true',
+                            help='the plain reader, even when '
+                                 'prompt_toolkit is available (a '
+                                 'friend to slow links)')
         spawn = parser.add_mutually_exclusive_group()
         spawn.add_argument('--spawn', dest='spawn',
                            action='store_true', default=None,

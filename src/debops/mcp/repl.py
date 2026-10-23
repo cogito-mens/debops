@@ -1349,6 +1349,30 @@ except ImportError:
     _PtCompleter = object
 
 
+def _candidates_for(repl, before):
+    """The completion candidates for the line up to the cursor: the
+    verbs at the start of the line, the candidates of the verb after
+    it. Returns (word being completed, candidates). Shared by the
+    prompt_toolkit completer and the readline adapter."""
+    words = before.split()
+    # The fragment being completed is the last token, unless the
+    # line ends with a space ('--' fragments survive the split,
+    # which the word extraction of the document would not)
+    if words and not before.endswith(' '):
+        word = words.pop()
+    else:
+        word = ''
+    if not words:
+        return word, sorted(list(repl.verbs()) + ['help', 'exit'])
+    if words[0] in ('check', 'run') and word.startswith('--'):
+        return word, sorted(EXECUTION_OPTIONS)
+    if words[0] == 'doc' and word.startswith('--'):
+        return word, ['--type', '--list', '--snippet', '--json']
+    if words[0] in Repl._PATH_VERBS:
+        return word, repl.path_candidates(words[0], word)
+    return word, repl.complete_candidates(words[0])
+
+
 class _Completer(_PtCompleter):
     """The prompt_toolkit completer: the verbs, then the candidates
     of the verb (playbook targets, role names, files, views)."""
@@ -1358,29 +1382,32 @@ class _Completer(_PtCompleter):
 
     def get_completions(self, document, complete_event):
         from prompt_toolkit.completion import Completion
-        before = document.text_before_cursor
-        words = before.split()
-        # The fragment being completed is the last token, unless the
-        # line ends with a space ('--' fragments survive the split,
-        # which the word extraction of the document would not)
-        if words and not before.endswith(' '):
-            word = words.pop()
-        else:
-            word = ''
-        if not words:
-            candidates = sorted(list(self._repl.verbs())
-                                + ['help', 'exit'])
-        elif words[0] in ('check', 'run') and word.startswith('--'):
-            candidates = sorted(EXECUTION_OPTIONS)
-        elif words[0] == 'doc' and word.startswith('--'):
-            candidates = ['--type', '--list', '--snippet', '--json']
-        elif words[0] in Repl._PATH_VERBS:
-            candidates = self._repl.path_candidates(words[0], word)
-        else:
-            candidates = self._repl.complete_candidates(words[0])
+        word, candidates = _candidates_for(
+                self._repl, document.text_before_cursor)
         for candidate in candidates:
             if candidate.startswith(word):
                 yield Completion(candidate, start_position=-len(word))
+
+
+def _readline_complete(readline, repl):
+    """The readline completion of the plain reader: the same
+    candidates as the prompt_toolkit completer, adapted to the
+    (text, state) protocol."""
+    candidates = []
+
+    def complete(text, state):
+        if state == 0:
+            line = readline.get_line_buffer()
+            word, found = _candidates_for(
+                    repl, line[:readline.get_begidx()] + text)
+            del candidates[:]
+            candidates.extend(
+                    candidate for candidate in found
+                    if candidate.startswith(word))
+        if state < len(candidates):
+            return candidates[state]
+        return None
+    return complete
 
 
 def run_pipe(repl, commands=None):
@@ -1609,6 +1636,11 @@ def run_interactive_plain(repl):
         _feed_history()
         readline.set_history_length(1000)
         repl._history_changed = _reload_history
+        # The completion is the engine's own; the word break keeps
+        # the path fragments whole
+        readline.set_completer_delims(' \t\n')
+        readline.set_completer(_readline_complete(readline, repl))
+        readline.parse_and_bind('tab: complete')
     print(_banner(repl), file=repl._err)
     while True:
         try:
@@ -1656,7 +1688,8 @@ def _execute_line(repl, line):
 
 def run(client, project_name=None, view=None, interactive=None,
         project_path=None, project_type=None, view_root_rel=None,
-        frontend=None, command=None, confined=False, history_max=0):
+        frontend=None, command=None, confined=False, history_max=0,
+        plain=False):
     """Build and run an interpreter session against the connected
     daemon. 'frontend' selects the chrome: None for the plain
     interpreter, 'shell' for the status-bar interface, 'console' for
@@ -1664,7 +1697,9 @@ def run(client, project_name=None, view=None, interactive=None,
     'command' is the one-shot '-c' form: the commands run
     non-interactively and the process exits — how ssh drives a login
     shell. 'confined' marks the ambient confinement of the account:
-    the session keeps its escape hatches (the editor) closed."""
+    the session keeps its escape hatches (the editor) closed.
+    'plain' forces the no-chrome reader, even when prompt_toolkit
+    is available (a friend to slow links)."""
     if command is not None:
         interactive = False
         frontend = None
@@ -1672,10 +1707,10 @@ def run(client, project_name=None, view=None, interactive=None,
         interactive = sys.stdin.isatty()
     session_class = Repl
     runner = None
-    if interactive and frontend == 'shell':
+    if interactive and not plain and frontend == 'shell':
         from .shell import run_shell
         runner = run_shell
-    elif interactive and frontend == 'console':
+    elif interactive and not plain and frontend == 'console':
         from .console import ConsoleRepl, run_console
         session_class = ConsoleRepl
         runner = run_console
@@ -1688,5 +1723,7 @@ def run(client, project_name=None, view=None, interactive=None,
     if runner is not None:
         return runner(session)
     if interactive:
+        if plain:
+            return run_interactive_plain(session)
         return run_interactive(session)
     return run_pipe(session, command)

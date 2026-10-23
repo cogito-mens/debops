@@ -931,6 +931,19 @@ class CommandFormTestCase(unittest.TestCase):
         self.assertFalse(session.interactive)
         self.assertEqual(commands, 'status')
 
+    def test_the_plain_flag_forces_the_plain_reader(self):
+        # Even with a frontend named and prompt_toolkit available
+        client = FakeClient()
+        with mock.patch.object(repl, 'run_interactive_plain',
+                               return_value=0) as plain:
+            code = repl.run(client, plain=True, interactive=True,
+                            frontend='console')
+        self.assertEqual(code, 0)
+        plain.assert_called_once()
+        # ... and the session is not the console's
+        session = plain.call_args[0][0]
+        self.assertIs(type(session), repl.Repl)
+
 
 class SpawnOptionsTestCase(unittest.TestCase):
     """The 'project.autospawn_options' mapping as serve tokens."""
@@ -1037,6 +1050,50 @@ class CompletionTestCase(unittest.TestCase):
             code = repl.run_interactive(session)
         self.assertEqual(code, 0)
         self.assertTrue(pt_session.called)
+
+    def test_the_readline_adapter_completes_the_verb(self):
+        # The plain reader's protocol: (text, state) over the word
+        # under the cursor
+        client = FakeClient()
+        session, _out, _err = make_repl(client)
+        fake_readline = mock.MagicMock()
+        fake_readline.get_line_buffer.return_value = 'st'
+        fake_readline.get_begidx.return_value = 0
+        complete = repl._readline_complete(fake_readline, session)
+        self.assertEqual(complete('st', 0), 'status')
+        self.assertIsNone(complete('st', 1))
+
+    def test_the_readline_adapter_completes_paths(self):
+        client = FakeClient()
+        session, _out, _err = make_repl(client)
+        client.queue('tools/call', {
+                'resultType': 'complete', 'isError': False,
+                'content': [{'type': 'text', 'text': 'listing'}],
+                'structuredContent': [
+                        {'name': 'inventory', 'type': 'dir'},
+                        {'name': 'note.txt', 'type': 'file'}]})
+        fake_readline = mock.MagicMock()
+        fake_readline.get_line_buffer.return_value = 'cd in'
+        fake_readline.get_begidx.return_value = 3
+        complete = repl._readline_complete(fake_readline, session)
+        # 'cd' completes directories only
+        self.assertEqual(complete('in', 0), 'inventory/')
+        self.assertIsNone(complete('in', 1))
+
+    def test_the_plain_loop_wires_the_readline_completion(self):
+        tmp_history_home(self)
+        fake_readline = mock.MagicMock()
+        client = FakeClient()
+        session, _out, _err = make_repl(client, interactive=True)
+        with mock.patch.dict(sys.modules, {'readline': fake_readline}), \
+                mock.patch('builtins.input', side_effect=[EOFError()]):
+            code = repl.run_interactive_plain(session)
+        self.assertEqual(code, 0)
+        fake_readline.set_completer_delims.assert_called_once_with(
+                ' \t\n')
+        self.assertTrue(fake_readline.set_completer.called)
+        fake_readline.parse_and_bind.assert_called_once_with(
+                'tab: complete')
 
 
 class NavigationTestCase(unittest.TestCase):

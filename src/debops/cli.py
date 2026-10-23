@@ -1101,7 +1101,8 @@ class Interpreter(object):
                     view_root_rel=view_root_rel,
                     frontend=frontend,
                     command=getattr(args, 'command', None),
-                    confined=confined, history_max=history_max)
+                    confined=confined, history_max=history_max,
+                    plain=getattr(args, 'plain', False))
         sys.exit(code)
 
     def do_autostart(self):
@@ -1152,7 +1153,8 @@ class Interpreter(object):
                   'dropped'.format(key), file=sys.stderr)
         args = argparse.Namespace(
                 project_dir=project.path, docs=False, socket=None,
-                spawn=autospawn, legacy=legacy, command=None)
+                spawn=autospawn, legacy=legacy, command=None,
+                plain=False)
         self._mcp_interpreter(args, frontend=autostart,
                               spawn_options=tokens)
 

@@ -96,6 +96,14 @@ def test_a_bare_debops_parses_to_no_section():
     assert subcommands.login_shell is None
 
 
+def test_plain_flag_on_all_front_ends():
+    for command in ("repl", "shell", "console"):
+        subcommands = parse_cli("mcp", command, "--plain")
+        assert subcommands.args.plain is True
+    # ... and off by default
+    assert parse_cli("mcp", "repl").args.plain is False
+
+
 def test_unknown_config_command_exits_with_an_error(capsys):
     with pytest.raises(SystemExit) as exc:
         parse_cli("config", "bogus")
