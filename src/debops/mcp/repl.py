@@ -299,6 +299,9 @@ class Repl(object):
         self.cwd = view_root_rel or ''
         self._previous_cwd = None
         self.elevated = False
+        # The elevation TTL, for the status display (the server
+        # enforces its own; this is the client's mirror of it)
+        self._elevated_until = None
 
     @property
     def prompt(self):
@@ -320,6 +323,39 @@ class Repl(object):
         elif self.cwd:
             place = ':/' + self.cwd
         return 'debops{} {}{}{}> '.format(marker, name, view, place)
+
+    def status_line(self):
+        """The session state for a status bar: the place on the left,
+        the trust state on the right. The shell renders it below the
+        input line; the plain interpreter never calls it."""
+        name = self.project_name or 'docs'
+        view = ':{}'.format(self.view) if self.view else ''
+        root = self._view_root_rel
+        if self.view and root is not None:
+            if self.cwd == root:
+                place = ''
+            elif self.cwd.startswith(root + '/'):
+                place = '/' + _collapse(self.cwd[len(root) + 1:])
+            else:
+                place = ':/' + self.cwd if self.cwd else ':/'
+        else:
+            place = ':/' + self.cwd if self.cwd else ''
+        right = ''
+        if self.elevated:
+            remaining = None
+            if self._elevated_until is not None:
+                remaining = int(self._elevated_until - time.monotonic())
+            if remaining is not None and remaining <= 0:
+                # The server dropped the elevation on its own clock
+                self.elevated = False
+                self._elevated_until = None
+            else:
+                right = ('!elev {}m'.format((remaining + 59) // 60)
+                         if remaining is not None else '!elev')
+        if not right and getattr(self.client, 'bearer', None) is not None:
+            right = 'trusted'
+        left = '{}{}{}'.format(name, view, place)
+        return left, right
 
     # -- the wire -------------------------------------------------
 
@@ -431,6 +467,11 @@ class Repl(object):
             else:
                 print(text, file=self._out)
 
+    def _note(self, text):
+        """A status line on the error channel; the presentation hook
+        for the interfaces with a status bar of their own."""
+        print(text, file=self._err)
+
     # -- the verbs ------------------------------------------------------
 
     def cmd_status(self, args):
@@ -483,10 +524,14 @@ class Repl(object):
             answer = self._request('server/authenticate',
                                    {'passphrase': phrase})
             self.client.bearer = answer['token']
-        self._request('server/elevate', {'passphrase': phrase})
+        answer = self._request('server/elevate', {'passphrase': phrase})
         self.elevated = True
-        print('elevated; the confirmation gates answer themselves '
-              'for a while of active use', file=self._err)
+        expires_in = answer.get('expiresIn')
+        self._elevated_until = (time.monotonic() + expires_in
+                                if isinstance(expires_in,
+                                              (int, float)) else None)
+        self._note('elevated; the confirmation gates answer themselves '
+                   'for a while of active use')
 
     def cmd_drop(self, args):
         """End the elevation ahead of its timeout."""
@@ -497,6 +542,7 @@ class Repl(object):
         if self.client.bearer is not None and not self.client.legacy:
             self._request('server/drop', {})
         self.elevated = False
+        self._elevated_until = None
         root = self._view_root_rel
         if root is not None and not (self.cwd == root
                                      or self.cwd.startswith(
@@ -504,10 +550,10 @@ class Repl(object):
             # The working directory is out of the scope again
             self.cwd = root
             self._previous_cwd = None
-            print('dropped; the gates ask again, and the working '
-                  'directory is the view root', file=self._err)
+            self._note('dropped; the gates ask again, and the working '
+                       'directory is the view root')
         else:
-            print('dropped; the gates ask again', file=self._err)
+            self._note('dropped; the gates ask again')
 
     def cmd_watch(self, args):
         """Stream the activity of the server's clients until
@@ -518,8 +564,7 @@ class Repl(object):
             raise ReplError('the 2025-era protocol has no '
                             'subscription streams')
         self._ensure_trusted()
-        print('watching the server activity (Ctrl-C ends it)',
-              file=self._err)
+        self._note('watching the server activity (Ctrl-C ends it)')
         try:
             for message in self.client.request_streaming(
                     'subscriptions/listen',
@@ -530,7 +575,7 @@ class Repl(object):
         except KeyboardInterrupt:
             # Closing the channel ends the stream server-side
             self.client.close()
-            print('watch ended', file=self._err)
+            self._note('watch ended')
         except (EOFError, RuntimeError, TimeoutError) as errmsg:
             raise ReplError(str(errmsg))
 
@@ -581,7 +626,7 @@ class Repl(object):
             except OSError:
                 pass
         if new == current:
-            print('unchanged: ' + path, file=self._err)
+            self._note('unchanged: ' + path)
             return
         result = self._call_tool('file.write',
                                  {'path': write_path, 'content': new})

@@ -8,6 +8,7 @@ import io
 import os
 import shutil
 import tempfile
+import time
 import unittest
 
 from unittest import mock
@@ -356,6 +357,21 @@ class TrustVerbsTestCase(unittest.TestCase):
         session.execute('drop')
         self.assertFalse(session.elevated)
         self.assertEqual(client.calls[0][0], 'server/drop')
+
+    def test_elevate_records_the_ttl(self):
+        self._write_passphrase()
+        client = FakeClient()
+        client.legacy = False
+        client.bearer = 'the-token'
+        session, _out, _err = make_repl(client)
+        session.project_path = self.tmpdir
+        client.queue('server/elevate', {'elevated': True,
+                                        'expiresIn': 900})
+        before = time.monotonic()
+        session.execute('elevate')
+        self.assertTrue(session.elevated)
+        self.assertIsNotNone(session._elevated_until)
+        self.assertGreater(session._elevated_until, before + 800)
 
     def test_drop_when_not_elevated_is_a_clean_error(self):
         client = FakeClient()
@@ -983,6 +999,36 @@ class NavigationTestCase(unittest.TestCase):
         found = [entry.text for entry in completer.get_completions(
                 Document('mkd'), None)]
         self.assertIn('mkdir', found)
+
+    def test_the_status_line(self):
+        session, _client, _out, _err = self.make_session()
+        session.cwd = 'ansible/inventory/group_vars/all'
+        self.assertEqual(session.status_line(),
+                         ('project:system/i/g/all/', ''))
+
+    def test_the_status_line_above_the_view(self):
+        session, _client, _out, _err = self.make_session(
+                elevated=True)
+        session.cwd = '.debops/conf.d'
+        session._elevated_until = time.monotonic() + 900
+        self.assertEqual(session.status_line(),
+                         ('project:system:/.debops/conf.d',
+                          '!elev 15m'))
+
+    def test_the_status_line_marks_the_trust(self):
+        session, client, _out, _err = self.make_session()
+        client.bearer = 'the-token'
+        self.assertEqual(session.status_line(),
+                         ('project:system', 'trusted'))
+
+    def test_the_status_line_drops_an_expired_elevation(self):
+        session, client, _out, _err = self.make_session(
+                elevated=True)
+        client.bearer = 'the-token'
+        session._elevated_until = time.monotonic() - 1
+        self.assertEqual(session.status_line(),
+                         ('project:system', 'trusted'))
+        self.assertFalse(session.elevated)
 
 
 if __name__ == '__main__':
