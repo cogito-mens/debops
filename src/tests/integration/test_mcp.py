@@ -3110,6 +3110,104 @@ def test_a_peer_client_is_guarded_and_follows(run_debops, mcp_env,
         server.wait(timeout=10)
 
 
+def test_reads_during_a_run(run_debops, mcp_env, project_dir,
+                            debops_source_dir, tmp_path):
+    """A run holds the project lock for its whole duration; the
+    content reads answer anyway, the tree readers refuse with the
+    watch pointer, and the status names the run."""
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    confd = project_dir / ".debops" / "conf.d"
+    confd.mkdir(parents=True)
+    (confd / "mcp-test.toml").write_text(
+            "[project.mcp]\nconfirm_required = false\n"
+            'execute = "all"\n')
+    subprocess.run(["git", "init", "-q"], cwd=str(project_dir),
+                   env=dict(os.environ, **mcp_env), check=True)
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+    playbooks = project_dir / "ansible" / "playbooks"
+    playbooks.mkdir(parents=True)
+    (playbooks / "custom.yml").write_text("""---
+- name: Slow play
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Take some time
+      ansible.builtin.command: sleep 30
+""")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+            [debops_source_dir, env.get("PYTHONPATH", "")]).rstrip(
+                    os.pathsep)
+    env.update(mcp_env)
+    server = subprocess.Popen(
+            [sys.executable, "-m", "debops", "mcp", "serve"],
+            cwd=str(project_dir), env=env,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True,
+            start_new_session=True)
+    try:
+        # Start the run; its answer comes whenever, the point is the
+        # lock is held meanwhile
+        server.stdin.write(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"_meta": REQUEST_META, "name": "run",
+                       "arguments": {"playbook": "custom"}},
+        }) + "\n")
+        server.stdin.flush()
+        runs_dir = tmp_path / "xdg-cache" / "debops" / "mcp" / "runs"
+        log = None
+        for _ in range(400):
+            logs = list(runs_dir.glob("*/execution-1.log"))
+            if logs and logs[0].stat().st_size > 0:
+                log = logs[0]
+                break
+            time.sleep(0.05)
+        assert log is not None, "the run log never appeared"
+
+        def call(name, arguments):
+            request = json.dumps({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"_meta": REQUEST_META, "name": name,
+                           "arguments": arguments},
+            }) + "\n"
+            server.stdin.write(request)
+            server.stdin.flush()
+            while True:
+                line = server.stdout.readline()
+                assert line, "the server closed the answer"
+                answer = json.loads(line)
+                if answer.get("id") == 2:
+                    assert "result" in answer, json.dumps(answer)[:400]
+                    return answer
+
+        # The tree reader refuses, with the watch pointer
+        refused = call("project.read", {"path": "ansible.cfg"})
+        assert refused["result"]["isError"] is True
+        assert "execution.list" in \
+            refused["result"]["content"][0]["text"]
+        # The playbook listing reads what a run never mutates
+        listed = call("playbook.list", {})
+        assert listed["result"]["isError"] is False
+        assert "custom" in \
+            listed["result"]["content"][0]["text"]
+        # And the status names the run
+        status = call("project.status", {})
+        assert status["result"]["isError"] is False
+        assert "Run: in flight" in \
+            status["result"]["content"][0]["text"]
+    finally:
+        os.killpg(server.pid, signal.SIGKILL)
+        server.wait(timeout=10)
+
+
 def test_repl_navigates_the_project(run_debops, mcp_env, project_dir,
                                     tmp_path, debops_source_dir):
     """The working-directory verbs against a live daemon: pwd, cd, ls,

@@ -8,6 +8,7 @@ Written with 'unittest' so that the suite runs under pytest without extra
 dependencies.
 """
 
+from debops.mcp.tools import common
 from debops.mcp.tools.common import (ReadWriteLock,
                                      exclusive_project, project_flock,
                                      shared_project)
@@ -18,6 +19,8 @@ import tempfile
 import threading
 import time
 import unittest
+
+from unittest import mock
 
 
 def _auto_commit_noop(self, message=None, paths=None):
@@ -139,6 +142,30 @@ class FlockTestCase(unittest.TestCase):
                                exclusive=False):
                 pass
 
+    def test_a_read_refuses_after_the_grace(self):
+        # An external holder (a legacy command, an orphaned run):
+        # only the flock shows it; the read refuses with the watch
+        # pointer after the grace
+        with mock.patch.object(common, 'READ_LOCK_GRACE', 0.2):
+            with project_flock(self.project, self.policy,
+                               exclusive=True):
+                started = time.monotonic()
+                with self.assertRaises(common.ProjectLockedError) \
+                        as caught:
+                    with shared_project(self.project, self.policy):
+                        pass
+        self.assertGreaterEqual(time.monotonic() - started, 0.15)
+        self.assertIn('execution.list', str(caught.exception))
+
+    def test_the_in_process_grace_refuses_a_read(self):
+        # A writer of this daemon (a run's spawn window) holds the
+        # in-process side; the read's grace expires the same way
+        with mock.patch.object(common, 'READ_LOCK_GRACE', 0.2):
+            with common.PROJECT_LOCK.write():
+                with self.assertRaises(common.ProjectLockedError):
+                    with shared_project(self.project, self.policy):
+                        pass
+
     def test_shared_blocks_an_exclusive_writer(self):
         with project_flock(self.project, self.policy, exclusive=False):
             with self.assertRaises(RuntimeError):
@@ -222,6 +249,17 @@ class ProjectLockTestCase(unittest.TestCase):
             pass
         self.assertTrue(os.path.isfile(
                 os.path.join(self.tmpdir, '.git', 'mcp.lock')))
+
+    def test_the_read_lock_set_covers_only_the_tree_readers(self):
+        # The general tree readers can observe a run writing the
+        # role-managed storage (resources/, ...); everything else —
+        # the role and collection content, the inventory, the views,
+        # the playbooks, the config, the environment, the status —
+        # a run never mutates, so those reads never lock
+        from debops.mcp import tools as mcp_tools
+        self.assertEqual(mcp_tools.READ_LOCKED_TOOLS,
+                         frozenset(('project.files', 'project.list',
+                                    'project.read')))
 
     def test_exclusive_commits_on_exit_with_the_note(self):
         calls = []

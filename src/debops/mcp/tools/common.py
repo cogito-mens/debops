@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import threading
+import time
 import toml
 import yaml
 
@@ -130,7 +131,8 @@ class ReadWriteLock(object):
 
     Any number of readers may hold the read side; a writer waits for
     them to drain, and new readers queue behind a waiting writer so
-    writers do not starve.
+    writers do not starve. A read acquire may be bounded: on the
+    timeout it raises RunLockedError.
     """
 
     def __init__(self):
@@ -139,10 +141,19 @@ class ReadWriteLock(object):
         self._writer = False
         self._writers_waiting = 0
 
-    def acquire_read(self):
+    def acquire_read(self, timeout=None):
         with self._condition:
+            deadline = (None if timeout is None
+                        else time.monotonic() + timeout)
             while self._writer or self._writers_waiting:
-                self._condition.wait()
+                if deadline is None:
+                    self._condition.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RunLockedError('an in-process writer did '
+                                         'not drain in time')
+                self._condition.wait(remaining)
             self._readers += 1
 
     def release_read(self):
@@ -167,8 +178,8 @@ class ReadWriteLock(object):
             self._condition.notify_all()
 
     @contextlib.contextmanager
-    def read(self):
-        self.acquire_read()
+    def read(self, timeout=None):
+        self.acquire_read(timeout=timeout)
         try:
             yield
         finally:
@@ -186,6 +197,17 @@ class ReadWriteLock(object):
 # The project-wide lock: writers (executions, syncs, secrets) are
 # exclusive; readers share
 PROJECT_LOCK = ReadWriteLock()
+
+# The read-side grace, in seconds: long enough to outlive any write
+# tool's hold, far short of any run. A read which outlasts it
+# refuses instead of freezing for the run's duration
+READ_LOCK_GRACE = 5
+
+# The read refusal names the watch path: a run in flight is the
+# usual answer, and the executions are inspectable live
+_READ_BUSY = ('the project is busy: a run is in flight or another '
+              'command is changing it (waited {} s); a run can be '
+              'watched with execution.list and execution.output')
 
 
 def json_document(value):
@@ -436,29 +458,30 @@ def current_lock_fd():
 
 
 @contextlib.contextmanager
-def project_flock(project, policy, exclusive):
+def project_flock(project, policy, exclusive, wait=None):
     """Hold an flock(2) on the project's lock file.
 
-    Exclusive holders fail fast when another process holds the lock;
-    the readers' wait is the policy's: 'project.mcp.lock_wait'
-    seconds (0 fails fast — a refusal answers instead of freezing the
-    call — a negative value waits forever). The kernel releases the
-    lock when the process dies, so a crashed daemon never wedges the
-    project.
+    Exclusive holders fail fast when another process holds the lock.
+    The readers' wait is the policy's ('project.mcp.lock_wait'
+    seconds; 0 fails fast, a negative value waits forever), unless
+    'wait' overrides it — the read path passes its own grace. The
+    kernel releases the lock when the process dies, so a crashed
+    daemon never wedges the project.
     """
     path = _project_lock_path(project, policy)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fp = open(path, 'a')
     try:
         if exclusive:
-            wait = 0
+            wait_seconds = 0
             mode = fcntl.LOCK_EX
         else:
-            wait = (None if policy.lock_wait < 0
-                    else policy.lock_wait)
+            wait_seconds = policy.lock_wait if wait is None else wait
+            if wait_seconds < 0:
+                wait_seconds = None
             mode = fcntl.LOCK_SH
         try:
-            flock_wait(fp, mode, wait)
+            flock_wait(fp, mode, wait_seconds)
         except RunLockedError as errmsg:
             raise ProjectLockedError(str(errmsg))
         previous = getattr(_LOCK_STATE, 'fd', None)
@@ -536,7 +559,15 @@ def exclusive_project(project, policy, note='', paths=None):
 @contextlib.contextmanager
 def shared_project(project, policy):
     """Hold the in-process read lock and the cross-process shared lock,
-    in that order."""
-    with PROJECT_LOCK.read():
-        with project_flock(project, policy, exclusive=False):
-            yield
+    in that order — bounded by the read grace: a run holds the
+    exclusive lock for its whole duration, and a read must answer
+    'busy' instead of freezing for it. A quick write tool's hold is
+    waited out."""
+    try:
+        with PROJECT_LOCK.read(timeout=READ_LOCK_GRACE):
+            with project_flock(project, policy, exclusive=False,
+                               wait=READ_LOCK_GRACE):
+                yield
+    except RunLockedError:
+        raise ProjectLockedError(
+                _READ_BUSY.format(READ_LOCK_GRACE)) from None

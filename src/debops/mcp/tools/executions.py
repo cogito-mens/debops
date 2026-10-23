@@ -163,7 +163,7 @@ def _cap(lines, max_lines):
     return lines[:max_lines], cut
 
 
-def _project_busy(project, policy):
+def project_busy(project, policy):
     """Whether a writer — a run — holds the project lock right now.
 
     A detached execution holds the flock until its finalize exits, so
@@ -196,7 +196,7 @@ def tool_execution_purge(project, policy, arguments):
     cutoff = time.time() - cutoff_age
     clamped = cutoff_age != older_than
 
-    busy = _project_busy(project, policy)
+    busy = project_busy(project, policy)
     removed = []
     skipped = 0
     for execution_id, path in runs.list_logs(project):

@@ -138,16 +138,14 @@ FORMAT_PROPERTY = {'type': 'string', 'enum': ['text', 'json', 'yaml',
                                   'document (json, yaml, toml)'}
 
 
-# Tools which read the project directory; they run under the shared
-# project lock so a writer (a run, a sync, secrets) cannot interleave
+# Tools which read the project directory and can observe a run
+# writing it (the role-managed storage — resources/ and friends —
+# is written by runs on the controller); they run under the shared
+# project lock, bounded by the read grace. The other readers
+# (role.*/collection.*/inventory/view/playbook/config/environment/
+# status) inspect what a run never mutates, so they never lock
 READ_LOCKED_TOOLS = frozenset((
-    'project.status', 'project.files', 'project.list', 'project.read',
-    'config.get',
-    'environment.list', 'inventory.query', 'playbook.list', 'playbook.info',
-    'view.list', 'role.info',
-    'role.defaults', 'role.vars', 'role.argspec', 'role.tasks',
-    'role.handlers', 'role.templates', 'role.files', 'collection.roles',
-    'collection.playbooks',
+    'project.files', 'project.list', 'project.read',
 ))
 
 # The output schemas of the tools which return structuredContent;
@@ -884,9 +882,11 @@ def _register_entries(target, entries, policy, confirm=(), project=None):
         task_eligible = entry[6] if len(entry) > 6 else False
         annotations = (entry[7] if len(entry) > 7
                        else TOOL_ANNOTATIONS.get(name))
-        handler = _wrap_resource_errors(handler)
+        # The lock wrap is inside the error wrap: a contention
+        # refusal is a tool result, not an internal error
         if project is not None and name in READ_LOCKED_TOOLS:
             handler = _wrap_shared_lock(project, policy, handler)
+        handler = _wrap_resource_errors(handler)
         if policy is None or policy.is_tool_allowed(name):
             meta = None
             if name in confirm:

@@ -1674,6 +1674,27 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('View: system', text)
         self.assertIn('Inventory: present', text)
         self.assertIn('Encryption: none', text)
+        # No run: no busy line
+        self.assertNotIn('Run: in flight', text)
+        self.assertFalse(response['result']['structuredContent']
+                         ['runInFlight'])
+
+    def test_project_status_marks_a_run_in_flight(self):
+        # The busy line is the refusal's explanation one command away
+        from debops.mcp.tools.common import project_flock
+        policy = McpPolicy(self.project)
+        with project_flock(self.project, policy, exclusive=True):
+            response = self.call_tool('project.status')
+        text = self.result_text(response)
+        self.assertFalse(response['result']['isError'])
+        self.assertIn('Run: in flight', text)
+        self.assertTrue(response['result']['structuredContent']
+                        ['runInFlight'])
+        text = self.result_text(response)
+        self.assertFalse(response['result']['isError'])
+        self.assertIn('Run: in flight', text)
+        self.assertTrue(response['result']['structuredContent']
+                        ['runInFlight'])
 
     # -- role.info -------------------------------------------------------
 

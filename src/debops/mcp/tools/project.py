@@ -7,6 +7,7 @@
 import os
 
 from .common import dirty_paths, text_result
+from .executions import project_busy
 
 
 def tool_project_status(project, policy, arguments):
@@ -55,11 +56,16 @@ def tool_project_status(project, policy, arguments):
     if pending is not None:
         structured['pendingChanges'] = sorted(pending)[:50]
         structured['pendingChangesCount'] = len(pending)
+    busy = project_busy(project, policy)
+    structured['runInFlight'] = busy
     lines = [
             'Project: {}'.format(project.name),
             'Path: {}'.format(project.path),
             'Type: {}'.format(project.project_type),
     ]
+    if busy:
+        lines.append('Run: in flight — watch: execution.list, '
+                     'execution.output')
     if active:
         lines.append('View: {}{}'.format(
                 project.view, ' (locked)' if policy.view_lock else ''))
