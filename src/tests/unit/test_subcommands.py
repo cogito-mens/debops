@@ -44,6 +44,38 @@ def test_unknown_project_command_exits_with_an_error(capsys):
     assert "unrecognized command" in capsys.readouterr().out
 
 
+def test_login_shell_names_select_the_front_end():
+    for name, command in [("debops-repl", "repl"),
+                          ("debops-shell", "shell"),
+                          ("debops-console", "console")]:
+        subcommands = Subcommands([name])
+        assert subcommands.section == "mcp"
+        assert subcommands.command == command
+        assert subcommands.login_shell == command
+
+
+def test_login_shell_form_strips_the_dash():
+    # A login shell's argv[0] carries the '-' marker
+    subcommands = Subcommands(["-debops-shell"])
+    assert subcommands.login_shell == "shell"
+
+
+def test_login_shell_passes_the_command_form_through():
+    subcommands = Subcommands(["debops-shell", "-c", "status"])
+    assert subcommands.args.command == "status"
+
+
+def test_plain_invocation_is_not_a_login_shell():
+    subcommands = parse_cli("mcp", "shell")
+    assert subcommands.login_shell is None
+
+
+def test_command_form_on_all_front_ends():
+    for command in ("repl", "shell", "console"):
+        subcommands = parse_cli("mcp", command, "-c", "ls /")
+        assert subcommands.args.command == "ls /"
+
+
 def test_unknown_config_command_exits_with_an_error(capsys):
     with pytest.raises(SystemExit) as exc:
         parse_cli("config", "bogus")

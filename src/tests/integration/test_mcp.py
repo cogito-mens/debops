@@ -2839,6 +2839,77 @@ def test_repl_over_a_pipe_against_a_daemon(run_debops, mcp_env,
         server.wait(timeout=10)
 
 
+def test_command_form_and_login_shell(mcp_env, project_dir, tmp_path,
+                                      debops_source_dir,
+                                      tmp_path_factory):
+    """The '-c' form runs the commands and exits; invoked under a
+    login-shell name from a foreign directory, the project comes
+    from the ambient 'mcp.login.project' knob."""
+    socket_path = str(tmp_path / "login.sock")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+            [debops_source_dir,
+             env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    env.update(mcp_env)
+    server = _serve_daemon(
+            [sys.executable, "-m", "debops", "mcp", "serve",
+             "--socket", socket_path], project_dir, socket_path, env)
+    # A directory which is not the project, and a launcher script
+    # carrying the login-shell name in its argv[0]
+    outside = tmp_path_factory.mktemp("outside")
+    launcher = outside / "debops-shell"
+    launcher.write_text(
+            "#!{}\n"
+            "import sys\n"
+            "sys.path.insert(0, {!r})\n"
+            "from debops.__main__ import run\n"
+            "run()\n".format(sys.executable, str(debops_source_dir)))
+    launcher.chmod(0o755)
+    try:
+        # The '-c' form of a directly invoked front end
+        result = subprocess.run(
+                [sys.executable, "-m", "debops", "mcp", "repl",
+                 "--socket", socket_path, "-c", "status"],
+                cwd=str(project_dir), env=env, capture_output=True,
+                text=True, timeout=60)
+        assert result.returncode == 0
+        assert "Project:" in result.stdout
+        # ... and a failing command notes itself in the exit status
+        result = subprocess.run(
+                [sys.executable, "-m", "debops", "mcp", "repl",
+                 "--socket", socket_path, "-c", "read ../outside"],
+                cwd=str(project_dir), env=env, capture_output=True,
+                text=True, timeout=60)
+        assert result.returncode == 1
+        assert "error:" in result.stderr
+
+        # The login shell from a foreign directory: no project to
+        # probe, no knob yet
+        result = subprocess.run(
+                [str(launcher), "--socket", socket_path,
+                 "-c", "status"],
+                cwd=str(outside), env=env, capture_output=True,
+                text=True, timeout=60)
+        assert result.returncode == 1
+        assert "Error" in result.stderr
+
+        # The ambient knob points the login shell at the project
+        config_dir = tmp_path / "config" / "debops" / "conf.d"
+        config_dir.mkdir(parents=True)
+        (config_dir / "00-login.toml").write_text(
+                "[mcp.login]\nproject = '{}'\n".format(project_dir))
+        result = subprocess.run(
+                [str(launcher), "--socket", socket_path,
+                 "-c", "status"],
+                cwd=str(outside), env=env, capture_output=True,
+                text=True, timeout=60)
+        assert result.returncode == 0
+        assert "Project:" in result.stdout
+    finally:
+        server.terminate()
+        server.wait(timeout=10)
+
+
 def test_repl_navigates_the_project(run_debops, mcp_env, project_dir,
                                     tmp_path, debops_source_dir):
     """The working-directory verbs against a live daemon: pwd, cd, ls,

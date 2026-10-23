@@ -995,12 +995,24 @@ class Interpreter(object):
         from .mcp import repl as repl_mod
         project = None
         if not args.docs:
+            # A login-shell session (the 'debops-shell' program
+            # names) finds its project through the ambient
+            # configuration — there are no command line arguments
+            # over ssh. The knob never applies to a directly invoked
+            # front end, so a host-wide default cannot hijack the
+            # operator's own sessions
+            project_dir = args.project_dir
+            if getattr(self.parsed_args, 'login_shell', None) is not None:
+                login_project = self.config.raw.get('mcp', {}).get(
+                        'login', {}).get('project')
+                if login_project:
+                    project_dir = login_project
             # ProjectDir chdirs into the directory it probes, even
             # when it then fails; capture the invocation directory
             # first
             invoked_in = os.getcwd()
             try:
-                project = ProjectDir(path=args.project_dir,
+                project = ProjectDir(path=project_dir,
                                      config=self.config)
             except (IsADirectoryError, NotADirectoryError) as errmsg:
                 os.chdir(invoked_in)
@@ -1015,7 +1027,11 @@ class Interpreter(object):
                 print('Error:', errmsg, file=sys.stderr)
                 sys.exit(1)
             return
-        interactive = sys.stdin.isatty()
+        # A '-c' command never builds an interface, even on a
+        # terminal (ssh -t): the spawn question would have no one to
+        # ask mid-command
+        interactive = (getattr(args, 'command', None) is None
+                       and sys.stdin.isatty())
         try:
             client = repl_mod.connect_or_spawn(
                     socket_path, project, docs=args.docs,
@@ -1052,7 +1068,8 @@ class Interpreter(object):
                                   else None),
                     project_type=project_type,
                     view_root_rel=view_root_rel,
-                    frontend=frontend)
+                    frontend=frontend,
+                    command=getattr(args, 'command', None))
         sys.exit(code)
 
     def do_mcp_repl(self, args):

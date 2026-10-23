@@ -73,7 +73,19 @@ def _argument_parser(**kwargs):
 
 class Subcommands(object):
 
+    # The login-shell names ('debops-shell' in /etc/passwd): the
+    # program name selects the MCP front end, since a login shell is
+    # invoked without arguments — ssh runs the command form as
+    # '<name> -c <commands>'.
+    LOGIN_SHELLS = {'debops-repl': 'repl',
+                    'debops-shell': 'shell',
+                    'debops-console': 'console'}
+
     def __init__(self, args=None):
+        name = os.path.basename(args[0]).lstrip('-')
+        self.login_shell = self.LOGIN_SHELLS.get(name)
+        if self.login_shell is not None:
+            args = [args[0], 'mcp', self.login_shell] + list(args[1:])
         self.args = args
 
         self.global_parser = _argument_parser(add_help=False)
@@ -633,6 +645,11 @@ Commands:
                             help='speak the 2025-era protocol '
                                  'revision, matching a daemon started '
                                  'with --legacy')
+        parser.add_argument('-c', '--command', type=str,
+                            metavar='COMMANDS',
+                            help='run the commands (newline-separated) '
+                                 'and exit; the ssh forced-command form '
+                                 'of a login shell')
         spawn = parser.add_mutually_exclusive_group()
         spawn.add_argument('--spawn', dest='spawn',
                            action='store_true', default=None,
@@ -665,6 +682,11 @@ Commands:
                             help='speak the 2025-era protocol '
                                  'revision, matching a daemon started '
                                  'with --legacy')
+        parser.add_argument('-c', '--command', type=str,
+                            metavar='COMMANDS',
+                            help='run the commands (newline-separated) '
+                                 'and exit; the ssh forced-command form '
+                                 'of a login shell')
         spawn = parser.add_mutually_exclusive_group()
         spawn.add_argument('--spawn', dest='spawn',
                            action='store_true', default=None,
@@ -693,6 +715,11 @@ Commands:
                             help='speak the 2025-era protocol '
                                  'revision, matching a daemon started '
                                  'with --legacy')
+        parser.add_argument('-c', '--command', type=str,
+                            metavar='COMMANDS',
+                            help='run the commands (newline-separated) '
+                                 'and exit; the ssh forced-command form '
+                                 'of a login shell')
         spawn = parser.add_mutually_exclusive_group()
         spawn.add_argument('--spawn', dest='spawn',
                            action='store_true', default=None,

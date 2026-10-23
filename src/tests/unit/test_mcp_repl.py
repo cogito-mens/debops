@@ -781,8 +781,43 @@ class HistoryKeyTestCase(unittest.TestCase):
         fake_readline.clear_history.assert_called_once_with()
 
 
-class BannerTestCase(unittest.TestCase):
+class CommandFormTestCase(unittest.TestCase):
+    """The '-c' one-shot form: the commands run non-interactively
+    and the exit status notes an error."""
 
+    def test_the_command_string_runs_in_order(self):
+        client = FakeClient()
+        session, out, err = make_repl(client)
+        code = repl.run_pipe(session, 'help\nnosuchverb\nhelp')
+        self.assertEqual(code, 1)
+        # The error did not stop the script; it is noted in the
+        # exit status
+        self.assertEqual(out.getvalue().count('Commands'), 2)
+        self.assertIn('unknown verb', err.getvalue())
+
+    def test_a_clean_command_string_exits_zero(self):
+        client = FakeClient()
+        session, out, _err = make_repl(client)
+        code = repl.run_pipe(session, 'help\nhelp')
+        self.assertEqual(code, 0)
+        self.assertEqual(out.getvalue().count('Commands'), 2)
+
+    def test_the_command_form_forces_the_pipe(self):
+        # A frontend and a terminal are ignored with a command
+        client = FakeClient()
+        with mock.patch.object(repl, 'run_pipe', return_value=0) \
+                as pipe:
+            code = repl.run(client, command='status', interactive=True,
+                            frontend='console')
+        self.assertEqual(code, 0)
+        pipe.assert_called_once()
+        session, commands = pipe.call_args[0]
+        self.assertIs(type(session), repl.Repl)
+        self.assertFalse(session.interactive)
+        self.assertEqual(commands, 'status')
+
+
+class BannerTestCase(unittest.TestCase):
     def test_the_banner_names_the_version_and_the_protocol(self):
         client = FakeClient()
         client.server_version = '3.1.0'

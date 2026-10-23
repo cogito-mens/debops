@@ -1304,10 +1304,11 @@ class _Completer(_PtCompleter):
                 yield Completion(candidate, start_position=-len(word))
 
 
-def run_pipe(repl):
-    """Commands on stdin, answers on stdout; a nonzero exit status
-    notes an error."""
-    for line in sys.stdin:
+def run_pipe(repl, commands=None):
+    """Commands on stdin — or the one-shot string of the '-c' form —
+    answers on stdout; a nonzero exit status notes an error."""
+    lines = commands.splitlines() if commands is not None else sys.stdin
+    for line in lines:
         try:
             repl.execute(line)
         except ReplError as errmsg:
@@ -1490,11 +1491,17 @@ def _execute_line(repl, line):
 
 def run(client, project_name=None, view=None, interactive=None,
         project_path=None, project_type=None, view_root_rel=None,
-        frontend=None):
+        frontend=None, command=None):
     """Build and run an interpreter session against the connected
     daemon. 'frontend' selects the chrome: None for the plain
     interpreter, 'shell' for the status-bar interface, 'console' for
-    the fullscreen cockpit (a pipe stays a pipe either way)."""
+    the fullscreen cockpit (a pipe stays a pipe either way).
+    'command' is the one-shot '-c' form: the commands run
+    non-interactively and the process exits — how ssh drives a login
+    shell."""
+    if command is not None:
+        interactive = False
+        frontend = None
     if interactive is None:
         interactive = sys.stdin.isatty()
     session_class = Repl
@@ -1515,4 +1522,4 @@ def run(client, project_name=None, view=None, interactive=None,
         return runner(session)
     if interactive:
         return run_interactive(session)
-    return run_pipe(session)
+    return run_pipe(session, command)
