@@ -15,6 +15,8 @@ import threading
 import toml
 import yaml
 
+from ...filelock import RunLockedError, run_lock_path
+
 logger = logging.getLogger(__name__)
 
 # Fold markers used in DebOps defaults files
@@ -409,12 +411,7 @@ def mcp_environ(project):
 
 def _project_lock_path(project, policy):
     """The flock file for cross-process exclusion on this project."""
-    git_dir = os.path.join(project.path, '.git')
-    if os.path.isdir(git_dir):
-        return os.path.join(git_dir, 'mcp.lock')
-    if policy.view_root is not None:
-        return os.path.join(policy.view_root, '.mcp.lock')
-    return os.path.join(project.path, '.mcp.lock')
+    return run_lock_path(project)
 
 
 # The lock file descriptor held by this thread. A child process may
@@ -424,12 +421,11 @@ def _project_lock_path(project, policy):
 _LOCK_STATE = threading.local()
 
 
-class ProjectLockedError(RuntimeError):
+class ProjectLockedError(RunLockedError):
     """The project is locked by another process (a run in flight).
 
-    A RuntimeError subclass: the contention is an expected, retryable
-    condition, so the tools report it as a result, not an internal
-    error.
+    A RunLockedError subclass: the command line raises the shared
+    base, the tools keep reporting their own name.
     """
 
 

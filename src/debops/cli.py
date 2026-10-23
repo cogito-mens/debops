@@ -11,6 +11,7 @@ from .projectvenv import ProjectVenv
 from .ansiblerunner import AnsibleRunner
 from .ansibleplaybookrunner import AnsiblePlaybookRunner
 from .envrunner import EnvRunner
+from .filelock import RunLockedError, run_lock
 from .mcp.server import McpServer
 from .mcp.policy import McpPolicy, KillSwitch
 from .mcp.prompts import PromptLibrary
@@ -60,6 +61,18 @@ enabled = false
 '''
 
 logger = logging.getLogger(__name__)
+
+
+def _guarded_secrets_lock(project, args, action):
+    """Lock or unlock the secrets of the project, holding the run
+    lock — except for the finalize of a detached run, which
+    re-enters through the CLI while the run itself still holds it
+    (the wrapper marks it with DEBOPS_MCP_FINALIZE)."""
+    if os.environ.get('DEBOPS_MCP_FINALIZE'):
+        action()
+    else:
+        with run_lock(project, wait=getattr(args, 'wait', False)):
+            action()
 
 
 @contextlib.contextmanager
@@ -174,10 +187,11 @@ class Interpreter(object):
         try:
             project = ProjectDir(path=args.project_dir, config=self.config,
                                  **vars(args))
-            project.refresh()
+            with run_lock(project, wait=getattr(args, 'wait', False)):
+                project.refresh()
         except (IsADirectoryError, NotADirectoryError,
                 PermissionError, InventorySpecError,
-                ChildProcessError, ValueError) as errmsg:
+                ChildProcessError, ValueError, RunLockedError) as errmsg:
             print('Error:', errmsg)
             sys.exit(1)
 
@@ -186,8 +200,8 @@ class Interpreter(object):
             project = ProjectDir(path=args.project_dir, config=self.config,
                                  view=args.view)
             try:
-                project.lock()
-            except (NoDefaultViewException) as errmsg:
+                _guarded_secrets_lock(project, args, project.lock)
+            except (NoDefaultViewException, RunLockedError) as errmsg:
                 print('Error:', errmsg)
                 sys.exit(1)
         except (IsADirectoryError, NotADirectoryError,
@@ -200,8 +214,8 @@ class Interpreter(object):
             project = ProjectDir(path=args.project_dir, config=self.config,
                                  view=args.view)
             try:
-                project.unlock()
-            except (NoDefaultViewException) as errmsg:
+                _guarded_secrets_lock(project, args, project.unlock)
+            except (NoDefaultViewException, RunLockedError) as errmsg:
                 print('Error:', errmsg)
                 sys.exit(1)
         except (IsADirectoryError, NotADirectoryError,
@@ -213,28 +227,31 @@ class Interpreter(object):
         try:
             project = ProjectDir(path=args.project_dir, config=self.config,
                                  **vars(args))
-            project.mkview(view=args.new_view)
+            with run_lock(project, wait=getattr(args, 'wait', False)):
+                project.mkview(view=args.new_view)
         except (IsADirectoryError, NotADirectoryError,
                 InventorySpecError, ChildProcessError,
-                ValueError) as errmsg:
+                ValueError, RunLockedError) as errmsg:
             print('Error:', errmsg)
             sys.exit(1)
 
     def do_project_commit(self, args):
         try:
             project = ProjectDir(path=args.project_dir, config=self.config)
-            project.commit(interactive=True)
+            with run_lock(project, wait=getattr(args, 'wait', False)):
+                project.commit(interactive=True)
         except (IsADirectoryError, NotADirectoryError,
-                PermissionError) as errmsg:
+                PermissionError, RunLockedError) as errmsg:
             print('Error:', errmsg)
             sys.exit(1)
 
     def do_project_pull(self, args):
         try:
             project = ProjectDir(path=args.project_dir, config=self.config)
-            report = project.pull()
+            with run_lock(project, wait=getattr(args, 'wait', False)):
+                report = project.pull()
         except (IsADirectoryError, NotADirectoryError,
-                PermissionError, ValueError) as errmsg:
+                PermissionError, ValueError, RunLockedError) as errmsg:
             print('Error:', errmsg)
             sys.exit(1)
 
@@ -250,9 +267,10 @@ class Interpreter(object):
     def do_project_push(self, args):
         try:
             project = ProjectDir(path=args.project_dir, config=self.config)
-            report = project.push()
+            with run_lock(project, wait=getattr(args, 'wait', False)):
+                report = project.push()
         except (IsADirectoryError, NotADirectoryError,
-                PermissionError, ValueError) as errmsg:
+                PermissionError, ValueError, RunLockedError) as errmsg:
             print('Error:', errmsg)
             sys.exit(1)
 
@@ -268,21 +286,22 @@ class Interpreter(object):
         try:
             project = ProjectDir(path=args.project_dir, config=self.config,
                                  **vars(args))
-            if args.action == 'enable':
-                project.enable_venv(scope=args.scope)
-                return
-            venv = ProjectVenv(project, **vars(args))
-            if args.action == 'install':
-                venv.install(scope=args.scope)
-            elif args.action == 'upgrade':
-                venv.upgrade(scope=args.scope)
-            elif args.action == 'recreate':
-                venv.recreate(scope=args.scope)
-            elif args.action == 'freeze':
-                venv.freeze(scope=args.scope)
+            with run_lock(project, wait=getattr(args, 'wait', False)):
+                if args.action == 'enable':
+                    project.enable_venv(scope=args.scope)
+                    return
+                venv = ProjectVenv(project, **vars(args))
+                if args.action == 'install':
+                    venv.install(scope=args.scope)
+                elif args.action == 'upgrade':
+                    venv.upgrade(scope=args.scope)
+                elif args.action == 'recreate':
+                    venv.recreate(scope=args.scope)
+                elif args.action == 'freeze':
+                    venv.freeze(scope=args.scope)
         except (IsADirectoryError, NotADirectoryError,
                 PermissionError, FileNotFoundError,
-                ChildProcessError, ValueError) as errmsg:
+                ChildProcessError, ValueError, RunLockedError) as errmsg:
             print('Error:', errmsg)
             sys.exit(1)
 
@@ -305,7 +324,12 @@ class Interpreter(object):
             runner.eval()
             sys.exit(0)
         else:
-            sys.exit(runner.execute())
+            try:
+                with run_lock(project, wait=getattr(args, 'wait', False)):
+                    sys.exit(runner.execute())
+            except RunLockedError as errmsg:
+                print('Error:', errmsg)
+                sys.exit(1)
 
     def do_run(self, args):
         try:
@@ -327,8 +351,9 @@ class Interpreter(object):
             sys.exit(0)
         else:
             try:
-                sys.exit(runner.execute())
-            except ChildProcessError as errmsg:
+                with run_lock(project, wait=getattr(args, 'wait', False)):
+                    sys.exit(runner.execute())
+            except (ChildProcessError, RunLockedError) as errmsg:
                 print('Error:', errmsg)
                 sys.exit(1)
 
@@ -348,7 +373,12 @@ class Interpreter(object):
             sys.exit(1)
 
         if args.command_args:
-            sys.exit(runner.execute())
+            try:
+                with run_lock(project, wait=getattr(args, 'wait', False)):
+                    sys.exit(runner.execute())
+            except RunLockedError as errmsg:
+                print('Error:', errmsg)
+                sys.exit(1)
         else:
             sys.exit(runner.show_env(scope=args.scope))
 

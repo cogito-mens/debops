@@ -20,6 +20,16 @@ from debops.cli import Interpreter
 from debops.exceptions import NoDefaultViewException
 
 
+@pytest.fixture(autouse=True)
+def _no_run_lock(monkeypatch):
+    """No run lock here: the guarded commands run against mocked
+    projects, which have no filesystem to lock. The lock itself is
+    covered in test_filelock.py and the integration suite."""
+    import contextlib
+    monkeypatch.setattr(cli_module, 'run_lock',
+                        lambda *args, **kwargs: contextlib.nullcontext())
+
+
 def make_args(**kwargs):
     return SimpleNamespace(**kwargs)
 

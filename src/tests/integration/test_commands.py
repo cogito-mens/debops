@@ -43,6 +43,72 @@ def test_exec_eval_prints_the_ansible_command(run_debops, debops_env,
     assert "ansible all -m ping" in result.stdout
 
 
+def test_commands_fail_fast_while_the_run_lock_is_held(
+        run_debops, debops_env, legacy_project):
+    """The built-in commands respect the project run lock: the same
+    flock the MCP executions hold."""
+    import fcntl
+    from debops.filelock import run_lock_path
+    project = type('Project', (), {
+            'path': str(legacy_project), 'project_type': 'legacy',
+            'view': None,
+            'config': type('Config', (), {'raw': {}})()})()
+    lock_path = run_lock_path(project)
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        result = run_debops("project", "commit", cwd=str(legacy_project),
+                            env=debops_env, input_text="")
+        assert result.returncode == 1
+        assert "is locked" in result.stdout
+        result = run_debops("env", "true", cwd=str(legacy_project),
+                            env=debops_env)
+        assert result.returncode == 1
+        assert "is locked" in result.stdout
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    # Free again, the command goes through
+    result = run_debops("env", "true", cwd=str(legacy_project),
+                        env=debops_env)
+    assert result.returncode == 0
+
+
+def test_commands_wait_for_the_run_lock(run_debops, debops_env,
+                                        legacy_project):
+    """'--wait' blocks until the run lock is free."""
+    import fcntl
+    import threading
+    import time
+    from debops.filelock import run_lock_path
+    project = type('Project', (), {
+            'path': str(legacy_project), 'project_type': 'legacy',
+            'view': None,
+            'config': type('Config', (), {'raw': {}})()})()
+    lock_path = run_lock_path(project)
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    results = []
+
+    def run():
+        results.append(run_debops("env", "--wait", "true",
+                                  cwd=str(legacy_project),
+                                  env=debops_env))
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    # The command waits on the held lock
+    time.sleep(1.0)
+    assert results == []
+    fcntl.flock(fd, fcntl.LOCK_UN)
+    os.close(fd)
+    thread.join(timeout=30)
+    assert len(results) == 1
+    assert results[0].returncode == 0
+
+
 def test_run_executes_the_playbook(run_debops, tmp_path, debops_env,
                                    legacy_project):
     log = tmp_path / "ansible-playbook.log"

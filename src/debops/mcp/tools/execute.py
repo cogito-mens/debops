@@ -453,8 +453,10 @@ def _detached_command(command, timeout, finalize=None):
     lines = [script]
     if finalize is not None:
         lines.append('rc=$?')
-        lines.append('{} || echo "debops-mcp: the finalize failed"'
-                     .format(_shell_command(finalize)))
+        # The marker lets the finalize re-enter the guarded
+        # 'project lock' while the run itself still holds the lock
+        lines.append('DEBOPS_MCP_FINALIZE=1 {} || echo "debops-mcp: '
+                     'the finalize failed"'.format(_shell_command(finalize)))
         lines.append('echo "debops-mcp: the execution finished with '
                      'exit code $rc"')
         lines.append('exit $rc')
