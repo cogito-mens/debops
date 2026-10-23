@@ -61,11 +61,11 @@ def test_commands_fail_fast_while_the_run_lock_is_held(
         result = run_debops("project", "commit", cwd=str(legacy_project),
                             env=debops_env, input_text="")
         assert result.returncode == 1
-        assert "is locked" in result.stdout
+        assert "is locked" in result.stderr
         result = run_debops("env", "true", cwd=str(legacy_project),
                             env=debops_env)
         assert result.returncode == 1
-        assert "is locked" in result.stdout
+        assert "is locked" in result.stderr
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)

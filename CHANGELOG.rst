@@ -167,6 +167,10 @@ General
   when the collection is installed via Ansible Galaxy without the ``debops``
   Python package.
 
+- The :command:`debops` command now prints its error messages to the standard
+  error output instead of the standard output; scripts which pipe the output
+  no longer capture error text.
+
 :ref:`debops.ansible_plugins` role
 ''''''''''''''''''''''''''''''''''
 

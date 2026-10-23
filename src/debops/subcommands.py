@@ -126,7 +126,7 @@ Sections:
             self.args = self._section
             return
         if not hasattr(self, 'do_' + self._section.section):
-            print('Error: unrecognized section:', self._section.section)
+            print('Error: unrecognized section:', self._section.section, file=sys.stderr)
             parser.print_help()
             sys.exit(1)
         getattr(self, 'do_' + self._section.section)()
@@ -160,7 +160,7 @@ Commands:
         self._command = parser.parse_args(self.args[2:3])
         self.command = self._command.command
         if not hasattr(self, 'do_project_' + self._command.command):
-            print('Error: unrecognized command:', self._command.command)
+            print('Error: unrecognized command:', self._command.command, file=sys.stderr)
             parser.print_help()
             sys.exit(1)
         getattr(self, 'do_project_' + self._command.command)()
@@ -518,7 +518,7 @@ Commands:
         self._command = parser.parse_args(self.args[2:3])
         self.command = self._command.command
         if not hasattr(self, 'do_config_' + self._command.command):
-            print('Error: unrecognized command:', self._command.command)
+            print('Error: unrecognized command:', self._command.command, file=sys.stderr)
             parser.print_help()
             sys.exit(1)
         getattr(self, 'do_config_' + self._command.command)()
@@ -549,7 +549,7 @@ Commands:
         self._command = parser.parse_args(self.args[2:3])
         self.command = self._command.command
         if not hasattr(self, 'do_mcp_' + self._command.command):
-            print('Error: unrecognized command:', self._command.command)
+            print('Error: unrecognized command:', self._command.command, file=sys.stderr)
             parser.print_help()
             sys.exit(1)
         getattr(self, 'do_mcp_' + self._command.command)()

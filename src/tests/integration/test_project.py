@@ -103,7 +103,7 @@ def test_project_pull_and_push(run_debops, tmp_path, debops_env):
     result = run_debops("project", "pull", str(project_dir),
                         env=debops_env)
     assert result.returncode == 1
-    assert "uncommitted changes" in result.stdout
+    assert "uncommitted changes" in result.stderr
 
 
 def test_project_pull_without_origin(run_debops, tmp_path, debops_env):
@@ -113,7 +113,7 @@ def test_project_pull_without_origin(run_debops, tmp_path, debops_env):
     result = run_debops("project", "pull", str(project_dir),
                         env=debops_env)
     assert result.returncode == 1
-    assert "no 'origin' remote" in result.stdout
+    assert "no 'origin' remote" in result.stderr
 
 
 def test_project_pull_push_without_git(run_debops, tmp_path, debops_env):
@@ -124,7 +124,7 @@ def test_project_pull_push_without_git(run_debops, tmp_path, debops_env):
         result = run_debops("project", command, str(project_dir),
                             env=debops_env)
         assert result.returncode == 1
-        assert "not a git repository" in result.stdout
+        assert "not a git repository" in result.stderr
 
 
 def test_init_creates_a_legacy_project(run_debops, tmp_path, debops_env):
@@ -189,7 +189,7 @@ def test_init_refuses_a_directory_inside_a_project(run_debops, tmp_path,
                         str(project_dir / "nested"), env=debops_env)
 
     assert result.returncode == 1
-    assert "inside another" in result.stdout
+    assert "inside another" in result.stderr
 
 
 def test_init_config_template(run_debops, tmp_path, debops_env):
@@ -218,7 +218,7 @@ def test_init_config_template_legacy_refused(run_debops, tmp_path,
     result = run_debops("project", "init", "--no-requirements",
                         "--config", "mcp", str(project_dir), env=debops_env)
     assert result.returncode == 1
-    assert "modern projects only" in result.stdout
+    assert "modern projects only" in result.stderr
 
 
 def test_refresh_config_template(run_debops, tmp_path, debops_env):
@@ -236,7 +236,7 @@ def test_refresh_config_template(run_debops, tmp_path, debops_env):
     result = run_debops("project", "refresh", "--config", "mcp",
                         str(project_dir), env=debops_env)
     assert result.returncode == 1
-    assert "--force" in result.stdout
+    assert "--force" in result.stderr
     result = run_debops("project", "refresh", "--config", "mcp",
                         "--force", str(project_dir), env=debops_env)
     assert result.returncode == 0
@@ -360,7 +360,7 @@ def test_init_with_venv_rejects_a_legacy_project(run_debops, tmp_path,
                         env=debops_env)
 
     assert result.returncode == 1
-    assert "modern" in result.stdout
+    assert "modern" in result.stderr
     assert not project_dir.exists()
 
 
@@ -373,7 +373,7 @@ def test_venv_enable_activates_an_existing_project(run_debops, tmp_path,
     result = run_debops("project", "venv", "install", str(project_dir),
                         env=debops_env)
     assert result.returncode == 1
-    assert "not enabled" in result.stdout
+    assert "not enabled" in result.stderr
 
     result = run_debops("project", "venv", "enable", str(project_dir),
                         env=debops_env)
