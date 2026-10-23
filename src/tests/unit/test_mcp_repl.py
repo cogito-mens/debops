@@ -55,6 +55,13 @@ def tmp_history_home(test_case):
     return directory
 
 
+def tool_params(name, arguments, view='system'):
+    """The expected tools/call params: the session's view is
+    declared on every call, for the daemon's concurrency guard."""
+    return {'name': name, 'arguments': arguments,
+            '_meta': {'org.debops/view': view}}
+
+
 class ExecutionArgumentsTestCase(unittest.TestCase):
 
     def test_a_single_target(self):
@@ -101,8 +108,8 @@ class VerbTestCase(unittest.TestCase):
                 'content': [{'type': 'text', 'text': 'Project: x'}]})
         self.repl.execute('status')
         self.assertEqual(self.client.calls[0],
-                         ('tools/call', {'name': 'project.status',
-                                         'arguments': {}}))
+                         ('tools/call',
+                          tool_params('project.status', {})))
         self.assertIn('Project: x', self.out.getvalue())
 
     def test_an_error_result_is_marked_and_counted(self):
@@ -191,6 +198,26 @@ class VerbTestCase(unittest.TestCase):
         self.repl.execute('status')
         self.assertEqual(self.repl.view, 'system')
         self.assertNotIn('the view is now', self.err.getvalue())
+
+    def test_the_session_declares_its_view_on_tool_calls(self):
+        self.client.queue('tools/call', {
+                'resultType': 'complete', 'isError': False,
+                'content': [{'type': 'text', 'text': 'Project: x'}]})
+        self.repl.execute('status')
+        self.assertEqual(self.client.calls[0][1]['_meta'],
+                         {'org.debops/view': 'system'})
+
+    def test_a_stale_view_refusal_moves_the_session(self):
+        # The refusal carries the current view; the session follows
+        # it, so the human's retry lands where they now look
+        self.client.queue('tools/call', {
+                'resultType': 'complete', 'isError': True,
+                'content': [{'type': 'text',
+                             'text': 'the view is now web'}],
+                '_meta': {'org.debops/view': 'web'}})
+        self.repl.execute('status')
+        self.assertIn('the view is now web', self.err.getvalue())
+        self.assertEqual(self.repl.view, 'web')
 
 
 class ConfirmationTestCase(unittest.TestCase):
@@ -980,6 +1007,17 @@ class CommandFormTestCase(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(out.getvalue().count('Commands'), 2)
 
+    def test_the_pipe_flushes_every_answer(self):
+        # A driver's read waits for the answer; a block-buffered pipe
+        # would hold it back otherwise
+        client = FakeClient()
+        session, out, err = make_repl(client)
+        flushes = []
+        out.flush = lambda: flushes.append(True)
+        err.flush = lambda: None
+        repl.run_pipe(session, 'help\nhelp')
+        self.assertEqual(len(flushes), 2)
+
     def test_the_command_form_forces_the_pipe(self):
         # A frontend and a terminal are ignored with a command
         client = FakeClient()
@@ -1291,8 +1329,8 @@ class NavigationTestCase(unittest.TestCase):
         self.assertEqual(session.cwd, 'ansible/inventory')
         self.assertEqual(client.calls[0],
                          ('tools/call',
-                          {'name': 'project.list',
-                           'arguments': {'path': 'ansible/inventory'}}))
+                          tool_params('project.list',
+                                      {'path': 'ansible/inventory'})))
 
     def test_cd_validates_the_target(self):
         session, client, _out, _err = self.make_session()
@@ -1364,9 +1402,9 @@ class NavigationTestCase(unittest.TestCase):
         session.cwd = 'ansible/inventory'
         self.queue_list(client, ('hosts', 'file'))
         session.execute('ls')
-        self.assertEqual(client.calls[0][1],
-                         {'name': 'project.list',
-                          'arguments': {'path': 'ansible/inventory'}})
+        self.assertEqual(
+            client.calls[0][1],
+            tool_params('project.list', {'path': 'ansible/inventory'}))
 
     def test_ls_at_the_project_root_omits_the_path(self):
         session, client, _out, _err = self.make_session(
@@ -1374,8 +1412,9 @@ class NavigationTestCase(unittest.TestCase):
         session.cwd = ''
         self.queue_list(client)
         session.execute('ls')
-        self.assertEqual(client.calls[0][1],
-                         {'name': 'project.list', 'arguments': {}})
+        self.assertEqual(
+            client.calls[0][1],
+            tool_params('project.list', {}))
 
     def test_read_and_files_resolve_against_the_cwd(self):
         session, client, _out, _err = self.make_session()
@@ -1387,14 +1426,12 @@ class NavigationTestCase(unittest.TestCase):
                       'content': []})
         session.execute('read hosts')
         self.assertEqual(
-                client.calls[0][1],
-                {'name': 'project.read',
-                 'arguments': {'path': 'ansible/inventory/hosts'}})
+            client.calls[0][1],
+            tool_params('project.read', {'path': 'ansible/inventory/hosts'}))
         session.execute('files group_vars')
         self.assertEqual(
-                client.calls[1][1],
-                {'name': 'project.files',
-                 'arguments': {'path': 'ansible/inventory/group_vars'}})
+            client.calls[1][1],
+            tool_params('project.files', {'path': 'ansible/inventory/group_vars'}))
 
     def test_mkdir_rm_mv_spell_the_view_relative_path(self):
         session, client, _out, _err = self.make_session()
@@ -1407,20 +1444,17 @@ class NavigationTestCase(unittest.TestCase):
                       'content': []})
         session.execute('mkdir resources/scripts')
         self.assertEqual(
-                client.calls[0][1],
-                {'name': 'project.mkdir',
-                 'arguments': {'path': 'resources/scripts'}})
+            client.calls[0][1],
+            tool_params('project.mkdir', {'path': 'resources/scripts'}))
         session.execute('rm playbooks/deploy.yml')
         self.assertEqual(
-                client.calls[1][1],
-                {'name': 'file.delete',
-                 'arguments': {'path': 'playbooks/deploy.yml'}})
+            client.calls[1][1],
+            tool_params('file.delete', {'path': 'playbooks/deploy.yml'}))
         session.execute('mv playbooks/a.yml playbooks/b.yml')
         self.assertEqual(
-                client.calls[2][1],
-                {'name': 'file.move',
-                 'arguments': {'source': 'playbooks/a.yml',
-                               'target': 'playbooks/b.yml'}})
+            client.calls[2][1],
+            tool_params('file.move', {'source': 'playbooks/a.yml',
+                                      'target': 'playbooks/b.yml'}))
 
     def test_the_elevated_write_spelling_is_project_rooted(self):
         session, client, _out, _err = self.make_session(
@@ -1430,9 +1464,8 @@ class NavigationTestCase(unittest.TestCase):
                                     'isError': False, 'content': []})
         session.execute('mkdir .debops/conf.d')
         self.assertEqual(
-                client.calls[0][1],
-                {'name': 'project.mkdir',
-                 'arguments': {'path': '/.debops/conf.d'}})
+            client.calls[0][1],
+            tool_params('project.mkdir', {'path': '/.debops/conf.d'}))
 
     def test_cp_reads_then_writes(self):
         session, client, _out, _err = self.make_session()
@@ -1447,14 +1480,12 @@ class NavigationTestCase(unittest.TestCase):
                       'content': []})
         session.execute('cp a.yml b.yml')
         self.assertEqual(
-                client.calls[0][1],
-                {'name': 'project.read',
-                 'arguments': {'path': 'ansible/playbooks/a.yml'}})
+            client.calls[0][1],
+            tool_params('project.read', {'path': 'ansible/playbooks/a.yml'}))
         self.assertEqual(
-                client.calls[1][1],
-                {'name': 'file.write',
-                 'arguments': {'path': 'playbooks/b.yml',
-                               'content': '---\n[]\n'}})
+            client.calls[1][1],
+            tool_params('file.write', {'path': 'playbooks/b.yml',
+                                       'content': '---\n[]\n'}))
 
     def test_cp_a_directory_target_takes_the_basename(self):
         session, client, _out, _err = self.make_session()
@@ -1466,10 +1497,9 @@ class NavigationTestCase(unittest.TestCase):
                  'content': []})
         session.execute('cp playbooks/a.yml resources/')
         self.assertEqual(
-                client.calls[1][1],
-                {'name': 'file.write',
-                 'arguments': {'path': 'resources/a.yml',
-                               'content': 'c\n'}})
+            client.calls[1][1],
+            tool_params('file.write', {'path': 'resources/a.yml',
+                                       'content': 'c\n'}))
 
     def test_cp_needs_structured_reads(self):
         session, client, _out, _err = self.make_session()

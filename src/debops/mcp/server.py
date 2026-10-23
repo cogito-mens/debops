@@ -1167,6 +1167,28 @@ class McpServer(object):
         # Log the argument keys only; values may contain secrets
         logger.debug('Calling tool %s with arguments: %s',
                      name, sorted(arguments))
+        if self.project is not None:
+            # The optimistic concurrency guard: a client which
+            # declares its view (the human front ends) gets a refusal
+            # for a mutation checked out against a stale view, instead
+            # of a silent write into the wrong one. Read-only tools
+            # are safe at any view; clients which never declare one
+            # (the LLM harnesses, the legacy era) opt out of the guard
+            declared = params.get('_meta') or {}
+            if (VIEW_META_KEY in declared
+                    and declared[VIEW_META_KEY] != self.project.view
+                    and not (tool.annotations or {}).get(
+                            'readOnlyHint')):
+                current = self.project.view or '(none)'
+                logger.notice('Tool %s(%s) -> refused, the view is '
+                              'now %s%s', name, ','.join(
+                                      sorted(arguments)), current,
+                              _audit_tag(context))
+                return {'resultType': 'complete', 'isError': True,
+                        'content': [{'type': 'text', 'text': (
+                                'the view is now {} — it moved while '
+                                'the client was working; re-check and '
+                                'retry'.format(current))}]}
         gated = self._confirmation_gate(tool, arguments, params, context)
         if gated is not None:
             logger.notice('Tool %s(%s) -> gated%s', name,

@@ -3041,6 +3041,75 @@ def test_bare_debops_autospawn_legacy_drives_both_sides(
         run_debops("mcp", "stop", env=env, cwd=str(project_dir))
 
 
+def test_a_peer_client_is_guarded_and_follows(run_debops, mcp_env,
+                                              tmp_path,
+                                              debops_source_dir):
+    """The review scenario end to end: client A switches the view
+    while client B is attached; B's mutation on the stale view is
+    refused, the refusal moves B, and the retry lands."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    project_dir = tmp_path / "example"
+    run_debops("project", "init", "-t", "modern", "--no-requirements",
+               str(project_dir), env=mcp_env, check=True)
+    run_debops("project", "mkview", "webservers",
+               cwd=str(project_dir), env=mcp_env, check=True)
+    socket_path = str(tmp_path / "view.sock")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+            [debops_source_dir,
+             env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    env.update(mcp_env)
+    server = _serve_daemon(
+            [sys.executable, "-m", "debops", "mcp", "serve",
+             "--socket", socket_path], project_dir, socket_path, env)
+    try:
+        # Client B attaches while the daemon sits on the default view
+        peer = subprocess.Popen(
+                [sys.executable, "-m", "debops", "mcp", "repl",
+                 "--socket", socket_path],
+                cwd=str(project_dir), env=env, stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True)
+        try:
+            # The status answer proves the session is live and current
+            peer.stdin.write("status\n")
+            peer.stdin.flush()
+            for _ in range(20):
+                if "Project:" in peer.stdout.readline():
+                    break
+            else:
+                pytest.fail("the peer never answered")
+
+            # Client A moves the daemon's view under B's feet
+            moved = run_debops(
+                    "mcp", "repl", "--socket", socket_path,
+                    cwd=str(project_dir), env=env,
+                    input_text="view webservers\n")
+            assert moved.returncode == 0
+
+            # B's write still names the old view: refused, and the
+            # refusal's own answer moves B to the current view
+            peer.stdin.write("mkdir resources/tag\n")
+            peer.stdin.write("mkdir resources/tag2\n")
+            peer.stdin.flush()
+            out, err = peer.communicate(timeout=60)
+        finally:
+            if peer.poll() is None:
+                peer.kill()
+                peer.wait()
+        assert "the view is now webservers" in err
+        # The refused write landed nowhere
+        assert not (project_dir / "ansible" / "views" / "webservers"
+                    / "resources" / "tag").exists()
+        # And the retry after the adoption went to the current view
+        assert (project_dir / "ansible" / "views" / "webservers"
+                / "resources" / "tag2").is_dir()
+    finally:
+        server.terminate()
+        server.wait(timeout=10)
+
+
 def test_repl_navigates_the_project(run_debops, mcp_env, project_dir,
                                     tmp_path, debops_source_dir):
     """The working-directory verbs against a live daemon: pwd, cd, ls,

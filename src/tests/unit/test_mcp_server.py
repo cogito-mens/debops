@@ -31,10 +31,13 @@ def make_request(method, params=None, request_id=1, meta='default'):
             'io.modelcontextprotocol/clientCapabilities': {},
         }
     # The request metadata rides in 'params._meta', per the spec; a
-    # deliberately malformed (non-dict) params passes through untouched
+    # deliberately malformed (non-dict) params passes through
+    # untouched. A caller's own '_meta' keys merge with the default
     if meta is not None and (params is None or isinstance(params, dict)):
         params = dict(params or {})
-        params['_meta'] = meta
+        merged = dict(meta)
+        merged.update(params.get('_meta') or {})
+        params['_meta'] = merged
     if params is not None:
         message['params'] = params
     return message
@@ -475,6 +478,69 @@ class ToolsTestCase(unittest.TestCase):
         response = server.handle(make_request(
                 'tools/call', params={'name': 'echo', 'arguments': ['x']}))
         self.assertEqual(response['error']['code'], rpc.INVALID_PARAMS)
+
+    def _guarded_server(self, view='system'):
+        project = type('Project', (), {'name': 'project',
+                                       'view': view})()
+        server = McpServer(project=project)
+        calls = []
+        server.register_tool(
+                'mutate', 'Mutate', {'type': 'object'},
+                lambda arguments: calls.append(arguments)
+                or {'content': [], 'isError': False})
+        server.register_tool(
+                'peek', 'Peek', {'type': 'object'},
+                lambda arguments: {'content': [], 'isError': False},
+                annotations={'readOnlyHint': True})
+        return server, calls
+
+    def test_a_mutation_on_a_stale_view_is_refused(self):
+        server, calls = self._guarded_server()
+        response = server.handle(make_request(
+                'tools/call',
+                params={'name': 'mutate', 'arguments': {},
+                        '_meta': {'org.debops/view': 'admin'}}))
+        result = response['result']
+        self.assertTrue(result['isError'])
+        self.assertIn('the view is now system',
+                      result['content'][0]['text'])
+        # The handler never ran
+        self.assertEqual(calls, [])
+
+    def test_a_matching_view_passes_the_guard(self):
+        server, calls = self._guarded_server()
+        response = server.handle(make_request(
+                'tools/call',
+                params={'name': 'mutate', 'arguments': {},
+                        '_meta': {'org.debops/view': 'system'}}))
+        self.assertFalse(response['result']['isError'])
+        self.assertEqual(len(calls), 1)
+
+    def test_an_undeclared_view_opts_out_of_the_guard(self):
+        # The LLM harnesses and the legacy era never declare one
+        server, calls = self._guarded_server()
+        response = server.handle(make_request(
+                'tools/call', params={'name': 'mutate',
+                                      'arguments': {}}))
+        self.assertFalse(response['result']['isError'])
+        self.assertEqual(len(calls), 1)
+
+    def test_a_read_only_tool_is_never_guarded(self):
+        server, _calls = self._guarded_server()
+        response = server.handle(make_request(
+                'tools/call',
+                params={'name': 'peek', 'arguments': {},
+                        '_meta': {'org.debops/view': 'admin'}}))
+        self.assertFalse(response['result']['isError'])
+
+    def test_the_guard_names_a_viewless_daemon(self):
+        server, _calls = self._guarded_server(view=None)
+        response = server.handle(make_request(
+                'tools/call',
+                params={'name': 'mutate', 'arguments': {},
+                        '_meta': {'org.debops/view': 'admin'}}))
+        self.assertIn('(none)',
+                      response['result']['content'][0]['text'])
 
 
 class CancellationTestCase(unittest.TestCase):

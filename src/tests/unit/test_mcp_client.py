@@ -312,6 +312,29 @@ class UnixClientTestCase(unittest.TestCase):
             client.request_unix(os.path.join(self.tmpdir, 'absent.sock'),
                                 'server/discover')
 
+    def test_the_caller_meta_keys_ride_the_request(self):
+        # A caller-provided '_meta' (the declared view) merges with
+        # the client's own protocol keys, not replaced by them
+        import io
+        connection = client.UnixClient(os.path.join(self.tmpdir,
+                                                    'never.sock'))
+        connection._connect = lambda: None
+        connection._connection = mock.MagicMock()
+        import json as json_module
+        response_line = (json_module.dumps(
+                {'jsonrpc': '2.0', 'id': 1, 'result': {'ok': True}})
+                .encode('utf-8') + b'\n')
+        connection._reader = io.BytesIO(response_line)
+        connection.request_raw('tools/call', {
+                'name': 'project.status',
+                '_meta': {'org.debops/view': 'admin'}})
+        sent = json_module.loads(
+                connection._connection.sendall.call_args[0][0]
+                .decode('utf-8'))
+        meta = sent['params']['_meta']
+        self.assertEqual(meta['org.debops/view'], 'admin')
+        self.assertIn('io.modelcontextprotocol/protocolVersion', meta)
+
     def test_clone_makes_a_second_connection_with_the_trust(self):
         with client.UnixClient(self.path, timeout=7,
                                legacy=False) as connection:

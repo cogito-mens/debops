@@ -161,10 +161,13 @@ class UnixClient(object):
         """Send one request; return the raw response line (bytes)."""
         self._connect()
         # The request metadata rides in 'params._meta', per the spec;
-        # the legacy era carries the client state in the handshake
+        # the legacy era carries the client state in the handshake.
+        # The caller's own keys (the declared view) ride along
         request_params = dict(params or {})
         if not self.legacy:
-            request_params['_meta'] = request_meta(self._capabilities)
+            meta = dict(request_params.get('_meta') or {})
+            meta.update(request_meta(self._capabilities))
+            request_params['_meta'] = meta
         if self.bearer is not None and not self.legacy:
             request_params['_meta'][_server.TRUST_TOKEN_KEY] = \
                 self.bearer

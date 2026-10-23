@@ -515,14 +515,19 @@ class Repl(object):
 
     def _call_tool(self, name, arguments):
         """One tool call; a confirmation gate asks the human (a
-        decline comes back as the tool's error result)."""
+        decline comes back as the tool's error result). The declared
+        view rides every call: the daemon refuses a mutation which
+        checked out a stale view."""
+        declared = {_server.VIEW_META_KEY: self.view}
         result = self._request('tools/call',
-                               {'name': name, 'arguments': arguments})
+                               {'name': name, 'arguments': arguments,
+                                '_meta': dict(declared)})
         while result.get('resultType') == 'input_required':
             answers = self._confirm(result)
             result = self._request(
                     'tools/call',
                     {'name': name, 'arguments': arguments,
+                     '_meta': dict(declared),
                      'inputResponses': {'confirmation': answers}})
         # A legacy daemon strips the resultType envelope; the task
         # handle is recognized by its shape there
@@ -1460,6 +1465,11 @@ def run_pipe(repl, commands=None):
         except KeyboardInterrupt:
             # An interrupted script dies like any other tool
             return 130
+        # The answer must leave now: a driver's next read waits for
+        # it, and a pipe is block-buffered without the flush
+        for channel in (repl._out, repl._err):
+            if hasattr(channel, 'flush'):
+                channel.flush()
     return 1 if repl.had_error else 0
 
 
