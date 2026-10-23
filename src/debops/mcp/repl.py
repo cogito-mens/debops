@@ -473,7 +473,15 @@ class Repl(object):
     def _request(self, method, params):
         try:
             response = self.client.request(method, params)
-        except (ConnectionError, EOFError, TimeoutError) as errmsg:
+        except TimeoutError as errmsg:
+            # A slow answer is not a dead daemon: a run can hold the
+            # project lock for its whole duration. The client dropped
+            # the connection; the next command starts a fresh one
+            # (TimeoutError is an OSError; this clause goes first)
+            raise ReplError('{}; the daemon may be busy (a run in '
+                            'flight?) — the connection was dropped, '
+                            'retry shortly'.format(errmsg))
+        except (ConnectionError, EOFError, OSError) as errmsg:
             # A dead daemon is a line on the error channel, not a
             # traceback; the next command reconnects
             raise ReplError('the daemon is not answering ({}); is it '

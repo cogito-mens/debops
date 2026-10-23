@@ -12,8 +12,11 @@ from debops.mcp import client
 from debops.mcp.server import McpServer
 from debops.mcp.transport import UnixSocketTransport
 from tests.unit._helpers import wait_for_socket
+import io
+import json
 import os
 import shutil
+import socket
 import tempfile
 import threading
 import time
@@ -507,3 +510,166 @@ class LegacyUnixClientTestCase(unittest.TestCase):
             connection.request('tools/list')
         self.assertEqual(connection.protocol_version, '2025-11-25')
         self.assertTrue(connection.server_version)
+
+
+class StubServer(object):
+    """A raw UNIX socket server with a scripted per-connection act,
+    for the client lifecycle behavior the real server cannot act out
+    (a slow answer, a wrong id). Each connection is its own thread,
+    so a slow one never delays the next."""
+
+    def __init__(self, path, act):
+        self._act = act
+        self.connections = 0
+        self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._socket.bind(path)
+        self._socket.listen(4)
+        self._thread = threading.Thread(target=self._serve,
+                                        daemon=True)
+        self._thread.start()
+        wait_for_socket(path)
+
+    def _serve(self):
+        while True:
+            try:
+                connection = self._socket.accept()[0]
+            except OSError:
+                break
+            self.connections += 1
+            threading.Thread(target=self._handle,
+                             args=(connection,), daemon=True).start()
+
+    def _handle(self, connection):
+        try:
+            self._act(connection)
+        finally:
+            connection.close()
+
+    def read_request(self, connection):
+        """One request line of a connection, parsed."""
+        line = connection.makefile('rb').readline()
+        return json.loads(line) if line else None
+
+    def answer(self, connection, request, result):
+        connection.sendall(json.dumps(
+                {'jsonrpc': '2.0', 'id': request['id'],
+                 'result': result}).encode('utf-8') + b'\n')
+
+    def close(self):
+        self._socket.close()
+        self._thread.join(timeout=5)
+
+
+class ConnectionLifecycleTestCase(unittest.TestCase):
+    """The client connection lifecycle: a timeout drops it, the next
+    call reconnects; the answers correlate by id."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-stub-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        self.path = os.path.join(self.tmpdir, 'stub.sock')
+
+    def test_a_timeout_drops_the_connection_and_recovers(self):
+        # A slow first answer must not brick the client — the next
+        # call gets a fresh connection
+        slow = threading.Event()
+        slow.set()
+        requests = []
+
+        def act(connection):
+            request = self.server.read_request(connection)
+            if request is None:
+                return
+            requests.append(request['method'])
+            if slow.is_set():
+                time.sleep(3)
+                return
+            self.server.answer(connection, request, {'ok': True})
+
+        self.server = StubServer(self.path, act)
+        self.addCleanup(self.server.close)
+        connection = client.UnixClient(self.path, timeout=1)
+        with self.assertRaises(TimeoutError):
+            connection.request('server/discover')
+        # The poisoned connection is gone, the next call reconnects
+        self.assertIsNone(connection._connection)
+        slow.clear()
+        response = connection.request('server/discover')
+        self.assertEqual(response['result'], {'ok': True})
+        # (The readiness probe of the harness is a connection too;
+        # the requests are what count)
+        self.assertEqual(requests, ['server/discover',
+                                    'server/discover'])
+
+    def test_a_wrong_id_drops_the_connection(self):
+        def act(connection):
+            request = self.server.read_request(connection)
+            if request is None:
+                return
+            answer = {'jsonrpc': '2.0', 'id': request['id'] + 1000,
+                      'result': {'ok': True}}
+            connection.sendall(json.dumps(answer).encode('utf-8')
+                               + b'\n')
+
+        self.server = StubServer(self.path, act)
+        self.addCleanup(self.server.close)
+        connection = client.UnixClient(self.path, timeout=5)
+        with self.assertRaises(ConnectionError) as context:
+            connection.request('server/discover')
+        self.assertIn('out of order', str(context.exception))
+        self.assertIsNone(connection._connection)
+
+    def test_a_notification_before_the_answer_is_skipped(self):
+        def act(connection):
+            request = self.server.read_request(connection)
+            if request is None:
+                return
+            connection.sendall(json.dumps(
+                    {'jsonrpc': '2.0', 'method': 'notifications/x',
+                     'params': {}}).encode('utf-8') + b'\n')
+            self.server.answer(connection, request, {'ok': True})
+
+        self.server = StubServer(self.path, act)
+        self.addCleanup(self.server.close)
+        connection = client.UnixClient(self.path, timeout=5)
+        response = connection.request('server/discover')
+        self.assertEqual(response['result'], {'ok': True})
+
+    def test_a_legacy_reconnect_handshakes_again(self):
+        handshakes = []
+        calls = []
+
+        def act(connection):
+            reader = connection.makefile('rb')
+            while True:
+                line = reader.readline()
+                if not line:
+                    return
+                request = json.loads(line)
+                if request['method'] == 'initialize':
+                    handshakes.append(True)
+                    self.server.answer(connection, request, {
+                            'protocolVersion': '2025-11-25',
+                            'serverInfo': {'name': 'debops',
+                                           'version': '0'}})
+                elif request['method'] == 'tools/list':
+                    calls.append(True)
+                    if len(calls) == 2:
+                        # The second call on the first connection
+                        # answers too slowly
+                        time.sleep(3)
+                        return
+                    self.server.answer(connection, request,
+                                       {'tools': []})
+
+        self.server = StubServer(self.path, act)
+        self.addCleanup(self.server.close)
+        connection = client.UnixClient(self.path, timeout=1,
+                                       legacy=True)
+        connection.request('tools/list')
+        with self.assertRaises(TimeoutError):
+            connection.request('tools/list')
+        connection.request('tools/list')
+        # One handshake per connection: the reconnect re-ran it
+        self.assertEqual(len(handshakes), 2)
+        self.assertEqual(len(calls), 3)

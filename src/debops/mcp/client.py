@@ -158,7 +158,14 @@ class UnixClient(object):
         self.notify('notifications/initialized')
 
     def request_raw(self, method, params=None):
-        """Send one request; return the raw response line (bytes)."""
+        """Send one request; return the raw response line (bytes).
+
+        A slow answer is not a dead server: on a timeout the whole
+        connection is dropped — a timed-out reader can never be read
+        again, and a late answer would poison the next request — so
+        the next call reconnects. Notifications and stale answers
+        are skipped until this request's own response arrives.
+        """
         self._connect()
         # The request metadata rides in 'params._meta', per the spec;
         # the legacy era carries the client state in the handshake.
@@ -171,29 +178,54 @@ class UnixClient(object):
         if self.bearer is not None and not self.legacy:
             request_params['_meta'][_server.TRUST_TOKEN_KEY] = \
                 self.bearer
-        message = {'jsonrpc': '2.0', 'id': self._next_id,
-                   'method': method, 'params': request_params}
+        request_id = self._next_id
         self._next_id += 1
+        message = {'jsonrpc': '2.0', 'id': request_id,
+                   'method': method, 'params': request_params}
         try:
             self._connection.sendall(json.dumps(message).encode('utf-8')
                                      + b'\n')
-            data = rpc.read_message(self._reader)
+            while True:
+                data = rpc.read_message(self._reader)
+                if data is None:
+                    # A clean close: drop the dead connection so the
+                    # next call reconnects
+                    self.close()
+                    raise EOFError('the server closed the connection '
+                                   'without a response')
+                try:
+                    answer = json.loads(data)
+                except ValueError:
+                    # A non-JSON line means the peer is not speaking
+                    # the protocol; the connection is dropped
+                    self.close()
+                    raise ConnectionError('an unreadable answer from '
+                                          'the server; the connection '
+                                          'is dropped')
+                if 'id' not in answer:
+                    # A notification, not this request's response
+                    continue
+                if answer['id'] == request_id:
+                    return data
+                # An answer to another id means the stream is
+                # desynchronized; the connection is dropped
+                self.close()
+                raise ConnectionError(
+                        'an answer out of order (id {}, the request '
+                        'was {}); the connection is dropped'.format(
+                                answer['id'], request_id))
         except socket.timeout:
+            # The reader is poisoned by the timeout; drop the whole
+            # connection — the next call reconnects
+            self.close()
             raise TimeoutError('no response within {} seconds'
                                .format(self._timeout))
         except (ConnectionResetError, BrokenPipeError):
             # The server closed the connection without a response; a
-            # fast close can already break the write. Drop the dead
-            # connection so the next call reconnects
+            # fast close can already break the write
             self.close()
             raise EOFError('the server closed the connection without '
                            'a response')
-        if data is None:
-            # The same drop on a clean close
-            self.close()
-            raise EOFError('the server closed the connection without '
-                           'a response')
-        return data
 
     def request(self, method, params=None):
         """Send one request; return the parsed response."""
@@ -261,6 +293,9 @@ class UnixClient(object):
             self._connection.close()
             self._connection = None
             self._reader = None
+        # A reconnect handshakes again: the legacy daemon expects the
+        # initialize per connection
+        self._handshaken = False
 
     def __enter__(self):
         return self

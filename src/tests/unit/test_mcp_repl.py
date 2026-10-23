@@ -219,6 +219,27 @@ class VerbTestCase(unittest.TestCase):
         self.assertIn('the view is now web', self.err.getvalue())
         self.assertEqual(self.repl.view, 'web')
 
+    def test_a_timeout_says_busy_not_dead(self):
+        # A slow daemon (a run holds the project lock) is not a dead
+        # one; the client dropped the connection, the retry is fresh
+        self.client.request = mock.Mock(
+                side_effect=TimeoutError('no response within 30 '
+                                         'seconds'))
+        with self.assertRaises(ReplError) as context:
+            self.repl.execute('status')
+        self.assertIn('may be busy', str(context.exception))
+        self.assertNotIn('is it running', str(context.exception))
+
+    def test_a_stray_socket_error_is_a_line_not_a_traceback(self):
+        # The timed-out reader's OSError must not kill the session
+        self.client.request = mock.Mock(
+                side_effect=OSError('cannot read from timed out '
+                                    'object'))
+        with self.assertRaises(ReplError) as context:
+            self.repl.execute('status')
+        self.assertIn('the daemon is not answering',
+                      str(context.exception))
+
 
 class ConfirmationTestCase(unittest.TestCase):
 
