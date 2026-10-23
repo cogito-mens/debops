@@ -84,6 +84,17 @@ class PassphraseTestCase(unittest.TestCase):
                                '.gitignore')) as fp:
             self.assertEqual(fp.read(), '*\n')
 
+    def test_an_unwritable_secret_directory_is_not_fatal(self):
+        # A project shared between accounts: the secret directory of
+        # one account's daemon is closed to the other's — serve
+        # without the trust rather than not at all
+        blocker = os.path.join(self.tmpdir,
+                               os.path.dirname(trust.TRUST_PATH))
+        os.makedirs(os.path.dirname(blocker))
+        with open(blocker, 'w') as fp:
+            fp.write('not a directory\n')
+        self.assertFalse(trust.ensure_passphrase(self.project))
+
     def test_the_marker_is_repaired_to_the_invisible_form(self):
         trust.ensure_passphrase(self.project)
         path = os.path.join(self.tmpdir, trust.TRUST_PATH)

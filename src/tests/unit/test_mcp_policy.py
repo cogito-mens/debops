@@ -49,6 +49,13 @@ class ViewRootTestCase(unittest.TestCase):
         policy = McpPolicy(project)
         self.assertIsNone(policy.view_root)
 
+    def test_confinement_is_ambient_never_from_the_project(self):
+        # The knob layers over the policy at the daemon's startup;
+        # nothing in the project configuration carries it
+        project = FakeProject('/srv/projects/example', 'legacy')
+        self.assertFalse(McpPolicy(project).confined)
+        self.assertFalse(McpPolicy.for_documentation().confined)
+
 
 class ConfineTestCase(unittest.TestCase):
 

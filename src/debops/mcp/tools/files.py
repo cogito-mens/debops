@@ -284,7 +284,11 @@ def _authorized_write_path(project, policy, relative, elevated=False):
     """
     if not relative:
         raise ValueError('the "path" argument is required')
-    if elevated:
+    # A confined account knows no elevation: its writes follow the
+    # same rules with or without the trust, and the unelevated rules
+    # keep the project machinery (the configuration, 'ansible.cfg')
+    # out of reach
+    if elevated and not policy.confined:
         relative = relative.lstrip('/')
         if not relative:
             raise ValueError('the "path" argument is required')

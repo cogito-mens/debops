@@ -417,6 +417,11 @@ class Interpreter(object):
         # one — or with --docs — it runs in the documentation mode
         docs_mode = args.docs
         project = None
+        # The ambient confinement of the account, captured before a
+        # project configuration merges in: a project must never
+        # un-confine the account
+        confined = bool(self.config.raw.get('mcp', {}).get(
+                'login', {}).get('confined', False))
         if not docs_mode:
             # ProjectDir chdirs into the directory it probes, even when
             # it then fails; capture the invocation directory first
@@ -532,6 +537,14 @@ class Interpreter(object):
                           '(pid %s)', project.name, project.path,
                           project.view, os.getpid())
             policy = McpPolicy(project)
+            # The ambient confinement layers over the project
+            # configuration (like the command line lock below)
+            policy.confined = confined
+            if confined:
+                logger.notice('The account is confined '
+                              '(mcp.login.confined): no elevated write '
+                              'widening, the policy machinery is '
+                              'read-only')
             # The command line lock layers over the configuration
             policy.view_lock = policy.view_lock or args.view_lock
             if args.view_lock and policy.view_root is None:
@@ -580,14 +593,22 @@ class Interpreter(object):
                 """Re-read the project configuration and rebuild the policy
                 and the tool surface (a pull may have changed them, or a
                 view switch is landing)."""
+                fresh_config = Configuration()
+                # The ambient confinement of the account, read before
+                # the project layer merges in — it is not the
+                # project's to change
+                fresh_confined = bool(fresh_config.raw.get(
+                        'mcp', {}).get('login', {}).get(
+                                'confined', False))
                 fresh = ProjectDir(path=project.path,
-                                   config=Configuration(),
+                                   config=fresh_config,
                                    view=view or server.project.view)
                 fresh_policy = McpPolicy(fresh)
                 # The command line lock re-applies over the reloaded
                 # configuration
                 fresh_policy.view_lock = (fresh_policy.view_lock
                                           or args.view_lock)
+                fresh_policy.confined = fresh_confined
                 # Registration reads the project and the policy from the
                 # server; the registry is built aside and swapped in
                 # whole, so that a concurrent tools/list never sees a
@@ -993,6 +1014,10 @@ class Interpreter(object):
         the session."""
         self._mcp_refuse_if_disabled()
         from .mcp import repl as repl_mod
+        # The ambient confinement of the account, captured before a
+        # project configuration could merge in and lift it
+        confined = bool(self.config.raw.get('mcp', {}).get(
+                'login', {}).get('confined', False))
         project = None
         if not args.docs:
             # A login-shell session (the 'debops-shell' program
@@ -1069,7 +1094,8 @@ class Interpreter(object):
                     project_type=project_type,
                     view_root_rel=view_root_rel,
                     frontend=frontend,
-                    command=getattr(args, 'command', None))
+                    command=getattr(args, 'command', None),
+                    confined=confined)
         sys.exit(code)
 
     def do_mcp_repl(self, args):

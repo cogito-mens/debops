@@ -66,29 +66,36 @@ def ensure_passphrase(project):
     it marks the whole directory out of git — the MCP commit machinery
     included — and carries no self-exception: even the marker stays
     invisible, so 'git status' never mentions the directory. Returns
-    True when a passphrase was generated.
+    True when a passphrase was generated. On a project shared between
+    accounts the directory may belong to another account's daemon;
+    the failure is logged and this daemon serves without the trust.
     """
     directory = os.path.join(project.path, os.path.dirname(TRUST_PATH))
-    os.makedirs(directory, mode=0o700, exist_ok=True)
-    os.chmod(directory, 0o700)
     gitignore = os.path.join(directory, '.gitignore')
-    try:
-        with open(gitignore) as fp:
-            if fp.read() == '*\n':
-                write = False
-            else:
-                write = True
-    except OSError:
-        write = True
-    if write:
-        with open(gitignore, 'w') as fp:
-            fp.write('*\n')
     path = os.path.join(project.path, TRUST_PATH)
-    if os.path.exists(path):
+    try:
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        os.chmod(directory, 0o700)
+        write = True
+        try:
+            with open(gitignore) as fp:
+                write = fp.read() != '*\n'
+        except OSError:
+            pass
+        if write:
+            with open(gitignore, 'w') as fp:
+                fp.write('*\n')
+        if os.path.exists(path):
+            return False
+        with open(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600),
+                  'w') as fp:
+            fp.write(word_passphrase() + '\n')
+    except OSError as errmsg:
+        # Serve without the trust rather than not at all
+        logger.notice('The trust passphrase cannot be created here '
+                      '(%s); the trust prompts stay unavailable',
+                      errmsg)
         return False
-    with open(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600),
-              'w') as fp:
-        fp.write(word_passphrase() + '\n')
     logger.notice('The trust passphrase of this project was generated: '
                   '%s (unreadable to the MCP tools and invisible to '
                   'git; replace it to rotate)', path)

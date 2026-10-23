@@ -140,6 +140,7 @@ class McpPolicy(object):
         policy = cls.__new__(cls)
         policy.project = None
         policy.view_root = None
+        policy.confined = False
         policy.allow = []
         policy.deny = []
         policy.read_deny = []
@@ -173,6 +174,11 @@ class McpPolicy(object):
 
     def __init__(self, project):
         self.project = project
+        # The confinement of the account (the ambient
+        # 'mcp.login.confined') is layered over the project
+        # configuration by the daemon at startup — a project must
+        # never un-confine itself, so the knob is not read here
+        self.confined = False
         # Mirror the view root computation in AnsibleInventory: in legacy
         # projects the inventory lives in '<project>/ansible', in modern
         # projects each view has its own root under 'ansible/views'

@@ -2910,6 +2910,48 @@ def test_command_form_and_login_shell(mcp_env, project_dir, tmp_path,
         server.wait(timeout=10)
 
 
+def test_the_confined_login_shell(mcp_env, project_dir, tmp_path,
+                                  debops_source_dir):
+    """The ambient 'mcp.login.confined' knob closes the escape
+    hatches of the account's sessions — the editor verb — on the
+    front end and the daemon alike."""
+    socket_path = str(tmp_path / "confined.sock")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+            [debops_source_dir,
+             env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    env.update(mcp_env)
+    server = _serve_daemon(
+            [sys.executable, "-m", "debops", "mcp", "serve",
+             "--socket", socket_path], project_dir, socket_path, env)
+    try:
+        # Unconfined: the refusal is the terminal check, not the
+        # confinement
+        result = subprocess.run(
+                [sys.executable, "-m", "debops", "mcp", "shell",
+                 "--socket", socket_path, "-c", "edit inventory"],
+                cwd=str(project_dir), env=env, capture_output=True,
+                text=True, timeout=60)
+        assert result.returncode == 1
+        assert "edit needs a terminal" in result.stderr
+
+        # The ambient knob confines the account
+        config_dir = tmp_path / "config" / "debops" / "conf.d"
+        config_dir.mkdir(parents=True)
+        (config_dir / "00-login.toml").write_text(
+                "[mcp.login]\nconfined = true\n")
+        result = subprocess.run(
+                [sys.executable, "-m", "debops", "mcp", "shell",
+                 "--socket", socket_path, "-c", "edit inventory"],
+                cwd=str(project_dir), env=env, capture_output=True,
+                text=True, timeout=60)
+        assert result.returncode == 1
+        assert "a confined session has no editor" in result.stderr
+    finally:
+        server.terminate()
+        server.wait(timeout=10)
+
+
 def test_repl_navigates_the_project(run_debops, mcp_env, project_dir,
                                     tmp_path, debops_source_dir):
     """The working-directory verbs against a live daemon: pwd, cd, ls,

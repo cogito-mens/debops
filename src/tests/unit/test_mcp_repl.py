@@ -112,6 +112,14 @@ class VerbTestCase(unittest.TestCase):
         self.assertIn('error: denied', self.err.getvalue())
         self.assertTrue(self.repl.had_error)
 
+    def test_edit_refuses_in_a_confined_session(self):
+        # The editor's own escapes would leave the confinement
+        self.repl.confined = True
+        with self.assertRaises(repl.ReplError) as context:
+            self.repl.execute('edit playbooks/site.yml')
+        self.assertIn('a confined session has no editor',
+                      str(context.exception))
+
     def test_an_unknown_verb_is_a_clean_error(self):
         with self.assertRaises(ReplError) as context:
             self.repl.execute('frobnicate')

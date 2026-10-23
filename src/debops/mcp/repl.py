@@ -282,13 +282,16 @@ class Repl(object):
     def __init__(self, client, project_name=None, view=None,
                  out=sys.stdout, err=sys.stderr, interactive=False,
                  project_path=None, project_type=None,
-                 view_root_rel=None):
+                 view_root_rel=None, confined=False):
         self.client = client
         self.project_name = project_name
         self.view = view
         self._out = out
         self._err = err
         self.interactive = interactive
+        # The ambient confinement of the account: the escape hatches
+        # of the session (the editor) stay closed
+        self.confined = confined
         self.had_error = False
         self._completion_cache = {}
         self.project_path = project_path
@@ -680,6 +683,10 @@ class Repl(object):
     def cmd_edit(self, args):
         """Open a project file in $VISUAL/$EDITOR and write the
         changes back through the tools (committed by the server)."""
+        if self.confined:
+            # The editor's own escapes (':!sh' and friends) would
+            # leave the confinement of the account
+            raise ReplError('a confined session has no editor')
         if len(args) != 1:
             raise ReplError('usage: edit <path>')
         if not self.interactive:
@@ -1491,14 +1498,15 @@ def _execute_line(repl, line):
 
 def run(client, project_name=None, view=None, interactive=None,
         project_path=None, project_type=None, view_root_rel=None,
-        frontend=None, command=None):
+        frontend=None, command=None, confined=False):
     """Build and run an interpreter session against the connected
     daemon. 'frontend' selects the chrome: None for the plain
     interpreter, 'shell' for the status-bar interface, 'console' for
     the fullscreen cockpit (a pipe stays a pipe either way).
     'command' is the one-shot '-c' form: the commands run
     non-interactively and the process exits — how ssh drives a login
-    shell."""
+    shell. 'confined' marks the ambient confinement of the account:
+    the session keeps its escape hatches (the editor) closed."""
     if command is not None:
         interactive = False
         frontend = None
@@ -1517,7 +1525,8 @@ def run(client, project_name=None, view=None, interactive=None,
                             view=view, interactive=interactive,
                             project_path=project_path,
                             project_type=project_type,
-                            view_root_rel=view_root_rel)
+                            view_root_rel=view_root_rel,
+                            confined=confined)
     if runner is not None:
         return runner(session)
     if interactive:

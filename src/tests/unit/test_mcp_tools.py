@@ -625,6 +625,27 @@ class ViewWriteTestCase(unittest.TestCase):
         self.assertFalse(os.path.exists(
                 os.path.join(self.tmpdir, 'notes.txt')))
 
+    # -- the confined account: the trust buys no write scope --------
+
+    def test_confined_elevated_write_keeps_the_unelevated_rules(self):
+        self.policy.confined = True
+        # The project machinery stays read-only even with the trust
+        response = self.write('/.debops/conf.d/custom.toml',
+                              content='[project]\n',
+                              context=self.ELEVATED)
+        self.assertTrue(response['isError'])
+        self.assertIn('only the MCP content directories',
+                      response['content'][0]['text'])
+        response = self.write('/ansible.cfg', content='[defaults]\n',
+                              context=self.ELEVATED)
+        self.assertTrue(response['isError'])
+        self.assertIn('denied by policy',
+                      response['content'][0]['text'])
+        # And the view's own allowlist still applies
+        response = self.write('resources/scripts/x.sh',
+                              context=self.ELEVATED)
+        self.assertIn('created', self.result_text(response))
+
     # -- project.mkdir ---------------------------------------------------
 
     def mkdir(self, path, context=None):
