@@ -2839,6 +2839,82 @@ def test_repl_over_a_pipe_against_a_daemon(run_debops, mcp_env,
         server.wait(timeout=10)
 
 
+def test_repl_navigates_the_project(run_debops, mcp_env, project_dir,
+                                    tmp_path, debops_source_dir):
+    """The working-directory verbs against a live daemon: pwd, cd, ls,
+    mkdir, cp, mv, rm — with the view edge enforced."""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+            [debops_source_dir,
+             env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    env.update(mcp_env)
+    env.update(GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="t@example.org",
+               GIT_COMMITTER_NAME="Test",
+               GIT_COMMITTER_EMAIL="t@example.org")
+    subprocess.run(["git", "init", "-q"], cwd=str(project_dir), env=env,
+                   check=True)
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text("[all]\nlocalhost\n")
+
+    socket_path = str(tmp_path / "nav.sock")
+    server = _serve_daemon(
+            [sys.executable, "-m", "debops", "mcp", "serve",
+             "--socket", socket_path], project_dir, socket_path, env)
+    try:
+        result = subprocess.run(
+                [sys.executable, "-m", "debops", "mcp", "repl",
+                 "--socket", socket_path],
+                cwd=str(project_dir), env=env,
+                input=("pwd\n"
+                       "cd inventory\n"
+                       "pwd\n"
+                       "ls\n"
+                       "cd ..\n"
+                       "mkdir resources/scripts\n"
+                       "cp inventory/hosts resources/scripts/copy.yml\n"
+                       "mv resources/scripts/copy.yml "
+                       "resources/moved.yml\n"
+                       "rm resources/moved.yml\n"
+                       "exit\n"),
+                capture_output=True, text=True, timeout=60)
+        assert result.returncode == 0, result.stderr
+        lines = result.stdout
+        # pwd answers the project-rooted path of the working directory
+        assert "/ansible\n" in lines
+        assert "/ansible/inventory\n" in lines
+        # ls listed the inventory, one level
+        assert "- hosts" in lines
+        assert "created: resources/scripts" in lines
+        assert "moved: resources/scripts/copy.yml -> " \
+               "resources/moved.yml" in lines
+        assert "deleted: resources/moved.yml" in lines
+        # The moves landed on disk and in the git record
+        assert not (project_dir / "ansible" / "resources" /
+                    "moved.yml").exists()
+        assert not (project_dir / "ansible" / "resources" /
+                    "scripts" / "copy.yml").exists()
+        log = subprocess.run(["git", "log", "--format=%s"],
+                             cwd=str(project_dir), env=env,
+                             capture_output=True, text=True,
+                             check=True)
+        assert "DebOps MCP: file.move resources/scripts/copy.yml -> " \
+               "resources/moved.yml" in log.stdout
+
+        # The view edge refuses an unelevated escape
+        result = subprocess.run(
+                [sys.executable, "-m", "debops", "mcp", "repl",
+                 "--socket", socket_path],
+                cwd=str(project_dir), env=env,
+                input="cd ..\n", capture_output=True, text=True,
+                timeout=60)
+        assert result.returncode == 1
+        assert "the view's edge; elevate to go further" in result.stderr
+    finally:
+        server.terminate()
+        server.wait(timeout=10)
+
+
 def test_repl_runs_a_check_through_the_daemon(run_debops, mcp_env,
                                               project_dir, tmp_path,
                                               debops_source_dir):

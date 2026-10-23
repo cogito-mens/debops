@@ -216,6 +216,9 @@ TOOL_OUTPUT_SCHEMAS = {
         'path': {'type': 'string'},
         'state': {'type': 'string', 'enum': ['created', 'unchanged']}},
         'required': ['path', 'state']},
+    'project.read': {'type': 'object', 'properties': {
+        'path': {'type': 'string'}, 'content': {'type': 'string'}},
+        'required': ['path', 'content']},
     'file.move': {'type': 'object', 'properties': {
         'source': {'type': 'string'}, 'target': {'type': 'string'}},
         'required': ['source', 'target']},

@@ -131,7 +131,9 @@ def tool_project_read(project, policy, arguments):
 
     if content and not content.endswith('\n'):
         content += '\n'
-    return text_result('# {}\n\n```\n{}```'.format(relative, content))
+    return text_result('# {}\n\n```\n{}```'.format(relative, content),
+                       structured={'path': relative,
+                                   'content': content})
 
 
 def tool_project_list(project, policy, arguments):

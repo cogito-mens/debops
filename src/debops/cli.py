@@ -1020,6 +1020,20 @@ class Interpreter(object):
         with client:
             if not args.legacy:
                 repl_mod.bootstrap_trust(client, project)
+            # The view root relative to the project directory scopes
+            # the interpreter's navigation; None when no view is
+            # registered (the scope is the project directory then)
+            view_root_rel = None
+            project_type = None
+            if project is not None:
+                project_type = project.project_type
+                if project.view:
+                    if project_type == 'legacy':
+                        view_root_rel = 'ansible'
+                    elif project.view in project.config.raw.get(
+                            'views', {}):
+                        view_root_rel = os.path.join(
+                                'ansible', 'views', project.view)
             code = repl_mod.run(
                     client,
                     project_name=(project.name if project is not None
@@ -1028,7 +1042,9 @@ class Interpreter(object):
                           else None),
                     interactive=interactive,
                     project_path=(project.path if project is not None
-                                  else None))
+                                  else None),
+                    project_type=project_type,
+                    view_root_rel=view_root_rel)
         sys.exit(code)
 
     def do_mcp_configure(self, args):

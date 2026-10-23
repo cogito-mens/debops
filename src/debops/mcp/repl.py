@@ -261,12 +261,25 @@ def execution_arguments(tokens):
     return arguments
 
 
+def _collapse(path):
+    """The prompt form of a path: the parents collapse to their
+    first character, the last component stays whole — the inventory
+    and resources names run deep
+    ('inventory/group_vars/all' shows as 'i/g/all/')."""
+    parts = [part for part in path.split('/') if part]
+    if not parts:
+        return ''
+    return '/'.join([part[:1] for part in parts[:-1]]
+                    + [parts[-1]]) + '/'
+
+
 class Repl(object):
     """One interpreter session against a daemon."""
 
     def __init__(self, client, project_name=None, view=None,
                  out=sys.stdout, err=sys.stderr, interactive=False,
-                 project_path=None):
+                 project_path=None, project_type=None,
+                 view_root_rel=None):
         self.client = client
         self.project_name = project_name
         self.view = view
@@ -276,6 +289,15 @@ class Repl(object):
         self.had_error = False
         self._completion_cache = {}
         self.project_path = project_path
+        self.project_type = project_type
+        # The view root relative to the project directory ('ansible'
+        # in a legacy project, 'ansible/views/<view>' in a modern
+        # one); None when there is no view to be scoped to
+        self._view_root_rel = view_root_rel
+        # The working directory, always relative to the project
+        # directory; '' is the project directory itself
+        self.cwd = view_root_rel or ''
+        self._previous_cwd = None
         self.elevated = False
 
     @property
@@ -283,7 +305,21 @@ class Repl(object):
         name = self.project_name or 'docs'
         view = ':{}'.format(self.view) if self.view else ''
         marker = '!' if self.elevated else ''
-        return 'debops{} {}{}> '.format(marker, name, view)
+        place = ''
+        root = self._view_root_rel
+        if self.view and root is not None:
+            if self.cwd == root:
+                place = ''
+            elif self.cwd.startswith(root + '/'):
+                # Inside the view the parents collapse to initials;
+                # the last component stays whole
+                place = '/' + _collapse(self.cwd[len(root) + 1:])
+            else:
+                # Above the view the path is project-rooted and whole
+                place = ':/' + self.cwd if self.cwd else ':/'
+        elif self.cwd:
+            place = ':/' + self.cwd
+        return 'debops{} {}{}{}> '.format(marker, name, view, place)
 
     # -- the wire -------------------------------------------------
 
@@ -412,8 +448,16 @@ class Repl(object):
             raise ReplError('usage: view <name>')
         result = self._call_tool('view.switch', {'view': args[0]})
         if not result.get('isError'):
-            # The prompt and the completions follow the view
+            # The prompt, the working directory and the completions
+            # follow the view
             self.view = args[0]
+            if self.project_type == 'legacy':
+                self._view_root_rel = 'ansible'
+            elif self.project_type is not None:
+                self._view_root_rel = os.path.join(
+                        'ansible', 'views', args[0])
+            self.cwd = self._view_root_rel or ''
+            self._previous_cwd = None
             self._completion_cache.clear()
         return result
 
@@ -453,7 +497,17 @@ class Repl(object):
         if self.client.bearer is not None and not self.client.legacy:
             self._request('server/drop', {})
         self.elevated = False
-        print('dropped; the gates ask again', file=self._err)
+        root = self._view_root_rel
+        if root is not None and not (self.cwd == root
+                                     or self.cwd.startswith(
+                                             root + '/')):
+            # The working directory is out of the scope again
+            self.cwd = root
+            self._previous_cwd = None
+            print('dropped; the gates ask again, and the working '
+                  'directory is the view root', file=self._err)
+        else:
+            print('dropped; the gates ask again', file=self._err)
 
     def cmd_watch(self, args):
         """Stream the activity of the server's clients until
@@ -487,7 +541,8 @@ class Repl(object):
             raise ReplError('usage: edit <path>')
         if not self.interactive:
             raise ReplError('edit needs a terminal')
-        path = args[0]
+        path = self._resolve(args[0])
+        write_path = self._resolve_write(args[0])
         result = self._call_tool('project.read', {'path': path})
         current = ''
         if result.get('isError'):
@@ -500,8 +555,13 @@ class Repl(object):
                 self._render(result)
                 return
         else:
-            current = ''.join(block.get('text', '') for block in
-                              result.get('content', []))
+            current = (result.get('structuredContent') or {}).get(
+                    'content')
+            if current is None:
+                # The text rendering is wrapped for display, not for
+                # editing; an older daemon has no structured answer
+                raise ReplError('the daemon does not answer '
+                                'structured reads; edit needs them')
         fd, tmp = tempfile.mkstemp(prefix='debops-edit-',
                                    suffix='-' + os.path.basename(path))
         try:
@@ -524,7 +584,7 @@ class Repl(object):
             print('unchanged: ' + path, file=self._err)
             return
         result = self._call_tool('file.write',
-                                 {'path': path, 'content': new})
+                                 {'path': write_path, 'content': new})
         self._render(result)
 
     def _passphrase(self):
@@ -682,13 +742,15 @@ class Repl(object):
     def cmd_files(self, args):
         if len(args) > 1:
             raise ReplError('usage: files [directory]')
-        arguments = {'path': args[0]} if args else {}
+        arguments = ({'path': self._resolve(args[0])} if args
+                     else {})
         return self._call_tool('project.files', arguments)
 
     def cmd_read(self, args):
         if len(args) != 1:
             raise ReplError('usage: read <path>')
-        return self._call_tool('project.read', {'path': args[0]})
+        return self._call_tool('project.read',
+                               {'path': self._resolve(args[0])})
 
     def cmd_pull(self, args):
         if args:
@@ -715,6 +777,137 @@ class Repl(object):
             raise ReplError('usage: unset <NAME>')
         return self._call_tool('environment.unset', {'name': args[0]})
 
+    # -- the navigation -----------------------------------------------
+
+    def _resolve(self, argument):
+        """Resolve a navigation path against the current directory.
+
+        Returns the path relative to the project directory, without a
+        leading slash ('' is the project directory itself). A leading
+        '/' anchors at the project directory, the way the tools spell
+        it. The scope: an unelevated session stays inside the view,
+        an elevated one roams the project directory; nothing leaves
+        the project.
+        """
+        if argument.startswith('/'):
+            components = []
+        else:
+            components = [part for part in self.cwd.split('/') if part]
+        for part in argument.split('/'):
+            if part in ('', '.'):
+                continue
+            if part == '..':
+                if not components:
+                    raise ReplError("the project's edge")
+                components.pop()
+            else:
+                components.append(part)
+        resolved = '/'.join(components)
+        root = self._view_root_rel
+        if not self.elevated and root is not None:
+            if resolved != root and not resolved.startswith(root + '/'):
+                raise ReplError("the view's edge; elevate to go "
+                                "further")
+        return resolved
+
+    def _resolve_write(self, argument):
+        """Resolve for a write tool: the view-relative spelling inside
+        the view (the write tools anchor there), the project-rooted
+        '/...' spelling above it."""
+        resolved = self._resolve(argument)
+        root = self._view_root_rel
+        if root is not None and (resolved == root
+                                 or resolved.startswith(root + '/')):
+            view_relative = resolved[len(root):].lstrip('/')
+            if not view_relative:
+                raise ReplError('the path names the view directory '
+                                'itself')
+            return view_relative
+        if not resolved:
+            raise ReplError('the path names the project directory '
+                            'itself')
+        return '/' + resolved
+
+    def cmd_pwd(self, args):
+        """Print the current directory (project-rooted, paste-able)."""
+        if args:
+            raise ReplError('pwd takes no arguments')
+        print('/' + self.cwd if self.cwd else '/', file=self._out)
+
+    def cmd_cd(self, args):
+        """Change the current directory; bare 'cd' returns to the view
+        root, 'cd -' to the previous directory."""
+        if len(args) > 1:
+            raise ReplError('usage: cd [directory]')
+        if not args:
+            target = self._view_root_rel or ''
+        elif args[0] == '-':
+            if self._previous_cwd is None:
+                raise ReplError('no previous directory')
+            target = self._previous_cwd
+        else:
+            target = self._resolve(args[0])
+        result = self._call_tool(
+                'project.list', {'path': target} if target else {})
+        if result.get('isError'):
+            return result
+        self._previous_cwd = self.cwd
+        self.cwd = target
+
+    def cmd_ls(self, args):
+        """List the current directory (or the named one), one level."""
+        if len(args) > 1:
+            raise ReplError('usage: ls [path]')
+        target = self._resolve(args[0]) if args else self.cwd
+        return self._call_tool(
+                'project.list', {'path': target} if target else {})
+
+    def cmd_mkdir(self, args):
+        """Create a directory, with parents as needed."""
+        if len(args) != 1:
+            raise ReplError('usage: mkdir <directory>')
+        return self._call_tool('project.mkdir',
+                               {'path': self._resolve_write(args[0])})
+
+    def cmd_rm(self, args):
+        """Delete a file (a directory is refused)."""
+        if len(args) != 1:
+            raise ReplError('usage: rm <path>')
+        return self._call_tool('file.delete',
+                               {'path': self._resolve_write(args[0])})
+
+    def cmd_mv(self, args):
+        """Rename a file; the target must not exist. One commit."""
+        if len(args) != 2:
+            raise ReplError('usage: mv <source> <target>')
+        return self._call_tool('file.move', {
+                'source': self._resolve_write(args[0]),
+                'target': self._resolve_write(args[1])})
+
+    def cmd_cp(self, args):
+        """Copy a file: read the source, write the target (the write
+        commits). A target ending in '/' names a directory."""
+        if len(args) != 2:
+            raise ReplError('usage: cp <source> <target>')
+        target_arg = args[1]
+        if target_arg.endswith('/'):
+            target_arg += os.path.basename(args[0].rstrip('/'))
+        source = self._resolve(args[0])
+        target = self._resolve_write(target_arg)
+        if not source:
+            raise ReplError('the source names the project directory '
+                            'itself')
+        result = self._call_tool('project.read', {'path': source})
+        if result.get('isError'):
+            return result
+        content = (result.get('structuredContent') or {}).get('content')
+        if content is None:
+            # An older daemon answers the text rendering only
+            raise ReplError('the daemon does not answer structured '
+                            'reads; cp needs them')
+        return self._call_tool('file.write',
+                               {'path': target, 'content': content})
+
     # -- the loop ---------------------------------------------------
 
     def verbs(self):
@@ -740,6 +933,14 @@ class Repl(object):
             raise ReplError("unknown verb: {!r} ('help' lists them)"
                             .format(verb))
         result = handler(args)
+        if verb in ('edit', 'mkdir', 'rm', 'mv', 'cp'):
+            # The directory listings the completion serves may have
+            # changed
+            self._completion_cache = {
+                    key: value for key, value
+                    in self._completion_cache.items()
+                    if not (isinstance(key, tuple)
+                            and key[0] == 'list')}
         # A verb which printed its own answer returns None
         if result is not None:
             self._render(result)
@@ -759,8 +960,13 @@ class Repl(object):
         'view': 'views',
         'role': 'roles', 'defaults': 'roles', 'vars': 'roles',
         'tasks': 'roles', 'handlers': 'roles',
-        'read': 'files', 'edit': 'files',
     }
+
+    # The verbs which complete paths relative to the current
+    # directory ('cd' completes directories only)
+    _PATH_VERBS = frozenset((
+            'cd', 'ls', 'read', 'edit', 'mkdir', 'rm', 'cp', 'mv',
+    ))
 
     def complete_candidates(self, verb):
         """The completion candidates of a verb, cached per view."""
@@ -795,14 +1001,49 @@ class Repl(object):
                 for entry in result.get('structuredContent') or []:
                     names.extend(entry.get('roles', []))
                 return sorted(set(names))
-            if verb == 'read':
-                result = self._request('tools/call',
-                                       {'name': 'project.files',
-                                        'arguments': {}})
-                return list(result.get('structuredContent') or [])
         except (ReplError, ConnectionError, EOFError, OSError):
             return []
         return []
+
+    def path_candidates(self, verb, fragment):
+        """The path completion of a navigation verb, relative to the
+        current directory; the listing comes from the server and is
+        cached per directory."""
+        dirs_only = verb == 'cd'
+        if '/' in fragment:
+            base, stub = fragment.rsplit('/', 1)
+            base += '/'
+        else:
+            base, stub = '', fragment
+        try:
+            directory = self._resolve(base or '.')
+        except ReplError:
+            return []
+        key = ('list', directory)
+        if key not in self._completion_cache:
+            try:
+                result = self._request(
+                        'tools/call',
+                        {'name': 'project.list',
+                         'arguments': ({'path': directory} if directory
+                                       else {})})
+            except (ReplError, ConnectionError, EOFError, OSError):
+                result = {}
+            if result.get('isError'):
+                entries = []
+            else:
+                entries = result.get('structuredContent') or []
+            self._completion_cache[key] = entries
+        candidates = []
+        for entry in self._completion_cache[key]:
+            name = entry.get('name', '')
+            if not name.startswith(stub):
+                continue
+            if dirs_only and entry.get('type') != 'dir':
+                continue
+            suffix = '/' if entry.get('type') == 'dir' else ''
+            candidates.append(base + name + suffix)
+        return candidates
 
 
 HELP = {
@@ -826,8 +1067,18 @@ HELP = {
     'playbook <target> [--full]': 'describe a playbook',
     'doc <plugin> [opts]': 'ansible-doc (opts: --type, --list, '
                            '--snippet, --json)',
-    'files [directory]': 'the project files',
+    'files [directory]': 'the project files, recursively (the whole '
+                         'tree without one)',
     'read <path>': 'read a project file',
+    'pwd': 'the current directory',
+    'cd [directory | -]': 'change the current directory (bare: the '
+                          'view root)',
+    'ls [path]': 'list the directory, one level',
+    'mkdir <directory>': 'create a directory, with parents',
+    'rm <path>': 'delete a file',
+    'mv <source> <target>': 'rename a file (one commit)',
+    'cp <source> <target>': 'copy a file (a target ending in / names '
+                            'a directory)',
     'pull / push': 'sync the project with its remote',
     'environment [filter]': 'the environment variables',
     'set <NAME> <value>': 'set an environment variable',
@@ -878,6 +1129,8 @@ class _Completer(_PtCompleter):
             candidates = sorted(EXECUTION_OPTIONS)
         elif words[0] == 'doc' and word.startswith('--'):
             candidates = ['--type', '--list', '--snippet', '--json']
+        elif words[0] in Repl._PATH_VERBS:
+            candidates = self._repl.path_candidates(words[0], word)
         else:
             candidates = self._repl.complete_candidates(words[0])
         for candidate in candidates:
@@ -1023,13 +1276,15 @@ def _execute_line(repl, line):
 
 
 def run(client, project_name=None, view=None, interactive=None,
-        project_path=None):
+        project_path=None, project_type=None, view_root_rel=None):
     """Build and run an interpreter session against the connected
     daemon."""
     if interactive is None:
         interactive = sys.stdin.isatty()
     session = Repl(client, project_name=project_name, view=view,
-                   interactive=interactive, project_path=project_path)
+                   interactive=interactive, project_path=project_path,
+                   project_type=project_type,
+                   view_root_rel=view_root_rel)
     if interactive:
         return run_interactive(session)
     return run_pipe(session)

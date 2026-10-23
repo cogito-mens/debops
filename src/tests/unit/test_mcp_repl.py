@@ -649,5 +649,341 @@ class CompletionTestCase(unittest.TestCase):
         self.assertTrue(pt_session.called)
 
 
+class NavigationTestCase(unittest.TestCase):
+    """The working-directory navigation: the resolution, the verbs,
+    the prompt, the completion."""
+
+    def make_session(self, project_type='legacy',
+                     view_root_rel='ansible', elevated=False):
+        client = FakeClient()
+        client.legacy = False
+        client.bearer = None
+        out, err = io.StringIO(), io.StringIO()
+        session = Repl(client, project_name='project', view='system',
+                       out=out, err=err, project_type=project_type,
+                       view_root_rel=view_root_rel)
+        session.elevated = elevated
+        return session, client, out, err
+
+    def queue_list(self, client, *entries):
+        client.queue('tools/call', {
+                'resultType': 'complete', 'isError': False,
+                'content': [{'type': 'text', 'text': 'listing'}],
+                'structuredContent': [
+                        {'name': name, 'type': kind}
+                        for name, kind in entries]})
+
+    def test_the_prompt_collapses_the_parents(self):
+        session, _client, _out, _err = self.make_session()
+        session.cwd = 'ansible/inventory/group_vars/all'
+        self.assertEqual(session.prompt,
+                         'debops project:system/i/g/all/> ')
+
+    def test_the_prompt_at_the_view_root_is_unchanged(self):
+        session, _client, _out, _err = self.make_session()
+        self.assertEqual(session.prompt, 'debops project:system> ')
+
+    def test_the_prompt_above_the_view_keeps_the_view(self):
+        # The execution verbs keep targeting the view; the path goes
+        # project-rooted
+        session, _client, _out, _err = self.make_session(
+                elevated=True)
+        session.cwd = '.debops/conf.d'
+        self.assertEqual(session.prompt,
+                         'debops! project:system:/.debops/conf.d> ')
+        session.cwd = ''
+        self.assertEqual(session.prompt, 'debops! project:system:/> ')
+
+    def test_pwd_prints_the_project_rooted_path(self):
+        session, _client, out, _err = self.make_session()
+        session.cwd = 'ansible/inventory/group_vars/all'
+        session.execute('pwd')
+        self.assertEqual(out.getvalue(),
+                         '/ansible/inventory/group_vars/all\n')
+
+    def test_cd_tracks_the_directory(self):
+        session, client, _out, _err = self.make_session()
+        self.queue_list(client, ('group_vars', 'dir'))
+        session.execute('cd inventory')
+        self.assertEqual(session.cwd, 'ansible/inventory')
+        self.assertEqual(client.calls[0],
+                         ('tools/call',
+                          {'name': 'project.list',
+                           'arguments': {'path': 'ansible/inventory'}}))
+
+    def test_cd_validates_the_target(self):
+        session, client, _out, _err = self.make_session()
+        client.queue('tools/call', {
+                'resultType': 'complete', 'isError': True,
+                'content': [{'type': 'text',
+                             'text': 'directory not found'}]})
+        session.execute('cd nowhere')
+        self.assertEqual(session.cwd, 'ansible')
+        self.assertTrue(session.had_error)
+
+    def test_cd_bare_returns_to_the_view_root(self):
+        session, client, _out, _err = self.make_session()
+        self.queue_list(client)
+        session.execute('cd inventory')
+        self.queue_list(client)
+        session.execute('cd')
+        self.assertEqual(session.cwd, 'ansible')
+
+    def test_cd_dash_goes_back(self):
+        session, client, _out, _err = self.make_session()
+        self.queue_list(client)
+        session.execute('cd inventory')
+        self.queue_list(client)
+        session.execute('cd -')
+        self.assertEqual(session.cwd, 'ansible')
+        self.queue_list(client)
+        session.execute('cd -')
+        self.assertEqual(session.cwd, 'ansible/inventory')
+
+    def test_cd_dash_without_a_previous_is_a_clean_error(self):
+        session, _client, _out, _err = self.make_session()
+        with self.assertRaises(ReplError) as context:
+            session.execute('cd -')
+        self.assertIn('no previous directory', str(context.exception))
+
+    def test_the_view_edge_refuses_unelevated(self):
+        session, _client, _out, _err = self.make_session()
+        with self.assertRaises(ReplError) as context:
+            session.execute('cd ..')
+        self.assertIn("the view's edge; elevate to go further",
+                      str(context.exception))
+
+    def test_the_elevated_roam_and_the_project_edge(self):
+        session, client, _out, _err = self.make_session(
+                elevated=True)
+        self.queue_list(client)
+        session.execute('cd ..')
+        self.assertEqual(session.cwd, '')
+        with self.assertRaises(ReplError) as context:
+            session.execute('cd ..')
+        self.assertIn("the project's edge", str(context.exception))
+
+    def test_the_elevated_absolute_anchor(self):
+        session, client, _out, _err = self.make_session(
+                elevated=True)
+        self.queue_list(client, ('conf.d', 'dir'))
+        session.execute('cd /.debops')
+        self.assertEqual(session.cwd, '.debops')
+
+    def test_the_absolute_anchor_unelevated_is_the_edge(self):
+        session, _client, _out, _err = self.make_session()
+        with self.assertRaises(ReplError) as context:
+            session.execute('ls /.debops')
+        self.assertIn("the view's edge", str(context.exception))
+
+    def test_ls_defaults_to_the_cwd(self):
+        session, client, _out, _err = self.make_session()
+        session.cwd = 'ansible/inventory'
+        self.queue_list(client, ('hosts', 'file'))
+        session.execute('ls')
+        self.assertEqual(client.calls[0][1],
+                         {'name': 'project.list',
+                          'arguments': {'path': 'ansible/inventory'}})
+
+    def test_ls_at_the_project_root_omits_the_path(self):
+        session, client, _out, _err = self.make_session(
+                elevated=True)
+        session.cwd = ''
+        self.queue_list(client)
+        session.execute('ls')
+        self.assertEqual(client.calls[0][1],
+                         {'name': 'project.list', 'arguments': {}})
+
+    def test_read_and_files_resolve_against_the_cwd(self):
+        session, client, _out, _err = self.make_session()
+        session.cwd = 'ansible/inventory'
+        client.queue('tools/call',
+                     {'resultType': 'complete', 'isError': False,
+                      'content': []},
+                     {'resultType': 'complete', 'isError': False,
+                      'content': []})
+        session.execute('read hosts')
+        self.assertEqual(
+                client.calls[0][1],
+                {'name': 'project.read',
+                 'arguments': {'path': 'ansible/inventory/hosts'}})
+        session.execute('files group_vars')
+        self.assertEqual(
+                client.calls[1][1],
+                {'name': 'project.files',
+                 'arguments': {'path': 'ansible/inventory/group_vars'}})
+
+    def test_mkdir_rm_mv_spell_the_view_relative_path(self):
+        session, client, _out, _err = self.make_session()
+        client.queue('tools/call',
+                     {'resultType': 'complete', 'isError': False,
+                      'content': []},
+                     {'resultType': 'complete', 'isError': False,
+                      'content': []},
+                     {'resultType': 'complete', 'isError': False,
+                      'content': []})
+        session.execute('mkdir resources/scripts')
+        self.assertEqual(
+                client.calls[0][1],
+                {'name': 'project.mkdir',
+                 'arguments': {'path': 'resources/scripts'}})
+        session.execute('rm playbooks/deploy.yml')
+        self.assertEqual(
+                client.calls[1][1],
+                {'name': 'file.delete',
+                 'arguments': {'path': 'playbooks/deploy.yml'}})
+        session.execute('mv playbooks/a.yml playbooks/b.yml')
+        self.assertEqual(
+                client.calls[2][1],
+                {'name': 'file.move',
+                 'arguments': {'source': 'playbooks/a.yml',
+                               'target': 'playbooks/b.yml'}})
+
+    def test_the_elevated_write_spelling_is_project_rooted(self):
+        session, client, _out, _err = self.make_session(
+                elevated=True)
+        session.cwd = ''
+        client.queue('tools/call', {'resultType': 'complete',
+                                    'isError': False, 'content': []})
+        session.execute('mkdir .debops/conf.d')
+        self.assertEqual(
+                client.calls[0][1],
+                {'name': 'project.mkdir',
+                 'arguments': {'path': '/.debops/conf.d'}})
+
+    def test_cp_reads_then_writes(self):
+        session, client, _out, _err = self.make_session()
+        session.cwd = 'ansible/playbooks'
+        client.queue('tools/call',
+                     {'resultType': 'complete', 'isError': False,
+                      'content': [{'type': 'text', 'text': '# x'}],
+                      'structuredContent': {
+                              'path': 'ansible/playbooks/a.yml',
+                              'content': '---\n[]\n'}},
+                     {'resultType': 'complete', 'isError': False,
+                      'content': []})
+        session.execute('cp a.yml b.yml')
+        self.assertEqual(
+                client.calls[0][1],
+                {'name': 'project.read',
+                 'arguments': {'path': 'ansible/playbooks/a.yml'}})
+        self.assertEqual(
+                client.calls[1][1],
+                {'name': 'file.write',
+                 'arguments': {'path': 'playbooks/b.yml',
+                               'content': '---\n[]\n'}})
+
+    def test_cp_a_directory_target_takes_the_basename(self):
+        session, client, _out, _err = self.make_session()
+        client.queue('tools/call', {
+                'resultType': 'complete', 'isError': False,
+                'content': [],
+                'structuredContent': {'path': 'x', 'content': 'c\n'}},
+                {'resultType': 'complete', 'isError': False,
+                 'content': []})
+        session.execute('cp playbooks/a.yml resources/')
+        self.assertEqual(
+                client.calls[1][1],
+                {'name': 'file.write',
+                 'arguments': {'path': 'resources/a.yml',
+                               'content': 'c\n'}})
+
+    def test_cp_needs_structured_reads(self):
+        session, client, _out, _err = self.make_session()
+        client.queue('tools/call', {
+                'resultType': 'complete', 'isError': False,
+                'content': [{'type': 'text', 'text': '# fenced'}]})
+        with self.assertRaises(ReplError) as context:
+            session.execute('cp a.yml b.yml')
+        self.assertIn('structured', str(context.exception))
+
+    def test_the_view_switch_resets_the_cwd(self):
+        session, client, _out, _err = self.make_session(
+                project_type='modern',
+                view_root_rel='ansible/views/system')
+        session.cwd = 'ansible/views/system/inventory'
+        client.queue('tools/call', {'resultType': 'complete',
+                                    'isError': False, 'content': []})
+        session.execute('view webservers')
+        self.assertEqual(session.view, 'webservers')
+        self.assertEqual(session.cwd, 'ansible/views/webservers')
+        self.assertIsNone(session._previous_cwd)
+
+    def test_the_view_switch_in_a_legacy_project(self):
+        session, client, _out, _err = self.make_session()
+        client.queue('tools/call', {'resultType': 'complete',
+                                    'isError': False, 'content': []})
+        session.execute('view webservers')
+        self.assertEqual(session.cwd, 'ansible')
+
+    def test_drop_resets_an_out_of_scope_cwd(self):
+        session, client, _out, err = self.make_session(elevated=True)
+        client.bearer = 'the-token'
+        session.cwd = '.debops'
+        client.queue('server/drop', {'elevated': False})
+        session.execute('drop')
+        self.assertEqual(session.cwd, 'ansible')
+        self.assertIn('the view root', err.getvalue())
+
+    def test_resolve_write_refuses_the_roots(self):
+        session, _client, _out, _err = self.make_session()
+        with self.assertRaises(ReplError) as context:
+            session.execute('rm .')
+        self.assertIn('the view directory itself',
+                      str(context.exception))
+        session.elevated = True
+        session.cwd = ''
+        with self.assertRaises(ReplError) as context:
+            session.execute('rm /')
+        self.assertIn('the project directory itself',
+                      str(context.exception))
+
+    def test_path_candidates_complete_relative_to_the_cwd(self):
+        session, client, _out, _err = self.make_session()
+        session.cwd = 'ansible/inventory'
+        self.queue_list(client, ('group_vars', 'dir'),
+                        ('hosts', 'file'))
+        self.assertEqual(session.path_candidates('ls', 'gr'),
+                         ['group_vars/'])
+        # The cache held: one call only
+        self.assertEqual(session.path_candidates('ls', 'h'), ['hosts'])
+        self.assertEqual(len(client.calls), 1)
+
+    def test_path_candidates_cd_completes_directories_only(self):
+        session, client, _out, _err = self.make_session()
+        self.queue_list(client, ('group_vars', 'dir'),
+                        ('hosts', 'file'))
+        self.assertEqual(session.path_candidates('cd', ''),
+                         ['group_vars/'])
+
+    def test_path_candidates_with_a_subdirectory(self):
+        session, client, _out, _err = self.make_session()
+        self.queue_list(client, ('all', 'dir'))
+        self.assertEqual(
+                session.path_candidates('cd', 'inventory/group_vars/'),
+                ['inventory/group_vars/all/'])
+
+    def test_path_candidates_respect_the_edge(self):
+        session, _client, _out, _err = self.make_session()
+        self.assertEqual(session.path_candidates('ls', '../..'), [])
+
+    def test_the_completer_dispatches_the_path_verbs(self):
+        try:
+            from prompt_toolkit.document import Document
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        session, client, _out, _err = self.make_session()
+        self.queue_list(client, ('inventory', 'dir'),
+                        ('playbooks', 'dir'))
+        completer = repl._Completer(session)
+        found = [entry.text for entry in completer.get_completions(
+                Document('cd in'), None)]
+        self.assertEqual(found, ['inventory/'])
+        # The verbs themselves complete at the start of the line
+        found = [entry.text for entry in completer.get_completions(
+                Document('mkd'), None)]
+        self.assertIn('mkdir', found)
+
+
 if __name__ == '__main__':
     unittest.main()
