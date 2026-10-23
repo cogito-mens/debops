@@ -309,6 +309,10 @@ class Repl(object):
         self.background_watch = False
         self._watch_client = None
         self._watch_thread = None
+        # A front end which runs the commands on a worker thread (the
+        # console) flags the busy state; the completion never calls
+        # the server while it is set — the client is one connection
+        self._busy = False
 
     @property
     def prompt(self):
@@ -607,6 +611,11 @@ class Repl(object):
         self._note('watching the server activity in the background '
                    '("watch" again ends it)')
 
+    def _watch_line(self, line):
+        """One line of the watched activity; the presentation hook —
+        the console routes it to the activity pane."""
+        print(line, file=self._out)
+
     def _watch_loop(self, watcher):
         """The background watch: the activity lines print until the
         toggle or the connection ends the stream."""
@@ -616,8 +625,8 @@ class Repl(object):
                     'subscriptions/listen',
                     {'notifications': {'activity': True}}):
                 if message.get('method') == 'notifications/activity':
-                    print(message.get('params', {}).get('line', ''),
-                          file=self._out)
+                    self._watch_line(
+                            message.get('params', {}).get('line', ''))
         except (EOFError, ConnectionError, RuntimeError, TimeoutError,
                 OSError) as errmsg:
             died = str(errmsg)
@@ -680,9 +689,7 @@ class Repl(object):
         try:
             with os.fdopen(fd, 'w') as fp:
                 fp.write(current)
-            editor = (os.environ.get('VISUAL') or
-                      os.environ.get('EDITOR') or 'vi')
-            returncode = subprocess.call(shlex.split(editor) + [tmp])
+            returncode = self._run_editor(tmp)
             if returncode != 0:
                 raise ReplError('the editor exited with {}'
                                 .format(returncode))
@@ -699,6 +706,13 @@ class Repl(object):
         result = self._call_tool('file.write',
                                  {'path': write_path, 'content': new})
         self._render(result)
+
+    def _run_editor(self, path):
+        """Open the editor on the temporary file; the console
+        suspends its own interface for it."""
+        editor = (os.environ.get('VISUAL') or
+                  os.environ.get('EDITOR') or 'vi')
+        return subprocess.call(shlex.split(editor) + [path])
 
     def _passphrase(self):
         """The trust passphrase: the file when the account reads it,
@@ -718,6 +732,11 @@ class Repl(object):
             raise ReplError('the trust passphrase of the project is '
                             'not readable here; a pipe cannot ask '
                             'for it')
+        return self._ask_passphrase()
+
+    def _ask_passphrase(self):
+        """The hidden passphrase prompt; the presentation hook — the
+        console asks through its own input line."""
         try:
             return getpass.getpass('the trust passphrase: ')
         except (EOFError, KeyboardInterrupt):
@@ -1058,10 +1077,16 @@ class Repl(object):
         if result is not None:
             self._render(result)
 
+    # A front end with verbs of its own (the console's 'panel')
+    # declares them here
+    HELP_EXTRA = {}
+
     def _print_help(self):
         print('Commands (the MCP tools of the project, for a human):',
               file=self._out)
-        for verb, synopsis in sorted(HELP.items()):
+        entries = dict(HELP)
+        entries.update(self.HELP_EXTRA)
+        for verb, synopsis in sorted(entries.items()):
             print('  {:24s} {}'.format(verb, synopsis), file=self._out)
 
     # -- the completion candidates ----------------------------------
@@ -1091,6 +1116,9 @@ class Repl(object):
         return self._completion_cache[source]
 
     def _load_candidates(self, verb):
+        if self._busy:
+            # A command is holding the one connection
+            return []
         try:
             if verb in ('check', 'run', 'playbook'):
                 result = self._request('tools/call',
@@ -1134,6 +1162,9 @@ class Repl(object):
             return []
         key = ('list', directory)
         if key not in self._completion_cache:
+            if self._busy:
+                # A command is holding the one connection
+                return []
             try:
                 result = self._request(
                         'tools/call',
@@ -1394,17 +1425,26 @@ def run(client, project_name=None, view=None, interactive=None,
         frontend=None):
     """Build and run an interpreter session against the connected
     daemon. 'frontend' selects the chrome: None for the plain
-    interpreter, 'shell' for the status-bar interface (a pipe stays
-    a pipe either way)."""
+    interpreter, 'shell' for the status-bar interface, 'console' for
+    the fullscreen cockpit (a pipe stays a pipe either way)."""
     if interactive is None:
         interactive = sys.stdin.isatty()
-    session = Repl(client, project_name=project_name, view=view,
-                   interactive=interactive, project_path=project_path,
-                   project_type=project_type,
-                   view_root_rel=view_root_rel)
+    session_class = Repl
+    runner = None
+    if interactive and frontend == 'shell':
+        from .shell import run_shell
+        runner = run_shell
+    elif interactive and frontend == 'console':
+        from .console import ConsoleRepl, run_console
+        session_class = ConsoleRepl
+        runner = run_console
+    session = session_class(client, project_name=project_name,
+                            view=view, interactive=interactive,
+                            project_path=project_path,
+                            project_type=project_type,
+                            view_root_rel=view_root_rel)
+    if runner is not None:
+        return runner(session)
     if interactive:
-        if frontend == 'shell':
-            from .shell import run_shell
-            return run_shell(session)
         return run_interactive(session)
     return run_pipe(session)

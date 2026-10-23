@@ -130,6 +130,8 @@ class Interpreter(object):
                 self.do_mcp_repl(self.parsed_args.args)
             elif self.parsed_args.command == 'shell':
                 self.do_mcp_shell(self.parsed_args.args)
+            elif self.parsed_args.command == 'console':
+                self.do_mcp_console(self.parsed_args.args)
             elif self.parsed_args.command == 'connect':
                 self.do_mcp_connect(self.parsed_args.args)
             elif self.parsed_args.command == 'inspect':
@@ -1058,6 +1060,9 @@ class Interpreter(object):
 
     def do_mcp_shell(self, args):
         self._mcp_interpreter(args, frontend='shell')
+
+    def do_mcp_console(self, args):
+        self._mcp_interpreter(args, frontend='console')
 
     def do_mcp_configure(self, args):
         self._mcp_refuse_if_disabled()
