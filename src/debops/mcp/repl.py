@@ -10,6 +10,7 @@ status tail as it moves; a confirmation gate asks the human. Pipes
 work: commands on standard input, answers on standard output.
 """
 
+import datetime
 import getpass
 import os
 import shlex
@@ -1361,6 +1362,45 @@ def _history_dir():
     return directory
 
 
+def _read_history_strings(path):
+    """The entries of the shared history file, oldest first. The
+    prompt_toolkit format ('# timestamp' separators, '+'-prefixed
+    lines building one entry) and the plain one-command-per-line
+    files of the early plain reader both load."""
+    entries = []
+    current = []
+    try:
+        with open(path, 'rb') as fp:
+            lines = [line.decode('utf-8', 'replace') for line in fp]
+    except OSError:
+        return entries
+    for line in lines:
+        if line.startswith('+'):
+            current.append(line[1:])
+            continue
+        if current:
+            # Join the entry, dropping the trailing newline
+            entries.append(''.join(current)[:-1])
+            current = []
+        if line.startswith('#') or not line.strip():
+            continue
+        # The legacy plain format: one command per line
+        entries.append(line[:-1] if line.endswith('\n') else line)
+    if current:
+        entries.append(''.join(current)[:-1])
+    return entries
+
+
+def _append_history_string(path, line):
+    """Append one command to the shared history file, in the
+    prompt_toolkit format the other front ends read."""
+    with open(path, 'ab') as fp:
+        fp.write('\n# {}\n'.format(
+                datetime.datetime.now()).encode('utf-8'))
+        for part in line.split('\n'):
+            fp.write('+{}\n'.format(part).encode('utf-8'))
+
+
 def run_interactive_plain(repl):
     """The no-dependency interactive loop: readline history when the
     module is there, plain input() either way."""
@@ -1370,40 +1410,39 @@ def run_interactive_plain(repl):
         readline = None
     history = None
     if readline is not None:
+        # The shared file, in the prompt_toolkit format the other
+        # front ends read and write; readline keeps the session's
+        # recall in memory, fed from and appended to it per command
         history = os.path.join(_history_dir(), 'mcp-repl-history')
-        try:
-            readline.read_history_file(history)
-        except OSError:
-            pass
+        for entry in _read_history_strings(history):
+            readline.add_history(entry)
         readline.set_history_length(1000)
     print(_banner(repl), file=repl._err)
-    try:
-        while True:
+    while True:
+        try:
+            line = input(repl.prompt)
+        except KeyboardInterrupt:
+            # A fresh prompt, not a dead session
+            print()
+            continue
+        except EOFError:
+            break
+        if history is not None and line.strip():
             try:
-                line = input(repl.prompt)
-            except KeyboardInterrupt:
-                # A fresh prompt, not a dead session
-                print()
-                continue
-            except EOFError:
-                break
-            try:
-                done = _execute_line(repl, line)
-            except KeyboardInterrupt:
-                # The command died on the interrupt; the session
-                # survives. The connection may hold a half-read
-                # answer — drop it
-                print('^C', file=repl._err)
-                repl.client.close()
-                continue
-            if done:
-                break
-    finally:
-        if history is not None:
-            try:
-                readline.write_history_file(history)
+                _append_history_string(history, line)
             except OSError:
                 pass
+        try:
+            done = _execute_line(repl, line)
+        except KeyboardInterrupt:
+            # The command died on the interrupt; the session
+            # survives. The connection may hold a half-read
+            # answer — drop it
+            print('^C', file=repl._err)
+            repl.client.close()
+            continue
+        if done:
+            break
     return 0
 
 

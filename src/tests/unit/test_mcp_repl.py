@@ -7,6 +7,7 @@
 import io
 import os
 import shutil
+import sys
 import tempfile
 import time
 import unittest
@@ -40,6 +41,17 @@ def make_repl(client, interactive=False):
     session = Repl(client, project_name='project', view='system',
                    out=out, err=err, interactive=interactive)
     return session, out, err
+
+
+def tmp_history_home(test_case):
+    """A temporary XDG data home, so a loop test never touches the
+    user's real command history."""
+    directory = tempfile.mkdtemp(prefix='debops-mcp-history-')
+    test_case.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+    patcher = mock.patch.dict(os.environ, {'XDG_DATA_HOME': directory})
+    patcher.start()
+    test_case.addCleanup(patcher.stop)
+    return directory
 
 
 class ExecutionArgumentsTestCase(unittest.TestCase):
@@ -223,6 +235,7 @@ class InteractiveLoopTestCase(unittest.TestCase):
 
     def test_the_plain_loop_reads_executes_and_exits(self):
         import sys as sys_module
+        tmp_history_home(self)
         client = FakeClient()
         session, out, err = make_repl(client, interactive=True)
         client.queue('tools/call', {'resultType': 'complete',
@@ -499,6 +512,7 @@ class TrustVerbsTestCase(unittest.TestCase):
         client.close = lambda: None
         session, _out, err = make_repl(client, interactive=True)
         session.project_path = self.tmpdir
+        tmp_history_home(self)
         with mock.patch('builtins.input',
                         side_effect=['elevate', EOFError()]), \
                 mock.patch('debops.mcp.repl.getpass.getpass',
@@ -518,6 +532,7 @@ class TrustVerbsTestCase(unittest.TestCase):
         client.close = lambda: closes.append(True)
         client.request = mock.Mock(side_effect=KeyboardInterrupt)
         session, _out, err = make_repl(client, interactive=True)
+        tmp_history_home(self)
         with mock.patch('builtins.input',
                         side_effect=['status', EOFError()]):
             code = repl.run_interactive_plain(session)
@@ -587,6 +602,72 @@ class StopDaemonTestCase(unittest.TestCase):
         self.assertIn('already gone', str(context.exception))
 
 
+class HistoryFormatTestCase(unittest.TestCase):
+    """The shared command history file: one format, every front end
+    reads and writes it; the legacy plain lines still load."""
+
+    def setUp(self):
+        self.tmpdir = tmp_history_home(self)
+        self.path = os.path.join(self.tmpdir, 'debops',
+                                 'mcp-repl-history')
+
+    def test_the_appended_format_loads_with_prompt_toolkit(self):
+        try:
+            from prompt_toolkit.history import FileHistory
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        os.makedirs(os.path.dirname(self.path))
+        repl._append_history_string(self.path, 'status')
+        repl._append_history_string(self.path, 'run containers')
+        # prompt_toolkit reads its own format back, newest first
+        self.assertEqual(
+                list(FileHistory(self.path).load_history_strings()),
+                ['run containers', 'status'])
+        # ... and our reader sees the same, oldest first
+        self.assertEqual(repl._read_history_strings(self.path),
+                         ['status', 'run containers'])
+
+    def test_the_plain_format_still_loads(self):
+        os.makedirs(os.path.dirname(self.path))
+        with open(self.path, 'w') as fp:
+            fp.write('exit\nls\n')
+        self.assertEqual(repl._read_history_strings(self.path),
+                         ['exit', 'ls'])
+
+    def test_the_mixed_format_loads(self):
+        os.makedirs(os.path.dirname(self.path))
+        with open(self.path, 'w') as fp:
+            fp.write('legacy command\n'
+                     '\n# 2026-10-23 10:00:00.000000\n+status\n'
+                     '\n# 2026-10-23 10:01:00.000000\n'
+                     '+multi one\n+multi two\n')
+        self.assertEqual(repl._read_history_strings(self.path),
+                         ['legacy command', 'status',
+                          'multi one\nmulti two'])
+
+    def test_a_missing_history_reads_empty(self):
+        self.assertEqual(repl._read_history_strings(self.path), [])
+
+    def test_the_plain_loop_loads_and_appends(self):
+        os.makedirs(os.path.dirname(self.path))
+        with open(self.path, 'w') as fp:
+            fp.write('\n# 2026-10-23 10:00:00.000000\n+seed command\n')
+        fake_readline = mock.MagicMock()
+        client = FakeClient()
+        session, _out, _err = make_repl(client, interactive=True)
+        with mock.patch.dict(sys.modules, {'readline': fake_readline}), \
+                mock.patch('builtins.input',
+                           side_effect=['help', EOFError()]):
+            code = repl.run_interactive_plain(session)
+        self.assertEqual(code, 0)
+        # The seed fed the recall, the command joined the file in
+        # the shared format
+        fake_readline.add_history.assert_called_once_with(
+                'seed command')
+        with open(self.path) as fp:
+            self.assertIn('+help', fp.read())
+
+
 class BannerTestCase(unittest.TestCase):
 
     def test_the_banner_names_the_version_and_the_protocol(self):
@@ -594,6 +675,7 @@ class BannerTestCase(unittest.TestCase):
         client.server_version = '3.1.0'
         client.protocol_version = '2026-07-28'
         session, _out, err = make_repl(client, interactive=True)
+        tmp_history_home(self)
         with mock.patch('builtins.input', side_effect=[EOFError()]):
             repl.run_interactive_plain(session)
         self.assertIn('(DebOps 3.1.0, protocol 2026-07-28)',
