@@ -568,7 +568,8 @@ class TrustVerbsTestCase(unittest.TestCase):
 
 
 class StopDaemonTestCase(unittest.TestCase):
-    """The '--stop' guardrails: only a client-spawned daemon goes."""
+    """The 'mcp stop' guardrails: the pid comes from the sidecar and
+    is correlated against /proc before any signal."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-stop-')
@@ -584,16 +585,6 @@ class StopDaemonTestCase(unittest.TestCase):
             repl.stop_daemon(self.socket)
         self.assertIn('no pid file', str(context.exception))
 
-    def test_a_hand_started_daemon_is_refused(self):
-        # No origin line: the daemon came from a deliberate serve
-        self._pid_file(str(os.getpid()))
-        with self.assertRaises(ReplError) as context:
-            repl.stop_daemon(self.socket)
-        self.assertIn('not spawned by a client', str(context.exception))
-        # The refusal names the pid, so the operator can still act
-        self.assertIn('kill {}'.format(os.getpid()),
-                      str(context.exception))
-
     def test_a_non_daemon_pid_is_refused(self):
         # A recycled pid must not die: the test process is no daemon
         self._pid_file(str(os.getpid()), 'spawned')
@@ -608,6 +599,42 @@ class StopDaemonTestCase(unittest.TestCase):
         with self.assertRaises(ReplError) as context:
             repl.stop_daemon(self.socket)
         self.assertIn('already gone', str(context.exception))
+
+    def test_a_daemon_stops_with_sigterm(self):
+        self._pid_file('4242', 'spawned')
+        out = io.StringIO()
+        kills = []
+
+        def fake_kill(pid, signal):
+            kills.append(signal)
+            # The daemon cleans its sidecar up on the way out
+            os.unlink(self.socket + '.pid')
+
+        with mock.patch.object(repl, '_daemon_pid',
+                               return_value=(4242, 'spawned')), \
+                mock.patch('os.kill', fake_kill):
+            repl.stop_daemon(self.socket, out=out)
+        self.assertEqual(kills, [15])
+        self.assertIn('stopped', out.getvalue())
+        # The report names the pid and the origin
+        self.assertIn('4242', out.getvalue())
+        self.assertIn('spawned', out.getvalue())
+
+    def test_the_kill_option_is_sigkill_without_the_drain(self):
+        self._pid_file('4242', 'hand-started')
+        out = io.StringIO()
+        kills = []
+        with mock.patch.object(repl, '_daemon_pid',
+                               return_value=(4242, 'hand-started')), \
+                mock.patch('os.kill',
+                           lambda pid, signal: kills.append(signal)):
+            repl.stop_daemon(self.socket, out=out, kill=True)
+        self.assertEqual(kills, [9])
+        self.assertIn('hand-started', out.getvalue())
+        self.assertIn('was killed', out.getvalue())
+        # No drain, no cleanup: the sidecar stays for the next
+        # daemon to reap
+        self.assertTrue(os.path.exists(self.socket + '.pid'))
 
 
 class HistoryFormatTestCase(unittest.TestCase):

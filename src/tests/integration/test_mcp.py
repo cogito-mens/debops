@@ -3401,10 +3401,9 @@ def test_repl_spawns_a_daemon_on_the_well_known_socket(
                 os.kill(int(pid_path.read_text().split()[0]), 15)
 
 
-def test_repl_stop_reaps_the_spawned_daemon(run_debops, mcp_env,
-                                            project_dir, tmp_path):
-    """'repl --stop' reaps the client-spawned daemon and refuses a
-    hand-started one."""
+def test_mcp_stop_reaps_the_spawned_daemon(run_debops, mcp_env,
+                                           project_dir, tmp_path):
+    """'mcp stop' reaps the client-spawned daemon."""
     runtime = tmp_path / "run"
     runtime.mkdir()
     env = dict(mcp_env, XDG_RUNTIME_DIR=str(runtime))
@@ -3416,24 +3415,22 @@ def test_repl_stop_reaps_the_spawned_daemon(run_debops, mcp_env,
     pid_path = Path(str(sockets[0]) + ".pid")
     assert pid_path.read_text().split()[1] == "spawned"
 
-    result = run_debops("mcp", "repl", "--stop", env=env,
-                        cwd=str(project_dir))
+    result = run_debops("mcp", "stop", env=env, cwd=str(project_dir))
     assert result.returncode == 0
     assert "stopped" in result.stdout
     # The socket and the sidecars went with the daemon
     assert not sockets[0].exists()
     assert not pid_path.exists()
     # A second stop is a clean refusal
-    result = run_debops("mcp", "repl", "--stop", env=env,
-                        cwd=str(project_dir))
+    result = run_debops("mcp", "stop", env=env, cwd=str(project_dir))
     assert result.returncode == 1
     assert "no pid file" in result.stderr
 
 
-def test_repl_stop_refuses_a_hand_started_daemon(run_debops, mcp_env,
-                                                 project_dir,
-                                                 tmp_path):
-    """A daemon from 'serve --detach' is not the REPL's to reap."""
+def test_mcp_stop_reaps_a_hand_started_daemon(run_debops, mcp_env,
+                                              project_dir, tmp_path):
+    """A daemon from 'serve --detach' stops too; the pid is known
+    from the sidecar and correlated against /proc first."""
     runtime = tmp_path / "run"
     runtime.mkdir()
     env = dict(mcp_env, XDG_RUNTIME_DIR=str(runtime))
@@ -3447,16 +3444,36 @@ def test_repl_stop_refuses_a_hand_started_daemon(run_debops, mcp_env,
     pid = int(lines[0])
     # The hand-started daemon carries no origin note
     assert len(lines) == 1
-    try:
-        result = run_debops("mcp", "repl", "--stop", env=env,
-                            cwd=str(project_dir))
-        assert result.returncode == 1
-        assert "not spawned by a client" in result.stderr
-        assert "kill {}".format(pid) in result.stderr
-        # And it is still alive
+    result = run_debops("mcp", "stop", env=env, cwd=str(project_dir))
+    assert result.returncode == 0
+    assert "hand-started" in result.stdout
+    assert "stopped" in result.stdout
+    with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
-    finally:
-        os.kill(pid, 15)
+
+
+def test_mcp_stop_kill_is_the_sigkill(run_debops, mcp_env, project_dir,
+                                      tmp_path):
+    """'mcp stop --kill': no drain, and the stale files stay for the
+    next daemon to clean up."""
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    env = dict(mcp_env, XDG_RUNTIME_DIR=str(runtime))
+    result = run_debops("mcp", "serve", "--socket", "--detach",
+                        cwd=str(project_dir), env=env)
+    assert result.returncode == 0
+    sockets = list((runtime / "debops" / "mcp").glob("*.sock"))
+    assert len(sockets) == 1
+    pid_path = Path(str(sockets[0]) + ".pid")
+    pid = int(pid_path.read_text().split()[0])
+    result = run_debops("mcp", "stop", "--kill", env=env,
+                        cwd=str(project_dir))
+    assert result.returncode == 0
+    assert "was killed" in result.stdout
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+    # Nothing cleaned up on a SIGKILL
+    assert pid_path.exists()
 
 
 def test_serve_detach_reports_and_serves(run_debops, mcp_env,

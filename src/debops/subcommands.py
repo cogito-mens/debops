@@ -488,6 +488,8 @@ Commands:
 
 Commands:
     serve    run an MCP server over stdio or a UNIX socket
+    stop     stop the project's MCP daemon (SIGTERM, draining;
+             --kill for a wedged one)
     repl     talk to the project's MCP daemon: an interactive
              interpreter for the MCP tools (pipes work too)
     shell    the interpreter with a status bar (the place, the
@@ -658,10 +660,27 @@ Commands:
         spawn.add_argument('--no-spawn', dest='spawn',
                            action='store_false',
                            help='never spawn the daemon; fail instead')
-        spawn.add_argument('--stop', dest='stop', action='store_true',
-                           help="stop the project's client-spawned "
-                                'daemon and exit (a daemon started by '
-                                'hand is refused, with its pid named)')
+        self.args = parser.parse_args(self.args[3:])
+
+    def do_mcp_stop(self):
+        parser = _argument_parser(
+                parents=[self.global_parser],
+                description="stop the project's MCP daemon: a "
+                            'SIGTERM, which drains the in-flight '
+                            'work first; the pid comes from the '
+                            "socket's sidecar and is correlated "
+                            'against /proc before any signal',
+                usage='debops mcp stop [<args>]')
+        parser.add_argument('--socket', type=str, metavar='PATH',
+                            help="the daemon's socket (default: the "
+                                 'well-known runtime path)')
+        parser.add_argument('--docs', action='store_true',
+                            help='stop the documentation-mode daemon '
+                                 '(no project)')
+        parser.add_argument('--kill', action='store_true',
+                            help='SIGKILL instead — for a wedged '
+                                 'daemon; its stale files are cleaned '
+                                 'up by the next one')
         self.args = parser.parse_args(self.args[3:])
 
     def do_mcp_shell(self):

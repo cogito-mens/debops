@@ -183,15 +183,12 @@ def bootstrap_trust(client, project):
     return True
 
 
-def stop_daemon(socket_path, out=sys.stdout):
-    """Stop the daemon at the socket; the client-spawned ones only.
+def _daemon_pid(socket_path):
+    """The pid of the daemon at the socket, from its sidecar.
 
-    The pid sidecar names the process and, on its second line, the
-    daemon's origin: only a 'spawned' one is reaped from here — a
-    daemon started by hand is refused (the answer names the pid, so
-    the operator can still act). This is a guardrail, not a boundary:
-    a same-account process can always kill(2) its own daemons, and a
-    daemon on another account is unreachable either way.
+    A recycled pid is not ours to kill, so the process must answer
+    to 'debops-mcp' in /proc first. Returns (pid, origin); the
+    refusals raise a ReplError naming the reason.
     """
     pid_path = socket_path + '.pid'
     try:
@@ -206,11 +203,7 @@ def stop_daemon(socket_path, out=sys.stdout):
         pid = int(lines[0])
     except (IndexError, ValueError):
         raise ReplError('unreadable pid file: ' + pid_path)
-    if len(lines) < 2 or lines[1] != 'spawned':
-        raise ReplError('the daemon at {} (pid {}) was not spawned by '
-                        'a client; stop it by hand if it must go: '
-                        'kill {}'.format(socket_path, pid, pid))
-    # A recycled pid is not ours to kill
+    origin = lines[1] if len(lines) > 1 else 'hand-started'
     try:
         with open('/proc/{}/comm'.format(pid)) as fp:
             comm = fp.read().strip()
@@ -221,16 +214,38 @@ def stop_daemon(socket_path, out=sys.stdout):
     if not comm.startswith('debops-mcp'):
         raise ReplError('pid {} is not a debops-mcp process ({}); '
                         'refusing to kill it'.format(pid, comm))
+    return pid, origin
+
+
+def stop_daemon(socket_path, out=sys.stdout, kill=False):
+    """Stop the daemon at the socket.
+
+    The pid comes from the socket's sidecar and is correlated against
+    /proc before any signal — see _daemon_pid. The default SIGTERM
+    lets the daemon drain its in-flight work; 'kill' is the SIGKILL
+    for a wedged one. This is a guardrail, not a boundary: a
+    same-account process can always kill(2) its own daemons, and a
+    daemon on another account is unreachable either way.
+    """
+    pid_path = socket_path + '.pid'
+    pid, origin = _daemon_pid(socket_path)
+    if kill:
+        os.kill(pid, 9)
+        print('the {} daemon (pid {}) was killed; its stale files '
+              'are cleaned up by the next one'.format(origin, pid),
+              file=out)
+        return
     os.kill(pid, 15)
     # The shutdown drains the in-flight work first
     deadline = time.monotonic() + 5
     while os.path.exists(pid_path) and time.monotonic() < deadline:
         time.sleep(0.05)
     if os.path.exists(pid_path):
-        print('the daemon (pid {}) is draining its in-flight work'
-              .format(pid), file=out)
+        print('the {} daemon (pid {}) is draining its in-flight work'
+              .format(origin, pid), file=out)
     else:
-        print('the daemon (pid {}) stopped'.format(pid), file=out)
+        print('the {} daemon (pid {}) stopped'.format(origin, pid),
+              file=out)
 
 
 def execution_arguments(tokens):

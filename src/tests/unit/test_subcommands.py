@@ -76,6 +76,19 @@ def test_command_form_on_all_front_ends():
         assert subcommands.args.command == "ls /"
 
 
+def test_mcp_stop_parses_its_arguments():
+    subcommands = parse_cli("mcp", "stop", "--kill")
+    assert subcommands.command == "stop"
+    assert subcommands.args.kill is True
+    assert subcommands.args.docs is False
+
+
+def test_mcp_repl_no_longer_has_stop():
+    # The daemon stop moved to its own command: 'debops mcp stop'
+    with pytest.raises(SystemExit):
+        parse_cli("mcp", "repl", "--stop")
+
+
 def test_unknown_config_command_exits_with_an_error(capsys):
     with pytest.raises(SystemExit) as exc:
         parse_cli("config", "bogus")

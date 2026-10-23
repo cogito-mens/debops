@@ -128,6 +128,8 @@ class Interpreter(object):
                 self.do_mcp_serve(self.parsed_args.args)
             elif self.parsed_args.command == 'repl':
                 self.do_mcp_repl(self.parsed_args.args)
+            elif self.parsed_args.command == 'stop':
+                self.do_mcp_stop(self.parsed_args.args)
             elif self.parsed_args.command == 'shell':
                 self.do_mcp_shell(self.parsed_args.args)
             elif self.parsed_args.command == 'console':
@@ -1045,13 +1047,6 @@ class Interpreter(object):
                 sys.exit(1)
         socket_path = (os.path.abspath(os.path.expanduser(args.socket))
                        if args.socket else default_socket_path(project))
-        if getattr(args, 'stop', False):
-            try:
-                repl_mod.stop_daemon(socket_path)
-            except repl_mod.ReplError as errmsg:
-                print('Error:', errmsg, file=sys.stderr)
-                sys.exit(1)
-            return
         # A '-c' command never builds an interface, even on a
         # terminal (ssh -t): the spawn question would have no one to
         # ask mid-command
@@ -1100,6 +1095,30 @@ class Interpreter(object):
 
     def do_mcp_repl(self, args):
         self._mcp_interpreter(args)
+
+    def do_mcp_stop(self, args):
+        self._mcp_refuse_if_disabled()
+        from .mcp import repl as repl_mod
+        project = None
+        if not args.docs:
+            # ProjectDir chdirs into the directory it probes, even
+            # when it then fails; capture the invocation directory
+            # first
+            invoked_in = os.getcwd()
+            try:
+                project = ProjectDir(path=args.project_dir,
+                                     config=self.config)
+            except (IsADirectoryError, NotADirectoryError) as errmsg:
+                os.chdir(invoked_in)
+                print('Error:', errmsg, file=sys.stderr)
+                sys.exit(1)
+        socket_path = (os.path.abspath(os.path.expanduser(args.socket))
+                       if args.socket else default_socket_path(project))
+        try:
+            repl_mod.stop_daemon(socket_path, kill=args.kill)
+        except repl_mod.ReplError as errmsg:
+            print('Error:', errmsg, file=sys.stderr)
+            sys.exit(1)
 
     def do_mcp_shell(self, args):
         self._mcp_interpreter(args, frontend='shell')
