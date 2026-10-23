@@ -162,12 +162,17 @@ class ConsoleRepl(Repl):
                                   args=(line,), daemon=True)
         thread.start()
 
+    def _prompt_marker(self):
+        """The input-line marker: '>' normally, '!' while elevated.
+        The live prompt and the scrollback echo share it."""
+        return '!>' if self.elevated else '>'
+
     def _execute_guarded(self, line):
         """Run one command on the worker thread; the interface stays
         alive and repaints as the answer lands. An unexpected error
         lands in the scrollback — a traceback on the raw terminal
         would corrupt the display and cost the session its worker."""
-        self._echo('debops> ' + line + '\n')
+        self._echo(self._prompt_marker() + ' ' + line + '\n')
         try:
             done = _execute_line(self, line)
         except KeyboardInterrupt:
@@ -297,6 +302,8 @@ def _build_app(session):
                                        DynamicContainer,
                                        FormattedTextControl, HSplit,
                                        Layout, VSplit, Window)
+    from prompt_toolkit.layout.processors import (
+            DynamicProcessor, PasswordProcessor)
     from prompt_toolkit.styles import Style
     from .repl import _Completer
     from .shell import _toolbar
@@ -315,6 +322,13 @@ def _build_app(session):
 
     input_buffer = Buffer(completer=_Completer(session),
                           multiline=False, accept_handler=accept)
+    # A pending secret gate (the passphrase prompt) masks the input
+    password = PasswordProcessor()
+    input_control = BufferControl(
+            buffer=input_buffer,
+            input_processors=[DynamicProcessor(
+                    lambda: (password if session._gate is not None
+                             and session._gate['secret'] else None))])
 
     def pane_container():
         if session.pane == 'tree':
@@ -341,7 +355,10 @@ def _build_app(session):
 
     @bindings.add('escape')
     def _escape(event):
-        if not session._gate_decline():
+        gate = session._gate
+        session._gate_decline()
+        if gate is None or gate['secret']:
+            # Do not leave a half-typed secret on the line
             event.app.current_buffer.reset()
 
     @bindings.add('c-c')
@@ -385,7 +402,12 @@ def _build_app(session):
                             filter=Condition(
                                     lambda: session.pane != 'off')),
             ]),
-            Window(BufferControl(buffer=input_buffer), height=1),
+            VSplit([
+                    Window(FormattedTextControl(
+                            lambda: session._prompt_marker() + ' '),
+                           dont_extend_width=True),
+                    Window(input_control),
+            ], height=1),
             Window(FormattedTextControl(lambda: _toolbar(session)),
                    height=1, style='class:status'),
     ])

@@ -54,6 +54,14 @@ def wait_for(predicate, timeout=5):
     return False
 
 
+def passphrase_error(session):
+    """Run the passphrase prompt; return the error it raises."""
+    try:
+        session._ask_passphrase()
+    except repl.ReplError as errmsg:
+        return str(errmsg)
+
+
 class ConsoleSessionTestCase(unittest.TestCase):
 
     def test_the_scrollback_collects_the_session(self):
@@ -62,7 +70,7 @@ class ConsoleSessionTestCase(unittest.TestCase):
         session.submit('status')
         self.assertTrue(wait_for(lambda: not session._busy))
         text = session._scroll_buffer.text
-        self.assertIn('debops> status', text)
+        self.assertIn('> status', text)
         self.assertIn('Project: x', text)
 
     def test_the_gate_is_answered_on_the_input_line(self):
@@ -116,18 +124,12 @@ class ConsoleSessionTestCase(unittest.TestCase):
         errors = []
         thread = threading.Thread(
                 target=lambda: errors.append(
-                        self._passphrase_error(session)), daemon=True)
+                        passphrase_error(session)), daemon=True)
         thread.start()
         self.assertTrue(wait_for(lambda: session._gate is not None))
         session._gate_decline()
         thread.join(timeout=5)
         self.assertEqual(errors, ['cancelled'])
-
-    def _passphrase_error(self, session):
-        try:
-            session._ask_passphrase()
-        except repl.ReplError as errmsg:
-            return str(errmsg)
 
     def test_submit_serializes_the_commands(self):
         session, _client = make_session()
@@ -324,8 +326,13 @@ class ConsoleBuildTestCase(unittest.TestCase):
 
     def render_app(self, app, rows=10, cols=30):
         """Render one frame; return the screen's rows as text and
-        the window positions."""
-        app.renderer.render(app, app.layout)
+        the window positions. Emulates a live frame: the app is the
+        current one and the render counter moves, so the controls
+        re-evaluate their content (they cache per frame)."""
+        from prompt_toolkit.application.current import set_app
+        app.render_counter += 1
+        with set_app(app):
+            app.renderer.render(app, app.layout)
         screen = app.renderer.last_rendered_screen
         lines = [''.join(
                 screen.data_buffer.get(r, {}).get(c).char
@@ -381,6 +388,44 @@ class ConsoleBuildTestCase(unittest.TestCase):
         self.assertIn('line24', ''.join(lines))
         self.assertNotIn('line00', ''.join(lines))
 
+    def test_the_input_line_carries_the_prompt_marker(self):
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        session, _client = make_session()
+        app = self.build_sized_app(session)
+        lines, _positions = self.render_app(app)
+        # The input row is above the status bar
+        self.assertEqual(lines[8], '>')
+        session.elevated = True
+        lines, _positions = self.render_app(app)
+        self.assertEqual(lines[8], '!>')
+
+    def test_the_secret_gate_masks_the_input_line(self):
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        session, _client = make_session()
+        app = self.build_sized_app(session)
+        errors = []
+        thread = threading.Thread(
+                target=lambda: errors.append(
+                        passphrase_error(session)), daemon=True)
+        thread.start()
+        self.assertTrue(wait_for(lambda: session._gate is not None))
+        app.layout.current_buffer.text = 'supersecret'
+        lines, _positions = self.render_app(app)
+        self.assertIn('*' * 11, lines[8])
+        self.assertNotIn('supersecret', '\n'.join(lines))
+        session._gate_decline()
+        thread.join(timeout=5)
+        self.assertEqual(errors, ['cancelled'])
+        # The mask follows the gate, not the buffer content
+        lines, _positions = self.render_app(app)
+        self.assertIn('supersecret', lines[8])
+
     def test_the_application_builds_headless(self):
         try:
             from prompt_toolkit.application import Application
@@ -420,7 +465,7 @@ class ConsoleBuildTestCase(unittest.TestCase):
                     thread.join(timeout=5)
                     self.fail('the console did not exit')
         self.assertIn('debops mcp repl', session._scroll_buffer.text)
-        self.assertIn('debops> exit', session._scroll_buffer.text)
+        self.assertIn('> exit', session._scroll_buffer.text)
 
     def test_the_console_falls_back_without_prompt_toolkit(self):
         from debops.mcp import console
