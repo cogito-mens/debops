@@ -7,6 +7,7 @@
 import io
 import os
 import shutil
+import signal
 import sys
 import tempfile
 import time
@@ -1094,6 +1095,79 @@ class CompletionTestCase(unittest.TestCase):
         self.assertTrue(fake_readline.set_completer.called)
         fake_readline.parse_and_bind.assert_called_once_with(
                 'tab: complete')
+
+    def test_suspend_enabled_unless_confined(self):
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        for confined, expected in ((False, True), (True, False)):
+            client = FakeClient()
+            session, _out, _err = make_repl(client)
+            session.confined = confined
+            with mock.patch('prompt_toolkit.PromptSession') as pt:
+                pt.return_value.prompt.side_effect = EOFError()
+                code = repl.run_interactive(session)
+            self.assertEqual(code, 0)
+            _args, kwargs = pt.call_args
+            self.assertIs(kwargs['enable_suspend'], expected)
+            self.assertIn('key_bindings', kwargs)
+
+    def test_the_suspend_bindings_note_the_confinement(self):
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        client = FakeClient()
+        session, _out, err = make_repl(client)
+        session.confined = True
+        bindings = repl._suspend_bindings(session)
+        binding = bindings.bindings[0]
+        self.assertEqual(binding.keys, ('c-z',))
+        # The note binding is active only in a confined session;
+        # a free one falls through to pt's own suspend binding
+        self.assertTrue(binding.filter())
+        binding.handler(mock.MagicMock())
+        self.assertIn('a confined session does not background',
+                      err.getvalue())
+        session.confined = False
+        self.assertFalse(binding.filter())
+
+    def test_the_confined_plain_loop_ignores_suspend(self):
+        tmp_history_home(self)
+        fake_readline = mock.MagicMock()
+        client = FakeClient()
+        session, _out, _err = make_repl(client, interactive=True)
+        session.confined = True
+        dispositions = []
+
+        def peek(prompt):
+            dispositions.append(signal.getsignal(signal.SIGTSTP))
+            raise EOFError()
+
+        with mock.patch.dict(sys.modules, {'readline': fake_readline}), \
+                mock.patch('builtins.input', peek):
+            code = repl.run_interactive_plain(session)
+        self.assertEqual(code, 0)
+        self.assertEqual(dispositions, [signal.SIG_IGN])
+        # The disposition is restored for the caller
+        self.assertEqual(signal.getsignal(signal.SIGTSTP),
+                         signal.SIG_DFL)
+
+    def test_the_free_plain_loop_keeps_suspend(self):
+        tmp_history_home(self)
+        client = FakeClient()
+        session, _out, _err = make_repl(client, interactive=True)
+        dispositions = []
+
+        def peek(prompt):
+            dispositions.append(signal.getsignal(signal.SIGTSTP))
+            raise EOFError()
+
+        with mock.patch('builtins.input', peek):
+            code = repl.run_interactive_plain(session)
+        self.assertEqual(code, 0)
+        self.assertEqual(dispositions, [signal.SIG_DFL])
 
 
 class NavigationTestCase(unittest.TestCase):

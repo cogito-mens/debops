@@ -178,6 +178,14 @@ class ShellTestCase(unittest.TestCase):
             self.assertTrue(history.filename.endswith(
                     '-project-admin'))
 
+    def test_suspend_enabled_unless_confined(self):
+        for confined, expected in ((False, True), (True, False)):
+            session, _client, _out, _err = make_session()
+            session.confined = confined
+            _code, pt_session = run_shell_once(session)
+            _args, kwargs = pt_session.call_args
+            self.assertIs(kwargs['enable_suspend'], expected)
+
     def test_a_terminal_gets_the_shell(self):
         client = mock.MagicMock()
         with mock.patch('debops.mcp.shell.run_shell',

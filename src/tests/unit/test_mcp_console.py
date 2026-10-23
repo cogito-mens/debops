@@ -576,6 +576,29 @@ class ConsoleBuildTestCase(unittest.TestCase):
         self.assertEqual(session._input_buffer.history.filename,
                          session.history_file)
 
+    def test_the_console_ctrl_z(self):
+        try:
+            from prompt_toolkit.key_binding import KeyBindings
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        from debops.mcp import console
+        session, _client = make_session()
+        attach_buffers(session)
+        bindings = KeyBindings()
+        console._bind_suspend(bindings, session)
+        handler = bindings.bindings[0].handler
+        event = mock.MagicMock()
+        # A free account: the process backgrounds
+        handler(event)
+        event.app.suspend_to_background.assert_called_once_with()
+        # A confined one: a note, no background
+        session.confined = True
+        event.app.suspend_to_background.reset_mock()
+        handler(event)
+        self.assertFalse(event.app.suspend_to_background.called)
+        self.assertIn('a confined session does not background',
+                      session._scroll_buffer.text)
+
     def test_the_console_falls_back_without_prompt_toolkit(self):
         from debops.mcp import console
         session, _client = make_session()

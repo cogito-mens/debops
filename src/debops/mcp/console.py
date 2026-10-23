@@ -291,6 +291,20 @@ class ConsoleRepl(Repl):
         return outcome['returncode']
 
 
+def _bind_suspend(bindings, session):
+    """The console's Ctrl-Z: UNIX job control when the account is
+    free, a note when it is confined (prompt_toolkit's default
+    binding would insert a literal '^Z' into the input line, which
+    neither wants)."""
+
+    @bindings.add('c-z')
+    def _suspend(event):
+        if session.confined:
+            session._note('a confined session does not background')
+        else:
+            event.app.suspend_to_background()
+
+
 def _build_app(session):
     """The console's prompt_toolkit application, headless-buildable
     for the tests."""
@@ -365,6 +379,8 @@ def _build_app(session):
         return Window()
 
     bindings = KeyBindings()
+
+    _bind_suspend(bindings, session)
 
     @bindings.add('f2')
     def _cycle(event):

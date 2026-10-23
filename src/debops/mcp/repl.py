@@ -15,6 +15,7 @@ import getpass
 import logging
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1373,6 +1374,23 @@ def _candidates_for(repl, before):
     return word, repl.complete_candidates(words[0])
 
 
+def _suspend_bindings(repl):
+    """The Ctrl-Z of the prompt front ends: UNIX job control when
+    the account is free (the 'enable_suspend' of prompt_toolkit
+    carries it), a note when it is confined — the default binding
+    would insert a literal '^Z' into the input line, which neither
+    wants."""
+    from prompt_toolkit.filters import Condition
+    from prompt_toolkit.key_binding import KeyBindings
+    bindings = KeyBindings()
+
+    @bindings.add('c-z', filter=Condition(lambda: repl.confined))
+    def _confined_suspend(event):
+        repl._note('a confined session does not background')
+
+    return bindings
+
+
 class _Completer(_PtCompleter):
     """The prompt_toolkit completer: the verbs, then the candidates
     of the verb (playbook targets, role names, files, views)."""
@@ -1452,6 +1470,9 @@ def run_interactive(repl):
             # The shell habit: Tab inserts the completion, a double
             # Tab lists the candidates
             complete_style=CompleteStyle.READLINE_LIKE,
+            # Job control, unless the account is confined
+            enable_suspend=not repl.confined,
+            key_bindings=_suspend_bindings(repl),
             history=repl._new_history())
     # A view switch moves the recall and the record to the view's
     # own history file
@@ -1642,34 +1663,42 @@ def run_interactive_plain(repl):
         readline.set_completer(_readline_complete(readline, repl))
         readline.parse_and_bind('tab: complete')
     print(_banner(repl), file=repl._err)
-    while True:
-        try:
-            line = input(repl.prompt)
-        except KeyboardInterrupt:
-            # A fresh prompt, not a dead session
-            print()
-            continue
-        except EOFError:
-            break
-        if readline is not None and line.strip():
+    if repl.confined:
+        # A confined account gets no job control: the keystroke is
+        # consumed, the process stays in the foreground
+        previous_tstp = signal.signal(signal.SIGTSTP, signal.SIG_IGN)
+    try:
+        while True:
             try:
-                _append_history_string(repl.history_file, line)
-                if repl.history_max > 0:
-                    _prune_history_file(repl.history_file,
-                                        repl.history_max)
-            except OSError:
-                pass
-        try:
-            done = _execute_line(repl, line)
-        except KeyboardInterrupt:
-            # The command died on the interrupt; the session
-            # survives. The connection may hold a half-read
-            # answer — drop it
-            print('^C', file=repl._err)
-            repl.client.close()
-            continue
-        if done:
-            break
+                line = input(repl.prompt)
+            except KeyboardInterrupt:
+                # A fresh prompt, not a dead session
+                print()
+                continue
+            except EOFError:
+                break
+            if readline is not None and line.strip():
+                try:
+                    _append_history_string(repl.history_file, line)
+                    if repl.history_max > 0:
+                        _prune_history_file(repl.history_file,
+                                            repl.history_max)
+                except OSError:
+                    pass
+            try:
+                done = _execute_line(repl, line)
+            except KeyboardInterrupt:
+                # The command died on the interrupt; the session
+                # survives. The connection may hold a half-read
+                # answer — drop it
+                print('^C', file=repl._err)
+                repl.client.close()
+                continue
+            if done:
+                break
+    finally:
+        if repl.confined:
+            signal.signal(signal.SIGTSTP, previous_tstp)
     return 0
 
 
