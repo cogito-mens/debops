@@ -39,6 +39,35 @@ class RunsTestCase(unittest.TestCase):
         # The project name makes the directory recognizable
         self.assertIn('myproject', os.path.basename(os.path.dirname(path)))
 
+    def test_task_count_counts_the_markers(self):
+        project = FakeProject(os.path.join(self.tmpdir, 'myproject'))
+        path = runs.log_path(project, 1)
+        with open(path, 'w') as fp:
+            fp.write('PLAY [x] *****\n\nTASK [one] *****\nok\n'
+                     'TASK [two] *****\nok\n')
+        self.assertEqual(runs.task_count(path), 2)
+        # An unreadable log is no answer, not a crash
+        self.assertIsNone(runs.task_count(
+                os.path.join(self.tmpdir, 'absent.log')))
+
+    def test_active_log_is_the_newest_unfinished_one(self):
+        project = FakeProject(os.path.join(self.tmpdir, 'myproject'))
+        for number, finished in ((1, True), (2, False)):
+            path = runs.log_path(project, number)
+            with open(path, 'w') as fp:
+                fp.write('run {}\n'.format(number))
+            metadata = {'executionId': number}
+            if finished:
+                metadata['finishedAt'] = '2026-10-23T00:00:00Z'
+            runs.write_metadata(path, metadata)
+        self.assertEqual(runs.active_log(project),
+                         runs.log_path(project, 2))
+        # And when it finishes, none is active
+        metadata = runs.read_metadata(runs.log_path(project, 2))
+        metadata['finishedAt'] = '2026-10-24T00:00:00Z'
+        runs.write_metadata(runs.log_path(project, 2), metadata)
+        self.assertIsNone(runs.active_log(project))
+
     def test_log_path_creates_the_directory(self):
         project = FakeProject(os.path.join(self.tmpdir, 'myproject'))
         path = runs.log_path(project, 1)

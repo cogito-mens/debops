@@ -724,6 +724,81 @@ def _task_status(header, tail):
     return '\n'.join(parts)
 
 
+def _tally_from_lists(tasks_text, hosts_text):
+    """The (per-play task counts, per-play host counts) of the
+    ansible-playbook --list-tasks and --list-hosts outputs.
+
+    The play headers read 'play #N (…)', the task lines carry their
+    'TAGS:' marker, the host sections open with 'hosts (N):'.
+    """
+    tasks_per_play = []
+    for line in tasks_text.splitlines():
+        if re.match(r'^\s*play #\d+', line):
+            tasks_per_play.append(0)
+        elif 'TAGS:' in line and tasks_per_play:
+            tasks_per_play[-1] += 1
+    hosts_per_play = []
+    for line in hosts_text.splitlines():
+        if re.match(r'^\s*play #\d+', line):
+            hosts_per_play.append(0)
+        else:
+            match = re.search(r'hosts \((\d+)\):', line)
+            if match is not None and hosts_per_play:
+                hosts_per_play[-1] += int(match.group(1))
+    return tasks_per_play, hosts_per_play
+
+
+def _estimate_seconds(tasks_per_play, hosts_per_play):
+    """A coarse execution estimate: a base cost plus a per-task
+    per-host price. Refined by nothing but the real run — it is the
+    bookkeeping for the queue ETAs and the status line."""
+    total = 5
+    for index, tasks in enumerate(tasks_per_play):
+        hosts = hosts_per_play[index] if index < len(hosts_per_play) \
+                and hosts_per_play[index] else 1
+        total += 2 * tasks * hosts
+    return total
+
+
+def _probe_tally(runner, project, timeout=30):
+    """The tally of a planned execution: the task and host counts
+    from the runner's own list modes (a local parse; no host is
+    contacted).
+
+    Returns {'tasks', 'hosts', 'estimateSeconds'}, or None when the
+    probe fails — the tally is the bookkeeping, never a gate for the
+    run itself.
+    """
+    command = runner.command()
+    counts = []
+    for flag in ('--list-tasks', '--list-hosts'):
+        try:
+            probe = subprocess.run(
+                    command + [flag], cwd=project.path,
+                    env=mcp_environ(project),
+                    capture_output=True, text=True, timeout=timeout)
+        except Exception as errmsg:
+            # The tally is the bookkeeping, never a gate: any probe
+            # failure just means an untracked run
+            logger.notice('The tally probe (%s) failed: %s',
+                          flag, errmsg)
+            return None
+        if probe.returncode != 0:
+            logger.notice('The tally probe (%s) refused for the run: '
+                          '%s', flag, probe.stderr.strip()[:200])
+            return None
+        counts.append(probe.stdout)
+    tasks_per_play, hosts_per_play = _tally_from_lists(*counts)
+    if not tasks_per_play:
+        return None
+    # The names dodge the sidecar's own 'hosts' (the resolved host
+    # names) — these are the tally's counts
+    return {'taskCount': sum(tasks_per_play),
+            'hostCount': sum(hosts_per_play) or 1,
+            'estimateSeconds': _estimate_seconds(tasks_per_play,
+                                                 hosts_per_play)}
+
+
 def _execute_playbook(project, policy, arguments, context, check,
                       enabled_check=None, on_disabled=None):
     mode = 'check' if check else 'run'
@@ -800,6 +875,19 @@ def _execute_playbook(project, policy, arguments, context, check,
             gated = _check_local_confirmation(local, context, policy)
             if gated is not None:
                 return gated
+
+        # The tally fronts the run: the live progress and the
+        # estimate ride the metadata sidecar (project.status shows
+        # them). A queue job brings its own; a direct run probes
+        # here — after the gates, so a refused run never pays for
+        # it. The probe is best-effort: its failure never gates
+        # the run
+        tally = arguments.get('_tally')
+        if tally is None:
+            tally = _probe_tally(runner, project)
+            if tally is None:
+                logger.notice('The run proceeds without a tally '
+                              '(the list probes failed)')
 
         # The run log outlives the server: it is the record of the run
         # when the client is gone before the answer arrives. The id
@@ -914,6 +1002,13 @@ def _execute_playbook(project, policy, arguments, context, check,
             metadata = {'executionId': execution_id, 'mode': mode,
                         'playbooks': targets, 'hosts': resolved_hosts,
                         'startedAt': _utcnow()}
+            # The tally (when the probe produced one) and the queue
+            # job (when one commissioned the run) ride the sidecar
+            # for later viewing
+            if tally is not None:
+                metadata.update(tally)
+            if arguments.get('_job') is not None:
+                metadata['job'] = arguments['_job']
             if log_path is not None:
                 metadata['log'] = os.path.basename(log_path)
                 try:

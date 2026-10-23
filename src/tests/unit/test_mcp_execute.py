@@ -12,6 +12,7 @@ inventory, the hooks and the subprocess.
 from debops.mcp.policy import McpPolicy
 from debops.mcp.server import McpServer, RequestCancelled, ToolContext
 from debops.mcp.tools import register_project_tools
+from debops.mcp.tools import execute
 from debops.mcp.tools.execute import _build_ansible_args
 from unittest import mock
 import contextlib
@@ -1171,6 +1172,75 @@ class DetachedCommandTestCase(unittest.TestCase):
         self.assertIn('--view', command)
         self.assertIn('system', command)
         self.assertEqual(command[-1], '/srv/myproject')
+
+
+class TallyTestCase(unittest.TestCase):
+    """The run tally: the list-output parsing and the estimate."""
+
+    LIST_TASKS = """playbook: ansible/playbooks/custom.yml
+
+  play #1 (localhost): Slow play 	TAGS: []
+
+    tasks:
+      Take some time	TAGS: []
+      Take more	TAGS: [slow]
+"""
+
+    LIST_HOSTS = """playbook: ansible/playbooks/custom.yml
+
+  play #1 (localhost): Slow play	TAGS: []
+    pattern: localhost
+    hosts (2):
+      localhost
+      otherhost
+"""
+
+    def test_the_tally_counts_tasks_and_hosts_per_play(self):
+        tasks, hosts = execute._tally_from_lists(self.LIST_TASKS,
+                                                 self.LIST_HOSTS)
+        self.assertEqual(tasks, [2])
+        self.assertEqual(hosts, [2])
+
+    def test_the_estimate_is_base_plus_task_host_price(self):
+        # 5 s base, 2 s per task per host: 2 tasks x 2 hosts -> 13
+        self.assertEqual(execute._estimate_seconds([2], [2]), 13)
+        # A play without resolved hosts still costs the base price
+        self.assertEqual(execute._estimate_seconds([2], [0]), 9)
+        self.assertEqual(execute._estimate_seconds([], []), 5)
+
+    def test_the_probe_runs_the_list_modes(self):
+        runner = mock.MagicMock()
+        runner.command.return_value = ['ansible-playbook', 'x.yml']
+        project = type('Project', (), {
+                'path': '/nonexistent',
+                'config': type('Config', (), {'_env_vars': {}})()})()
+        probe = mock.Mock()
+        probe.returncode = 0
+        probe.stdout = self.LIST_TASKS
+        probe_hosts = mock.Mock()
+        probe_hosts.returncode = 0
+        probe_hosts.stdout = self.LIST_HOSTS
+        with mock.patch(
+                'debops.mcp.tools.execute.subprocess.run',
+                side_effect=[probe, probe_hosts]) as run_mock:
+            tally = execute._probe_tally(runner, project)
+        self.assertEqual(tally, {'taskCount': 2, 'hostCount': 2,
+                                 'estimateSeconds': 13})
+        # The runner's own command carried the list flags
+        calls = [call[0][0][-1] for call in
+                 run_mock.call_args_list]
+        self.assertEqual(calls, ['--list-tasks', '--list-hosts'])
+
+    def test_a_failed_probe_is_no_gate(self):
+        runner = mock.MagicMock()
+        runner.command.return_value = ['ansible-playbook', 'x.yml']
+        project = type('Project', (), {
+                'path': '/nonexistent',
+                'config': type('Config', (), {'_env_vars': {}})()})()
+        with mock.patch(
+                'debops.mcp.tools.execute.subprocess.run',
+                side_effect=OSError('missing binary')):
+            self.assertIsNone(execute._probe_tally(runner, project))
 
 
 class DetachedRunTestCase(unittest.TestCase):

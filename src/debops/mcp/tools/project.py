@@ -5,7 +5,9 @@
 """Tools which describe the DebOps project itself."""
 
 import os
+from datetime import datetime, timezone
 
+from .. import runs
 from .common import dirty_paths, text_result
 from .executions import project_busy
 
@@ -64,8 +66,45 @@ def tool_project_status(project, policy, arguments):
             'Type: {}'.format(project.project_type),
     ]
     if busy:
-        lines.append('Run: in flight — watch: execution.list, '
-                     'execution.output')
+        # The live run reads from its own log: the tally came from
+        # the metadata sidecar, the position is the TASK markers so
+        # far
+        detail = []
+        log = runs.active_log(project)
+        if log is not None:
+            metadata = runs.read_metadata(log) or {}
+            targets = metadata.get('playbooks')
+            total = metadata.get('taskCount')
+            done = runs.task_count(log)
+            progress = []
+            if total and done is not None:
+                progress.append('task {}/{}'.format(min(done, total),
+                                                    total))
+                structured['tasksDone'] = min(done, total)
+                structured['tasksTotal'] = total
+            started = metadata.get('startedAt')
+            if started is not None:
+                try:
+                    began = datetime.fromisoformat(
+                            started.replace('Z', '+00:00'))
+                    elapsed = max(0, int((datetime.now(timezone.utc)
+                                          - began).total_seconds()))
+                    progress.append('elapsed {} s'.format(elapsed))
+                    structured['elapsedSeconds'] = elapsed
+                except ValueError:
+                    pass
+            if targets:
+                detail.append('{}{}'.format(
+                        ', '.join(targets),
+                        ': ' + ', '.join(progress) if progress
+                        else ''))
+            else:
+                detail.extend(progress)
+        line = 'Run: in flight'
+        if detail:
+            line += ' — ' + ', '.join(detail)
+        line += ' (watch: execution.list, execution.output)'
+        lines.append(line)
     if active:
         lines.append('View: {}{}'.format(
                 project.view, ' (locked)' if policy.view_lock else ''))

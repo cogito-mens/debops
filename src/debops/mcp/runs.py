@@ -180,6 +180,32 @@ def read_metadata(log_path):
         return None
 
 
+_TASK_MARKER = re.compile(r'^TASK \[', re.M)
+
+
+def task_count(log_path):
+    """The TASK markers of a run log so far: one per task per play —
+    the position of the run against its tally. Returns None when the
+    log cannot be read."""
+    try:
+        with open(log_path, 'r', encoding='utf-8', errors='replace') \
+                as fp:
+            return len(_TASK_MARKER.findall(fp.read()))
+    except OSError:
+        return None
+
+
+def active_log(project):
+    """The log of the in-flight execution, if one is writing it: the
+    newest whose sidecar lacks the completion marker. Pair it with
+    the busy probe — a finished run's sidecar carries finishedAt."""
+    for _id, path in reversed(list_logs(project)):
+        metadata = read_metadata(path)
+        if metadata is not None and 'finishedAt' not in metadata:
+            return path
+    return None
+
+
 def directory_path(project):
     """The run log directory of a project view, without creating it."""
     return os.path.join(cache_root(), project_key(project))

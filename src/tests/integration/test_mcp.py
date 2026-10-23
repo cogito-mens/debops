@@ -1430,6 +1430,7 @@ def test_execution_output_answers_what_changed(run_debops, mcp_env,
 
         # The listing addresses the run afterwards
         listing = server.call("execution.list", {})
+        assert "result" in listing, json.dumps(listing)[:400]
         (entry,) = listing["result"]["structuredContent"]
         assert entry["id"] == execution_id
         assert entry["mode"] == "check"

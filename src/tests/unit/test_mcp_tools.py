@@ -1690,6 +1690,35 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('Run: in flight', text)
         self.assertTrue(response['result']['structuredContent']
                         ['runInFlight'])
+
+    def test_project_status_reports_the_run_progress(self):
+        # The progress line reads the live run's own log: the tally
+        # from the sidecar, the position from the TASK markers
+        from debops.mcp import runs
+        from debops.mcp.tools.common import project_flock
+        with mock.patch.dict(os.environ,
+                             {'XDG_CACHE_HOME':
+                              os.path.join(self.tmpdir, 'cache')}):
+            policy = McpPolicy(self.project)
+            path = runs.log_path(self.project, 1)
+            with open(path, 'w') as fp:
+                fp.write('PLAY [x] *****\n\nTASK [one] *****\nok\n')
+            runs.write_metadata(path, {
+                    'executionId': 1, 'mode': 'run',
+                    'playbooks': ['custom'],
+                    'startedAt': '2026-10-24T00:00:00Z',
+                    'taskCount': 3, 'hostCount': 1, 'estimateSeconds': 11})
+            with project_flock(self.project, policy, exclusive=True):
+                response = self.call_tool('project.status')
+        text = self.result_text(response)
+        self.assertFalse(response['result']['isError'])
+        self.assertIn('Run: in flight — custom: task 1/3', text)
+        self.assertIn('execution.list', text)
+        structured = response['result']['structuredContent']
+        self.assertTrue(structured['runInFlight'])
+        self.assertEqual(structured['tasksDone'], 1)
+        self.assertEqual(structured['tasksTotal'], 3)
+        self.assertIn('elapsedSeconds', structured)
         text = self.result_text(response)
         self.assertFalse(response['result']['isError'])
         self.assertIn('Run: in flight', text)
