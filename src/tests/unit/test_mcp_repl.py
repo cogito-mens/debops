@@ -684,6 +684,85 @@ class HistoryFormatTestCase(unittest.TestCase):
     def test_a_missing_history_reads_empty(self):
         self.assertEqual(repl._read_history_strings(self.path), [])
 
+    def test_the_prune_keeps_the_newest_records_with_their_bytes(self):
+        os.makedirs(os.path.dirname(self.path))
+        content = ('\n# 2026-10-20 09:00:00.000000\n+first\n'
+                   '\n# 2026-10-21 09:00:00.000000\n'
+                   '+second one\n+second two\n'
+                   '\n# 2026-10-22 09:00:00.000000\n+third\n')
+        with open(self.path, 'w') as fp:
+            fp.write(content)
+        repl._prune_history_file(self.path, 2)
+        with open(self.path) as fp:
+            pruned = fp.read()
+        # The survivors keep their bytes — timestamps and the
+        # multiline record's shape included
+        self.assertEqual(pruned, content.split('+first\n', 1)[1])
+        self.assertNotIn('first', pruned)
+        self.assertIn('+second one\n+second two\n', pruned)
+        self.assertEqual(repl._read_history_strings(self.path),
+                         ['second one\nsecond two', 'third'])
+
+    def test_the_prune_handles_the_plain_format(self):
+        os.makedirs(os.path.dirname(self.path))
+        with open(self.path, 'w') as fp:
+            fp.write('a\nb\nc\n')
+        repl._prune_history_file(self.path, 2)
+        with open(self.path) as fp:
+            self.assertEqual(fp.read(), 'b\nc\n')
+
+    def test_a_file_under_the_cap_is_untouched(self):
+        os.makedirs(os.path.dirname(self.path))
+        content = '\n# 2026-10-20 09:00:00.000000\n+first\nplain\n'
+        with open(self.path, 'w') as fp:
+            fp.write(content)
+        repl._prune_history_file(self.path, 10)
+        with open(self.path) as fp:
+            self.assertEqual(fp.read(), content)
+
+    def test_the_plain_loop_prunes_after_an_append(self):
+        fake_readline = mock.MagicMock()
+        client = FakeClient()
+        session, _out, _err = make_repl(client, interactive=True)
+        session.history_max = 2
+        with mock.patch.dict(sys.modules, {'readline': fake_readline}), \
+                mock.patch('builtins.input',
+                           side_effect=['pwd', 'help', 'pwd',
+                                        EOFError()]):
+            code = repl.run_interactive_plain(session)
+        self.assertEqual(code, 0)
+        self.assertEqual(repl._read_history_strings(
+                session.history_file), ['help', 'pwd'])
+
+    def test_the_history_bound_comes_from_the_ambient_config(self):
+        self.assertEqual(repl.history_max_entries({}), 10000)
+        self.assertEqual(repl.history_max_entries(
+                {'mcp': {'history': {'max_entries': 500}}}), 500)
+        # Zero means unbounded, as with the run timeouts
+        self.assertEqual(repl.history_max_entries(
+                {'mcp': {'history': {'max_entries': 0}}}), 0)
+        self.assertEqual(repl.history_max_entries(
+                {'mcp': {'history': {'max_entries': -5}}}), 0)
+        self.assertEqual(repl.history_max_entries(
+                {'mcp': {'history': {'max_entries': 'lots'}}}), 10000)
+
+    def test_the_bounded_history_prunes_on_append(self):
+        try:
+            from prompt_toolkit.history import FileHistory
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        client = FakeClient()
+        session, _out, _err = make_repl(client)
+        session.history_max = 2
+        history = session._new_history()
+        self.assertIsInstance(history, FileHistory)
+        self.assertEqual(history.filename, session.history_file)
+        for command in ('one', 'two', 'three'):
+            history.store_string(command)
+        self.assertEqual(
+                repl._read_history_strings(history.filename),
+                ['two', 'three'])
+
     def test_the_plain_loop_loads_and_appends(self):
         fake_readline = mock.MagicMock()
         client = FakeClient()

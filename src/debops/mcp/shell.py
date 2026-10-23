@@ -34,7 +34,6 @@ def run_shell(session):
         from prompt_toolkit import PromptSession
         from prompt_toolkit.patch_stdout import patch_stdout
         from prompt_toolkit.shortcuts import CompleteStyle
-        from prompt_toolkit.history import FileHistory
         from prompt_toolkit.styles import Style
     except ImportError:
         # No library, no chrome; the plain reader carries the session
@@ -44,14 +43,14 @@ def run_shell(session):
             # The shell habit: Tab inserts the completion, a double
             # Tab lists the candidates
             complete_style=CompleteStyle.READLINE_LIKE,
-            history=FileHistory(session.history_file),
+            history=session._new_history(),
             bottom_toolbar=lambda: _toolbar(session),
             style=Style.from_dict({'bottom-toolbar': 'reverse'}))
     # A view switch moves the recall and the record to the view's
     # own history file
     session._history_changed = lambda: setattr(
             prompt_session.default_buffer, 'history',
-            FileHistory(session.history_file))
+            session._new_history())
     print(_banner(session), file=session._err)
     # The shell streams the watch in the background: a reader thread
     # on its own connection, the lines printed above the prompt

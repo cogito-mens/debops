@@ -12,6 +12,7 @@ work: commands on standard input, answers on standard output.
 
 import datetime
 import getpass
+import logging
 import os
 import shlex
 import subprocess
@@ -25,6 +26,8 @@ from .client import (UnixClient, default_socket_path,
                      socket_pid_path)
 from .runs import path_key
 from .trust import TRUST_PATH
+
+logger = logging.getLogger('debops')
 
 # The capabilities the interactive clients (the REPL, the shell)
 # declare: the tasks extension (a long execution is a handle the
@@ -340,7 +343,8 @@ class Repl(object):
     def __init__(self, client, project_name=None, view=None,
                  out=sys.stdout, err=sys.stderr, interactive=False,
                  project_path=None, project_type=None,
-                 view_root_rel=None, confined=False):
+                 view_root_rel=None, confined=False,
+                 history_max=0):
         self.client = client
         self.project_name = project_name
         self.view = view
@@ -350,6 +354,8 @@ class Repl(object):
         # The ambient confinement of the account: the escape hatches
         # of the session (the editor) stay closed
         self.confined = confined
+        # The bound of the history files (0: unbounded)
+        self.history_max = history_max
         self.had_error = False
         self._completion_cache = {}
         self.project_path = project_path
@@ -415,6 +421,14 @@ class Repl(object):
     def _history_changed(self):
         """The history dimension (the view) switched; the front ends
         re-point the input history at the current file."""
+
+    def _new_history(self):
+        """The command history of the session (its current project
+        and view), bounded to the configured length. One factory for
+        every front end and the view-switch hooks, so the bound and
+        the file never drift apart."""
+        return _bounded_history_class()(self.history_file,
+                                        self.history_max)
 
     def status_line(self):
         """The session state for a status bar: the place on the left,
@@ -1402,7 +1416,6 @@ def run_interactive(repl):
     try:
         from prompt_toolkit import PromptSession
         from prompt_toolkit.shortcuts import CompleteStyle
-        from prompt_toolkit.history import FileHistory
     except ImportError:
         # The plain reader carries the session; completion just is
         # not there
@@ -1412,12 +1425,11 @@ def run_interactive(repl):
             # The shell habit: Tab inserts the completion, a double
             # Tab lists the candidates
             complete_style=CompleteStyle.READLINE_LIKE,
-            history=FileHistory(repl.history_file))
+            history=repl._new_history())
     # A view switch moves the recall and the record to the view's
     # own history file
     repl._history_changed = lambda: setattr(
-            session.default_buffer, 'history',
-            FileHistory(repl.history_file))
+            session.default_buffer, 'history', repl._new_history())
     print(_banner(repl), file=repl._err)
     while True:
         try:
@@ -1490,6 +1502,91 @@ def _append_history_string(path, line):
             fp.write('+{}\n'.format(part).encode('utf-8'))
 
 
+def history_max_entries(config_raw):
+    """The 'mcp.history.max_entries' knob: the bound of the shared
+    history files, in entries (0: unbounded; absent: a generous
+    10000). The files live in the account's data home and fill the
+    account's disk, so the knob is the account's (ambient), never
+    the project's."""
+    raw = config_raw.get('mcp', {}).get('history', {}).get(
+            'max_entries', 10000)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning("Unknown mcp.history.max_entries value %r, "
+                       'using 10000', raw)
+        value = 10000
+    return max(0, value)
+
+
+def _prune_history_file(path, max_entries):
+    """Trim the history file to its newest 'max_entries' records.
+    The retained records keep their bytes — timestamps included — so
+    the format survives: a record is its separator lines (a blank
+    line, a '# timestamp') plus the '+' lines of the entry; a legacy
+    plain line is a record of its own."""
+    try:
+        with open(path, 'rb') as fp:
+            data = fp.read()
+    except OSError:
+        return
+    records = []
+    pending = []
+    current = None
+    for line in data.decode('utf-8', 'replace').splitlines(
+            keepends=True):
+        if line.startswith('+'):
+            if current is None:
+                current = list(pending)
+                pending = []
+                records.append(current)
+            current.append(line)
+        elif line.startswith('#') or not line.strip():
+            # A separator: it precedes its record
+            current = None
+            pending.append(line)
+        else:
+            # The legacy plain format: the line is the record
+            current = None
+            records.append(pending + [line])
+            pending = []
+    if len(records) <= max_entries:
+        return
+    with open(path, 'wb') as fp:
+        for record in records[len(records) - max_entries:]:
+            for line in record:
+                fp.write(line.encode('utf-8'))
+
+
+_BOUNDED_HISTORY_CLASS = None
+
+
+def _bounded_history_class():
+    """The FileHistory subclass with the bounded length, built on
+    first use — prompt_toolkit imports stay out of this module."""
+    global _BOUNDED_HISTORY_CLASS
+    if _BOUNDED_HISTORY_CLASS is None:
+        from prompt_toolkit.history import FileHistory
+
+        class BoundedFileHistory(FileHistory):
+            """The shared history file with a bounded length: an
+            append trims the oldest whole records beyond the
+            maximum (0: unbounded)."""
+
+            def __init__(self, filename, max_entries):
+                super().__init__(filename)
+                self._max_entries = max_entries
+
+            def store_string(self, string):
+                super().store_string(string)
+                if self._max_entries > 0:
+                    _prune_history_file(self.filename,
+                                        self._max_entries)
+
+        _BOUNDED_HISTORY_CLASS = BoundedFileHistory
+    return _BOUNDED_HISTORY_CLASS
+
+
 def run_interactive_plain(repl):
     """The no-dependency interactive loop: readline history when the
     module is there, plain input() either way."""
@@ -1525,6 +1622,9 @@ def run_interactive_plain(repl):
         if readline is not None and line.strip():
             try:
                 _append_history_string(repl.history_file, line)
+                if repl.history_max > 0:
+                    _prune_history_file(repl.history_file,
+                                        repl.history_max)
             except OSError:
                 pass
         try:
@@ -1556,7 +1656,7 @@ def _execute_line(repl, line):
 
 def run(client, project_name=None, view=None, interactive=None,
         project_path=None, project_type=None, view_root_rel=None,
-        frontend=None, command=None, confined=False):
+        frontend=None, command=None, confined=False, history_max=0):
     """Build and run an interpreter session against the connected
     daemon. 'frontend' selects the chrome: None for the plain
     interpreter, 'shell' for the status-bar interface, 'console' for
@@ -1584,7 +1684,7 @@ def run(client, project_name=None, view=None, interactive=None,
                             project_path=project_path,
                             project_type=project_type,
                             view_root_rel=view_root_rel,
-                            confined=confined)
+                            confined=confined, history_max=history_max)
     if runner is not None:
         return runner(session)
     if interactive:

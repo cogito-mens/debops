@@ -1025,9 +1025,12 @@ class Interpreter(object):
         self._mcp_refuse_if_disabled()
         from .mcp import repl as repl_mod
         # The ambient confinement of the account, captured before a
-        # project configuration could merge in and lift it
+        # project configuration could merge in and lift it; the
+        # history bound too — the history files fill the account's
+        # disk, so the knob is the account's
         confined = bool(self.config.raw.get('mcp', {}).get(
                 'login', {}).get('confined', False))
+        history_max = repl_mod.history_max_entries(self.config.raw)
         project = None
         if not args.docs:
             # A login-shell session (the 'debops-shell' program
@@ -1098,7 +1101,7 @@ class Interpreter(object):
                     view_root_rel=view_root_rel,
                     frontend=frontend,
                     command=getattr(args, 'command', None),
-                    confined=confined)
+                    confined=confined, history_max=history_max)
         sys.exit(code)
 
     def do_autostart(self):

@@ -303,7 +303,6 @@ def _build_app(session):
                                        DynamicContainer,
                                        FormattedTextControl, HSplit,
                                        Layout, VSplit, Window)
-    from prompt_toolkit.history import FileHistory
     from prompt_toolkit.layout.processors import (
             DynamicProcessor, PasswordProcessor)
     from prompt_toolkit.styles import Style
@@ -334,12 +333,12 @@ def _build_app(session):
             accept_handler=accept,
             # The history file is shared with the other front ends
             # of this project and view
-            history=FileHistory(session.history_file))
+            history=session._new_history())
     session._input_buffer = input_buffer
     # A view switch moves the recall and the record to the view's
     # own history file
     session._history_changed = lambda: setattr(
-            input_buffer, 'history', FileHistory(session.history_file))
+            input_buffer, 'history', session._new_history())
     # A pending secret gate (the passphrase prompt) masks the input
     password = PasswordProcessor()
     input_control = BufferControl(
