@@ -10,6 +10,8 @@ dependencies.
 
 import io
 import sys
+import threading
+import time
 import unittest
 
 from unittest import mock
@@ -21,6 +23,7 @@ from debops.mcp import shell
 
 def make_session(elevated=False):
     client = mock.MagicMock()
+    client.legacy = False
     client.bearer = None
     out, err = io.StringIO(), io.StringIO()
     session = Repl(client, project_name='project', view='system',
@@ -28,6 +31,35 @@ def make_session(elevated=False):
                    view_root_rel='ansible')
     session.elevated = elevated
     return session, client, out, err
+
+
+def wait_for(predicate, timeout=5):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+class FakeWatcher(object):
+    """A scripted watch connection: yields the queued lines, then
+    holds the stream open until closed."""
+
+    def __init__(self, lines=()):
+        self.lines = list(lines)
+        self.closed = False
+        self._gate = threading.Event()
+
+    def request_streaming(self, method, params):
+        for line in self.lines:
+            yield {'method': 'notifications/activity',
+                   'params': {'line': line}}
+        self._gate.wait(5)
+
+    def close(self):
+        self.closed = True
+        self._gate.set()
 
 
 def run_shell_once(session, lines=()):
@@ -128,6 +160,87 @@ class ShellTestCase(unittest.TestCase):
                             interactive=True, frontend='shell')
         self.assertEqual(code, 0)
         self.assertTrue(shell_run.called)
+
+
+class BackgroundWatchTestCase(unittest.TestCase):
+    """The shell's background watch: a reader thread on its own
+    connection, the lines printed above the prompt."""
+
+    def make_watching_session(self, watcher):
+        session, client, out, err = make_session()
+        client.bearer = 'the-token'
+        client.clone.return_value = watcher
+        session.background_watch = True
+        return session, client, out, err
+
+    def test_the_watch_runs_in_the_background(self):
+        watcher = FakeWatcher(lines=['run #1 finished'])
+        session, client, out, err = self.make_watching_session(
+                watcher)
+        session.execute('watch')
+        # The command returned at once; the lines print as they come
+        self.assertTrue(wait_for(lambda: 'run #1 finished'
+                                 in out.getvalue()))
+        self.assertIn('in the background', err.getvalue())
+        self.assertIsNotNone(session._watch_thread)
+        # The clone carries the trust
+        client.clone.assert_called_once_with()
+        # Toggling stops it
+        session.execute('watch')
+        self.assertTrue(watcher.closed)
+        self.assertIsNone(session._watch_thread)
+        self.assertIn('watch ended', err.getvalue())
+
+    def test_the_watch_stream_dying_notes_it(self):
+        class DyingWatcher(object):
+            def __init__(self):
+                self.closed = False
+
+            def request_streaming(self, method, params):
+                raise ConnectionError('gone')
+                yield
+
+            def close(self):
+                self.closed = True
+
+        watcher = DyingWatcher()
+        session, _client, _out, err = self.make_watching_session(
+                watcher)
+        session.execute('watch')
+        self.assertTrue(wait_for(lambda: 'watch ended: gone'
+                                 in err.getvalue()))
+        self.assertIsNone(session._watch_thread)
+        self.assertTrue(watcher.closed)
+
+    def test_the_watch_needs_the_trust(self):
+        session, client, _out, _err = make_session()
+        client.bearer = None
+        session.background_watch = True
+        # A pipe cannot ask for the passphrase
+        with self.assertRaises(repl.ReplError) as context:
+            session.execute('watch')
+        self.assertIn('trust passphrase', str(context.exception))
+        self.assertIsNone(session._watch_thread)
+
+    def test_the_shell_stops_the_watch_on_exit(self):
+        session, _client, _out, _err = make_session()
+        watcher = FakeWatcher()
+        session._watch_client = watcher
+        session._watch_thread = mock.MagicMock()
+        code, _pt_session = run_shell_once(session)
+        self.assertEqual(code, 0)
+        self.assertTrue(watcher.closed)
+        self.assertIsNone(session._watch_thread)
+
+    def test_the_foreground_watch_stays_in_the_plain_repl(self):
+        # The engine keeps the Ctrl-C flow when no front end opted
+        # into the background watch
+        session, client, _out, err = make_session()
+        client.bearer = 'the-token'
+        client.request_streaming.side_effect = KeyboardInterrupt()
+        session.execute('watch')
+        self.assertIn('watch ended', err.getvalue())
+        self.assertIsNone(session._watch_thread)
 
 
 if __name__ == '__main__':

@@ -50,6 +50,9 @@ def run_shell(session):
             bottom_toolbar=lambda: _toolbar(session),
             style=Style.from_dict({'bottom-toolbar': 'reverse'}))
     print(_banner(session), file=session._err)
+    # The shell streams the watch in the background: a reader thread
+    # on its own connection, the lines printed above the prompt
+    session.background_watch = True
     with patch_stdout():
         # The session's channels were captured at construction time;
         # re-bind them so the prints inside the loop reach the proxy
@@ -75,5 +78,6 @@ def run_shell(session):
                     print('^C', file=session._err)
                     session.client.close()
         finally:
+            session.stop_watch()
             session._out, session._err = original_out, original_err
     return 0

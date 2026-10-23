@@ -94,6 +94,16 @@ class UnixClient(object):
         self._reader = None
         self._next_id = 1
 
+    def clone(self):
+        """A second connection to the same server, for a stream
+        which runs next to the request flow (the background watch).
+        The bearer token rides along."""
+        clone = type(self)(self._path, timeout=self._timeout,
+                           capabilities=self._capabilities,
+                           legacy=self.legacy)
+        clone.bearer = self.bearer
+        return clone
+
     def _connect(self):
         if self._connection is not None:
             return

@@ -312,6 +312,21 @@ class UnixClientTestCase(unittest.TestCase):
             client.request_unix(os.path.join(self.tmpdir, 'absent.sock'),
                                 'server/discover')
 
+    def test_clone_makes_a_second_connection_with_the_trust(self):
+        with client.UnixClient(self.path, timeout=7,
+                               legacy=False) as connection:
+            connection.bearer = 'the-token'
+            second = connection.clone()
+            self.assertIsNot(second, connection)
+            self.assertEqual(second._path, connection._path)
+            self.assertEqual(second._timeout, 7)
+            self.assertEqual(second.bearer, 'the-token')
+            # The clone carries its own request ids and works while
+            # the first connection is open
+            response = second.request('tools/list')
+            self.assertEqual(response['id'], 1)
+            second.close()
+
     def test_a_dead_server_drops_the_connection(self):
         # The peer vanishes mid-session: the request fails, the dead
         # connection is dropped, the next call reconnects

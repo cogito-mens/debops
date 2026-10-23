@@ -16,6 +16,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 from . import server as _server
@@ -302,6 +303,12 @@ class Repl(object):
         # The elevation TTL, for the status display (the server
         # enforces its own; this is the client's mirror of it)
         self._elevated_until = None
+        # The background watch state: the shell sets the flag and the
+        # watch verb toggles a reader thread on its own connection
+        # instead of holding the foreground
+        self.background_watch = False
+        self._watch_client = None
+        self._watch_thread = None
 
     @property
     def prompt(self):
@@ -557,12 +564,16 @@ class Repl(object):
 
     def cmd_watch(self, args):
         """Stream the activity of the server's clients until
-        Ctrl-C."""
+        Ctrl-C — in the shell, in the background, until 'watch'
+        toggles it off."""
         if args:
             raise ReplError('watch takes no arguments')
         if self.client.legacy:
             raise ReplError('the 2025-era protocol has no '
                             'subscription streams')
+        if self.background_watch:
+            self._toggle_watch()
+            return
         self._ensure_trusted()
         self._note('watching the server activity (Ctrl-C ends it)')
         try:
@@ -578,6 +589,63 @@ class Repl(object):
             self._note('watch ended')
         except (EOFError, RuntimeError, TimeoutError) as errmsg:
             raise ReplError(str(errmsg))
+
+    def _toggle_watch(self):
+        """Start or stop the background watch: a reader thread on its
+        own connection, so the session keeps answering while the
+        activity lines print."""
+        if self._watch_thread is not None:
+            self.stop_watch(note='watch ended')
+            return
+        self._ensure_trusted()
+        watcher = self.client.clone()
+        thread = threading.Thread(target=self._watch_loop,
+                                  args=(watcher,), daemon=True)
+        self._watch_client = watcher
+        self._watch_thread = thread
+        thread.start()
+        self._note('watching the server activity in the background '
+                   '("watch" again ends it)')
+
+    def _watch_loop(self, watcher):
+        """The background watch: the activity lines print until the
+        toggle or the connection ends the stream."""
+        died = None
+        try:
+            for message in watcher.request_streaming(
+                    'subscriptions/listen',
+                    {'notifications': {'activity': True}}):
+                if message.get('method') == 'notifications/activity':
+                    print(message.get('params', {}).get('line', ''),
+                          file=self._out)
+        except (EOFError, ConnectionError, RuntimeError, TimeoutError,
+                OSError) as errmsg:
+            died = str(errmsg)
+        finally:
+            if self._watch_client is watcher:
+                # The stream ended on its own — say so
+                self._watch_client = None
+                self._watch_thread = None
+                try:
+                    watcher.close()
+                except Exception:
+                    pass
+                self._note('watch ended' + (': ' + died
+                                            if died else ''))
+
+    def stop_watch(self, note=None):
+        """Stop the background watch, if any; closing the channel
+        ends the stream server-side."""
+        watcher = self._watch_client
+        self._watch_client = None
+        self._watch_thread = None
+        if watcher is not None:
+            try:
+                watcher.close()
+            except Exception:
+                pass
+        if note:
+            self._note(note)
 
     def cmd_edit(self, args):
         """Open a project file in $VISUAL/$EDITOR and write the
@@ -1134,7 +1202,8 @@ HELP = {
                'while ("drop" ends it)',
     'drop': 'end the elevation',
     'watch': 'stream the activity of the server\'s clients '
-             '(a trusted session; Ctrl-C ends it)',
+             '(a trusted session; Ctrl-C ends it — in the shell it '
+             'runs in the background and "watch" toggles it)',
     'help': 'this text',
     'exit': 'leave the interpreter (Ctrl-D works too)',
 }
