@@ -160,6 +160,10 @@ def connect_or_spawn(socket_path, project, docs=False, spawn=None,
             info = (result.get('_meta', {}).get(
                     'io.modelcontextprotocol/serverInfo') or {})
             connected.server_version = info.get('version')
+            # The daemon's current view too: the socket is shared,
+            # the configured default may not be where it is
+            connected.server_view = result.get('_meta', {}).get(
+                    _server.VIEW_META_KEY)
         return connected
     if spawn is None:
         if interactive:
@@ -479,7 +483,11 @@ class Repl(object):
             message = details.get('details') or response['error'].get(
                     'message', 'unknown error')
             raise ReplError(message)
-        return response.get('result') or {}
+        result = response.get('result') or {}
+        # Every answer tells the session where the daemon's view is;
+        # it may have moved since the last one
+        self._adopt_view(result.get('_meta') or {})
+        return result
 
     # -- the confirmation gate -------------------------------------
 
@@ -594,21 +602,30 @@ class Repl(object):
     def cmd_view(self, args):
         if len(args) != 1:
             raise ReplError('usage: view <name>')
-        result = self._call_tool('view.switch', {'view': args[0]})
-        if not result.get('isError'):
-            # The prompt, the working directory and the completions
-            # follow the view
-            self.view = args[0]
-            if self.project_type == 'legacy':
-                self._view_root_rel = 'ansible'
-            elif self.project_type is not None:
-                self._view_root_rel = os.path.join(
-                        'ansible', 'views', args[0])
-            self.cwd = self._view_root_rel or ''
-            self._previous_cwd = None
-            self._completion_cache.clear()
-            self._history_changed()
-        return result
+        # The session state follows the answer's '_meta', which every
+        # result carries: the view is the daemon's, shared with every
+        # client — this command included
+        return self._call_tool('view.switch', {'view': args[0]})
+
+    def _adopt_view(self, meta):
+        """Follow the daemon's current view, carried in every
+        result's '_meta': it is shared state, and another client may
+        have moved it. The scope edge, the working directory, the
+        completions and the history file all follow; a quiet no-op
+        when unchanged."""
+        if _server.VIEW_META_KEY not in meta:
+            return
+        view = meta[_server.VIEW_META_KEY]
+        if view == self.view:
+            return
+        self.view = view
+        self._view_root_rel = _view_root_rel(self.project_type, view)
+        self.cwd = self._view_root_rel or ''
+        self._previous_cwd = None
+        self._completion_cache.clear()
+        self._history_changed()
+        self._note('the view is now {}; the working directory moved '
+                   'to its root'.format(view or '(none)'))
 
     def cmd_check(self, args):
         return self._call_tool('check', execution_arguments(args))
@@ -1548,6 +1565,16 @@ def _append_history_string(path, line):
                 datetime.datetime.now()).encode('utf-8'))
         for part in line.split('\n'):
             fp.write('+{}\n'.format(part).encode('utf-8'))
+
+
+def _view_root_rel(project_type, view):
+    """The view's root relative to the project directory; None when
+    no view is active (the scope is the project directory then)."""
+    if project_type == 'legacy':
+        return 'ansible'
+    if project_type is not None and view is not None:
+        return os.path.join('ansible', 'views', view)
+    return None
 
 
 def history_max_entries(config_raw):

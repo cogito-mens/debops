@@ -100,6 +100,9 @@ class UnixClient(object):
         # protocol revision), once known
         self.server_version = None
         self.protocol_version = None
+        # The infrastructure view the daemon is on (shared across
+        # clients), once learned from an answer's '_meta'
+        self.server_view = None
         # The bearer token of an authenticated session, riding the
         # '_meta' of every request while set
         self.bearer = None

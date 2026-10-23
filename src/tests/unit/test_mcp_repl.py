@@ -134,7 +134,10 @@ class VerbTestCase(unittest.TestCase):
         self.repl._completion_cache['view'] = ['system']
         self.client.queue('tools/call', {
                 'resultType': 'complete', 'isError': False,
-                'content': [{'type': 'text', 'text': 'switched'}]})
+                'content': [{'type': 'text', 'text': 'switched'}],
+                # The daemon's current view rides the '_meta' of
+                # every result; the session follows it
+                '_meta': {'org.debops/view': 'web'}})
         self.repl.execute('view web')
         self.assertEqual(self.repl.view, 'web')
         self.assertEqual(self.repl.prompt, 'debops project:web> ')
@@ -143,9 +146,51 @@ class VerbTestCase(unittest.TestCase):
     def test_a_failed_switch_keeps_the_view(self):
         self.client.queue('tools/call', {
                 'resultType': 'complete', 'isError': True,
-                'content': [{'type': 'text', 'text': 'no such view'}]})
+                'content': [{'type': 'text', 'text': 'no such view'}],
+                # A failed switch still carries the current view
+                '_meta': {'org.debops/view': 'system'}})
         self.repl.execute('view web')
         self.assertEqual(self.repl.view, 'system')
+
+    def test_the_session_follows_a_remote_view_switch(self):
+        # Every answer's '_meta' carries the daemon's current view;
+        # another client moved it — the session follows
+        self.repl.cwd = 'inventory'
+        self.repl._completion_cache['view'] = ['system']
+        fired = []
+        self.repl._history_changed = lambda: fired.append(True)
+        self.client.queue('tools/call', {
+                'resultType': 'complete', 'isError': False,
+                'content': [{'type': 'text', 'text': 'Project: x'}],
+                '_meta': {'org.debops/view': 'web'}})
+        self.repl.execute('status')
+        self.assertEqual(self.repl.view, 'web')
+        # The scope edge and the working directory moved, the
+        # completion cache flushed, the history hook fired, and the
+        # note said so
+        self.assertEqual(self.repl.cwd, '')
+        self.assertIsNone(self.repl._view_root_rel)
+        self.assertEqual(self.repl._completion_cache, {})
+        self.assertEqual(fired, [True])
+        self.assertIn('the view is now web', self.err.getvalue())
+
+    def test_an_unchanged_view_meta_is_a_no_op(self):
+        self.client.queue('tools/call', {
+                'resultType': 'complete', 'isError': False,
+                'content': [{'type': 'text', 'text': 'Project: x'}],
+                '_meta': {'org.debops/view': 'system'}})
+        self.repl.execute('status')
+        self.assertEqual(self.repl.view, 'system')
+        self.assertNotIn('the view is now', self.err.getvalue())
+
+    def test_a_result_without_the_view_meta_changes_nothing(self):
+        # A legacy-shaped or foreign answer never moves the view
+        self.client.queue('tools/call', {
+                'resultType': 'complete', 'isError': False,
+                'content': [{'type': 'text', 'text': 'Project: x'}]})
+        self.repl.execute('status')
+        self.assertEqual(self.repl.view, 'system')
+        self.assertNotIn('the view is now', self.err.getvalue())
 
 
 class ConfirmationTestCase(unittest.TestCase):
@@ -293,6 +338,17 @@ class ConnectEraTestCase(unittest.TestCase):
             with self.assertRaises(ReplError) as context:
                 repl.connect_or_spawn(self.socket, None)
         self.assertIn('retry with --legacy', str(context.exception))
+
+    def test_the_daemon_view_is_learned_from_the_probe(self):
+        # The discover answer's '_meta' carries the daemon's current
+        # view; the client surfaces it for the session start
+        answer = {'result': {
+                'resultType': 'complete', 'supportedVersions': [],
+                '_meta': {'org.debops/view': 'admin'}}}
+        with mock.patch('debops.mcp.repl.UnixClient',
+                        return_value=self.fake_client(answer)):
+            connected = repl.connect_or_spawn(self.socket, None)
+        self.assertEqual(connected.server_view, 'admin')
 
     def test_a_native_daemon_refuses_the_flag(self):
         answer = {'result': {'resultType': 'complete'}}
@@ -833,7 +889,9 @@ class HistoryKeyTestCase(unittest.TestCase):
         fired = []
         session._history_changed = lambda: fired.append(True)
         client.queue('tools/call', {'resultType': 'complete',
-                                    'isError': False, 'content': []})
+                                    'isError': False, 'content': [],
+                                    '_meta': {'org.debops/view':
+                                              'admin'}})
         session.execute('view admin')
         self.assertEqual(fired, [True])
         self.assertEqual(session.view, 'admin')
@@ -857,7 +915,9 @@ class HistoryKeyTestCase(unittest.TestCase):
             self.skipTest('prompt_toolkit is not installed')
         session, client = self.make_project_session()
         client.queue('tools/call', {'resultType': 'complete',
-                                    'isError': False, 'content': []})
+                                    'isError': False, 'content': [],
+                                    '_meta': {'org.debops/view':
+                                              'admin'}})
         with mock.patch('prompt_toolkit.PromptSession') as pt:
             pt.return_value.prompt.side_effect = EOFError()
             code = repl.run_interactive(session)
@@ -885,7 +945,9 @@ class HistoryKeyTestCase(unittest.TestCase):
                          '+{}\n'.format(command))
         fake_readline = mock.MagicMock()
         client.queue('tools/call', {'resultType': 'complete',
-                                    'isError': False, 'content': []})
+                                    'isError': False, 'content': [],
+                                    '_meta': {'org.debops/view':
+                                              'admin'}})
         with mock.patch.dict(sys.modules, {'readline': fake_readline}), \
                 mock.patch('builtins.input',
                            side_effect=['view admin', EOFError()]):
@@ -1424,16 +1486,36 @@ class NavigationTestCase(unittest.TestCase):
                 view_root_rel='ansible/views/system')
         session.cwd = 'ansible/views/system/inventory'
         client.queue('tools/call', {'resultType': 'complete',
-                                    'isError': False, 'content': []})
+                                    'isError': False, 'content': [],
+                                    '_meta': {'org.debops/view':
+                                              'webservers'}})
         session.execute('view webservers')
         self.assertEqual(session.view, 'webservers')
         self.assertEqual(session.cwd, 'ansible/views/webservers')
         self.assertIsNone(session._previous_cwd)
 
+    def test_a_remote_switch_moves_the_scope_and_notes_it(self):
+        # Another client moved the daemon's view; the answer's
+        # '_meta' moves the session's scope with it
+        session, client, _out, err = self.make_session(
+                project_type='modern',
+                view_root_rel='ansible/views/system')
+        session.cwd = 'ansible/views/system/inventory'
+        client.queue('tools/call', {
+                'resultType': 'complete', 'isError': False,
+                'content': [], '_meta': {'org.debops/view':
+                                         'webservers'}})
+        session.execute('ls')
+        self.assertEqual(session.view, 'webservers')
+        self.assertEqual(session.cwd, 'ansible/views/webservers')
+        self.assertIn('the view is now webservers', err.getvalue())
+
     def test_the_view_switch_in_a_legacy_project(self):
         session, client, _out, _err = self.make_session()
         client.queue('tools/call', {'resultType': 'complete',
-                                    'isError': False, 'content': []})
+                                    'isError': False, 'content': [],
+                                    '_meta': {'org.debops/view':
+                                              'webservers'}})
         session.execute('view webservers')
         self.assertEqual(session.cwd, 'ansible')
 

@@ -562,7 +562,7 @@ class ConsoleBuildTestCase(unittest.TestCase):
             self.skipTest('prompt_toolkit is not installed')
         from prompt_toolkit.history import FileHistory
         from debops.mcp import console
-        session, _client = make_session()
+        session, client = make_session()
         session.project_path = os.path.join(self.tmpdir, 'project')
         console._build_app(session)
         # The initial file is the startup view's
@@ -570,6 +570,11 @@ class ConsoleBuildTestCase(unittest.TestCase):
                               FileHistory)
         self.assertTrue(session._input_buffer.history.filename
                         .endswith('-project-system'))
+        # The answer carries the daemon's current view, as the
+        # server's '_meta' always does
+        client.request.return_value = {'result': {
+                'resultType': 'complete', 'isError': False,
+                'content': [], '_meta': {'org.debops/view': 'admin'}}}
         session.execute('view admin')
         self.assertTrue(session._input_buffer.history.filename
                         .endswith('-project-admin'))

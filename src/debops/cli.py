@@ -1109,21 +1109,30 @@ class Interpreter(object):
             # registered (the scope is the project directory then)
             view_root_rel = None
             project_type = None
+            view = None
             if project is not None:
                 project_type = project.project_type
-                if project.view:
+                view = project.view
+                if view:
                     if project_type == 'legacy':
                         view_root_rel = 'ansible'
-                    elif project.view in project.config.raw.get(
+                    elif view in project.config.raw.get(
                             'views', {}):
                         view_root_rel = os.path.join(
-                                'ansible', 'views', project.view)
+                                'ansible', 'views', view)
+                # The daemon's view is shared across the clients of
+                # its socket; it may sit on another view than the
+                # configured default
+                daemon_view = getattr(client, 'server_view', None)
+                if daemon_view is not None and daemon_view != view:
+                    view = daemon_view
+                    view_root_rel = repl_mod._view_root_rel(
+                            project_type, view)
             code = repl_mod.run(
                     client,
                     project_name=(project.name if project is not None
                                   else None),
-                    view=(project.view if project is not None
-                          else None),
+                    view=view,
                     interactive=interactive,
                     project_path=(project.path if project is not None
                                   else None),
