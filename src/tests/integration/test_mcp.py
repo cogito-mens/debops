@@ -3232,6 +3232,258 @@ def test_reads_during_a_run(run_debops, mcp_env, project_dir,
         server.wait(timeout=10)
 
 
+def test_the_queue_runs_batches_in_order(run_debops, mcp_env,
+                                         project_dir, tmp_path,
+                                         debops_source_dir):
+    """A queued batch runs its jobs in order through the normal
+    execution path; the sidecars carry the job details."""
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    confd = project_dir / ".debops" / "conf.d"
+    confd.mkdir(parents=True, exist_ok=True)
+    (confd / "mcp-test.toml").write_text(
+            "[project.mcp]\nconfirm_required = false\n"
+            'execute = "all"\n')
+    subprocess.run(["git", "init", "-q"], cwd=str(project_dir),
+                   env=dict(os.environ, **mcp_env), check=True)
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+    playbooks = project_dir / "ansible" / "playbooks"
+    playbooks.mkdir(parents=True)
+    for name in ('first', 'second'):
+        (playbooks / "{}.yml".format(name)).write_text(
+                "---\n- hosts: localhost\n  gather_facts: false\n"
+                "  tasks:\n    - ansible.builtin.command: "
+                "sleep 1\n")
+
+    server = _LiveServer(project_dir, mcp_env, debops_source_dir)
+    try:
+        created = server.call("batch.create", {"name": "work"})
+        assert not created["result"].get("isError", False)
+        for playbook in ("first", "second"):
+            added = server.call("job.add", {"batch": "work",
+                                            "playbook": playbook,
+                                            "mode": "run"})
+            assert not added["result"].get("isError", False), \
+                added["result"]["content"][0]["text"]
+        job = added["result"]["structuredContent"]["job"]
+        assert job["id"] == "job-2"
+        assert job["tally"]["taskCount"] == 1
+        listed = server.call("queue.list", {})
+        listed_batches = listed["result"]["structuredContent"][
+                "batches"]
+        assert listed_batches[0]["jobs"] == 2
+        started = server.call("queue.start", {})
+        assert not started["result"].get("isError", False)
+
+        # The two runs land in order, the sidecars carry the job
+        runs_dir = tmp_path / "xdg-cache" / "debops" / "mcp" / "runs"
+        deadline = time.monotonic() + 120
+        while True:
+            finished = list(runs_dir.glob("*/execution-*.json"))
+            done = [path for path in finished
+                    if "finishedAt" in json.loads(path.read_text())]
+            if len(done) >= 2:
+                break
+            assert time.monotonic() < deadline, \
+                "the queue never ran the jobs"
+            time.sleep(0.5)
+        sidecars = sorted(
+                (json.loads(path.read_text()) for path in done),
+                key=lambda meta: meta["executionId"])
+        assert [meta["job"]["id"] for meta in sidecars] == \
+            ["job-1", "job-2"]
+        assert sidecars[0]["job"]["batch"] == "work"
+        assert sidecars[0]["taskCount"] == 1
+        # The batch completes on the scheduler's next tick after the
+        # last job — poll for it
+        deadline = time.monotonic() + 30
+        while True:
+            listed = server.call("queue.list", {})
+            if not listed["result"]["structuredContent"]["batches"]:
+                break
+            assert time.monotonic() < deadline, \
+                "the batch never left the queue"
+            time.sleep(0.5)
+    finally:
+        server.stop()
+
+
+def test_the_queue_pending_gates_and_the_failure_cascades(
+        run_debops, mcp_env, project_dir, tmp_path,
+        debops_source_dir):
+    """A pending batch gates itself and the ones behind it; a job
+    failing fails its batch and the queue moves on."""
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    confd = project_dir / ".debops" / "conf.d"
+    confd.mkdir(parents=True, exist_ok=True)
+    (confd / "mcp-test.toml").write_text(
+            "[project.mcp]\nconfirm_required = false\n"
+            'execute = "all"\n')
+    subprocess.run(["git", "init", "-q"], cwd=str(project_dir),
+                   env=dict(os.environ, **mcp_env), check=True)
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+    playbooks = project_dir / "ansible" / "playbooks"
+    playbooks.mkdir(parents=True)
+    (playbooks / "broken.yml").write_text(
+            "---\n- hosts: localhost\n  gather_facts: false\n"
+            "  tasks:\n    - ansible.builtin.fail:\n"
+            "        msg: broken on purpose\n")
+    (playbooks / "fine.yml").write_text(
+            "---\n- hosts: localhost\n  gather_facts: false\n"
+            "  tasks:\n    - ansible.builtin.command: sleep 1\n")
+
+    server = _LiveServer(project_dir, mcp_env, debops_source_dir)
+    try:
+        server.call("batch.create", {"name": "work"})
+        server.call("job.add", {"batch": "work",
+                                "playbook": "broken", "mode": "run"})
+        server.call("batch.create", {"name": "after"})
+        server.call("job.add", {"batch": "after",
+                                "playbook": "fine", "mode": "run"})
+        server.call("batch.create", {"name": "review"})
+        server.call("job.add", {"batch": "review",
+                                "playbook": "fine", "mode": "run"})
+        server.call("batch.pending", {"name": "review"})
+        server.call("queue.start", {})
+
+        # The broken job fails its batch; the next batch runs; the
+        # pending one gates
+        runs_dir = tmp_path / "xdg-cache" / "debops" / "mcp" / "runs"
+        deadline = time.monotonic() + 120
+        while True:
+            finished = list(runs_dir.glob("*/execution-*.json"))
+            done = [json.loads(path.read_text())
+                    for path in finished]
+            done = [meta for meta in done if "finishedAt" in meta]
+            states = [batch["name"] for batch in
+                      server.call("queue.list", {})
+                      ["result"]["structuredContent"]["batches"]]
+            if len(done) >= 2:
+                break
+            # The pending batch never runs while pending
+            assert all(meta.get("job", {}).get("batch") != "review"
+                       for meta in done)
+            assert time.monotonic() < deadline, \
+                "the queue never ran the two non-pending batches"
+            time.sleep(0.5)
+        assert [meta["job"]["batch"] for meta in
+                sorted(done, key=lambda meta:
+                       meta["executionId"])] == ["work", "after"]
+        # The failure is on record; the pending batch still gates.
+        # The completed batch leaves on the scheduler's next tick —
+        # poll for it
+        deadline = time.monotonic() + 30
+        while True:
+            listing = server.call("queue.list", {})
+            answer = listing["result"]["structuredContent"]
+            if [batch["name"] for batch in answer["batches"]] == \
+                    ["review"]:
+                break
+            assert time.monotonic() < deadline, \
+                "the finished batch never left the queue"
+            time.sleep(0.5)
+        assert answer["lastFailure"]["batch"] == "work"
+        # Rejecting it clears the queue
+        server.call("batch.remove", {"name": "review"})
+        assert server.call("queue.list", {})["result"][
+                "structuredContent"]["batches"] == []
+    finally:
+        server.stop()
+
+
+def test_the_queue_review_flow_over_the_front_end(
+        run_debops, mcp_env, project_dir, tmp_path,
+        debops_source_dir):
+    """The human review of a staged batch, driven through the repl:
+    pending gates the queue, the trusted accept releases it, and the
+    run's sidecar carries the job."""
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    confd = project_dir / ".debops" / "conf.d"
+    confd.mkdir(parents=True, exist_ok=True)
+    (confd / "mcp-test.toml").write_text(
+            "[project.mcp]\nconfirm_required = false\n")
+    subprocess.run(["git", "init", "-q"], cwd=str(project_dir),
+                   env=dict(os.environ, **mcp_env), check=True)
+    (project_dir / "ansible.cfg").write_text(
+            "[defaults]\ninventory = ansible/inventory\n")
+    inventory = project_dir / "ansible" / "inventory"
+    inventory.mkdir(parents=True)
+    (inventory / "hosts").write_text(
+            "[local]\nlocalhost ansible_connection=local\n")
+    playbooks = project_dir / "ansible" / "playbooks"
+    playbooks.mkdir(parents=True)
+    (playbooks / "custom.yml").write_text(
+            "---\n- hosts: localhost\n  gather_facts: false\n"
+            "  tasks:\n    - ansible.builtin.command: sleep 1\n")
+    socket_path = str(tmp_path / "queue.sock")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+            [debops_source_dir,
+             env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    env.update(mcp_env)
+    server = _serve_daemon(
+            [sys.executable, "-m", "debops", "mcp", "serve",
+             "--socket", socket_path], project_dir, socket_path, env)
+    try:
+        # The agent stages a batch and flags it for review
+        result = run_debops(
+                "mcp", "repl", "--socket", socket_path,
+                cwd=str(project_dir), env=env,
+                input_text=("batch create review-me\n"
+                            "job add review-me custom mode=check\n"
+                            "batch pending review-me\n"
+                            "queue start\n"
+                            "queue\n"))
+        assert result.returncode == 0, result.stderr
+        assert "pending review" in result.stdout
+        # The gate holds: nothing runs while it is marked
+        time.sleep(3)
+        runs_dir = tmp_path / "xdg-cache" / "debops" / "mcp" / "runs"
+        assert list(runs_dir.glob("*/execution-*.json")) == []
+        # The operator accepts; the trust bootstrap of the front end
+        # answers the passphrase check
+        result = run_debops(
+                "mcp", "repl", "--socket", socket_path,
+                cwd=str(project_dir), env=env,
+                input_text="batch accept review-me\n")
+        assert result.returncode == 0, result.stderr
+        assert "accepted" in result.stdout
+        deadline = time.monotonic() + 90
+        while True:
+            done = [path for path in
+                    runs_dir.glob("*/execution-*.json")
+                    if "finishedAt" in json.loads(path.read_text())]
+            if done:
+                break
+            assert time.monotonic() < deadline, \
+                "the accepted batch never ran"
+            time.sleep(0.5)
+        metadata = json.loads(done[0].read_text())
+        assert metadata["job"]["batch"] == "review-me"
+        assert metadata["mode"] == "check"
+    finally:
+        server.terminate()
+        server.wait(timeout=10)
+
+
 def test_repl_navigates_the_project(run_debops, mcp_env, project_dir,
                                     tmp_path, debops_source_dir):
     """The working-directory verbs against a live daemon: pwd, cd, ls,

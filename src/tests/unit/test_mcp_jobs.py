@@ -41,7 +41,7 @@ def add_job(server, batch, playbook='site', mode='run',
             mock.patch.object(
                     jobs_module, '_probe_tally',
                     return_value=(tally if tally is not None else
-                                  {'tasks': 2, 'hosts': 1,
+                                  {'taskCount': 2, 'hostCount': 1,
                                    'estimateSeconds': 9})):
         return queue_of(server).job_add(
                 batch, {'playbook': playbook, 'mode': mode},
@@ -173,6 +173,28 @@ class QueueToolsTestCase(unittest.TestCase):
         response = job_tools.tool_queue_list(server, {})
         self.assertTrue(response['isError'])
         self.assertIn('not enabled', response['content'][0]['text'])
+
+    def test_job_add_answers_with_the_tally(self):
+        with mock.patch.object(
+                jobs_module, '_make_runner',
+                return_value=mock.Mock()), \
+                mock.patch.object(jobs_module, '_playbook_targets',
+                                  return_value=['site']), \
+                mock.patch.object(jobs_module, '_probe_tally',
+                                  return_value={'taskCount': 2,
+                                                'hostCount': 1,
+                                                'estimateSeconds': 9}):
+            response = job_tools.tool_job_add(self.server, {
+                    'batch': 'work', 'playbook': 'site',
+                    'mode': 'run'})
+        self.assertFalse(response['isError'])
+        text = response['content'][0]['text']
+        self.assertIn('queued: job-2 in work', text)
+        self.assertIn('estimate 9 s', text)
+        self.assertIn('2 tasks x 1 hosts', text)
+        job = response['structuredContent']['job']
+        self.assertEqual(job['view'], 'system')
+        self.assertEqual(job['state'], 'queued')
 
 
 class SchedulerTestCase(unittest.TestCase):

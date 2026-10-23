@@ -167,8 +167,8 @@ def tool_job_add(server, arguments):
     return _answer('queued: {} in {} (position {}, estimate {} s — '
                    '{} tasks x {} hosts)'.format(
                            job['id'], job['batch'], job['position'],
-                           tally['estimateSeconds'], tally['tasks'],
-                           tally['hosts']),
+                           tally['estimateSeconds'],
+                           tally['taskCount'], tally['hostCount']),
                    {'job': job})
 
 
