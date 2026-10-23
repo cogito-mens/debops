@@ -2952,6 +2952,94 @@ def test_the_confined_login_shell(mcp_env, project_dir, tmp_path,
         server.wait(timeout=10)
 
 
+def test_bare_debops_autostarts_the_configured_front_end(
+        run_debops, mcp_env, project_dir, tmp_path):
+    """A bare 'debops' in a project with 'project.autostart' starts
+    the configured front end; the autospawn carries the filtered
+    daemon options of the project."""
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    env = dict(mcp_env, XDG_RUNTIME_DIR=str(runtime))
+    # Unconfigured: the bare invocation is the help it always was
+    result = run_debops(env=env, cwd=str(project_dir))
+    assert result.returncode == 2
+    assert "mcp" in result.stderr
+
+    confd = project_dir / ".debops" / "conf.d"
+    confd.mkdir(parents=True)
+    (confd / "00-autostart.toml").write_text(
+            "[project]\n"
+            'autostart = "shell"\n'
+            "autospawn = true\n"
+            "[project.autospawn_options]\n"
+            'socket_mode = "0600"\n'
+            "spawn = false\n"
+            'socket = "/tmp/debops-test-evil.sock"\n')
+    try:
+        result = run_debops(env=env, cwd=str(project_dir),
+                            input_text="status\n")
+        assert result.returncode == 0
+        assert "Project:" in result.stdout
+        # The filtered keys are noted, and none of them took effect
+        assert "dropped" in result.stderr
+        assert not os.path.exists("/tmp/debops-test-evil.sock")
+        sockets = list((runtime / "debops" / "mcp").glob("*.sock"))
+        assert len(sockets) == 1
+        assert sockets[0].stat().st_mode & 0o777 == 0o600
+    finally:
+        run_debops("mcp", "stop", env=env, cwd=str(project_dir))
+
+
+def test_bare_debops_autospawn_false_never_spawns(run_debops, mcp_env,
+                                                  project_dir,
+                                                  tmp_path):
+    """'project.autospawn = false': no daemon, no spawn — a clean
+    refusal."""
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    env = dict(mcp_env, XDG_RUNTIME_DIR=str(runtime))
+    confd = project_dir / ".debops" / "conf.d"
+    confd.mkdir(parents=True)
+    (confd / "00-autostart.toml").write_text(
+            "[project]\n"
+            'autostart = "repl"\n'
+            "autospawn = false\n")
+    result = run_debops(env=env, cwd=str(project_dir),
+                        input_text="status\n")
+    assert result.returncode == 1
+    assert "no MCP daemon is running" in result.stderr
+    assert not list((runtime / "debops" / "mcp").glob("*.sock"))
+
+
+def test_bare_debops_autospawn_legacy_drives_both_sides(
+        run_debops, mcp_env, project_dir, tmp_path):
+    """'legacy' in the spawn options drives the daemon and the
+    client alike — a mismatch would refuse the connection."""
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    env = dict(mcp_env, XDG_RUNTIME_DIR=str(runtime))
+    confd = project_dir / ".debops" / "conf.d"
+    confd.mkdir(parents=True)
+    (confd / "00-autostart.toml").write_text(
+            "[project]\n"
+            'autostart = "repl"\n'
+            "[project.autospawn_options]\n"
+            "legacy = true\n")
+    try:
+        result = run_debops(env=env, cwd=str(project_dir),
+                            input_text="status\n")
+        assert result.returncode == 0
+        assert "Project:" in result.stdout
+        # The daemon really speaks the old era: a current client is
+        # refused
+        result = run_debops("mcp", "repl", env=env,
+                            cwd=str(project_dir), input_text="status\n")
+        assert result.returncode == 1
+        assert "2025-era" in result.stderr
+    finally:
+        run_debops("mcp", "stop", env=env, cwd=str(project_dir))
+
+
 def test_repl_navigates_the_project(run_debops, mcp_env, project_dir,
                                     tmp_path, debops_source_dir):
     """The working-directory verbs against a live daemon: pwd, cd, ls,

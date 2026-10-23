@@ -852,6 +852,35 @@ class CommandFormTestCase(unittest.TestCase):
         self.assertEqual(commands, 'status')
 
 
+class SpawnOptionsTestCase(unittest.TestCase):
+    """The 'project.autospawn_options' mapping as serve tokens."""
+
+    def test_scalars_booleans_and_the_underscore_fold(self):
+        tokens, dropped = repl.spawn_options_tokens({
+                'socket_mode': '0600', 'max_connections': 8,
+                'log': True, 'stdio': False, 'view_lock': False})
+        self.assertEqual(tokens, ['--log', '--max-connections', '8',
+                                  '--socket-mode', '0600'])
+        self.assertEqual(dropped, ['stdio', 'view-lock'])
+
+    def test_the_spawn_machinery_keys_are_dropped(self):
+        tokens, dropped = repl.spawn_options_tokens({
+                'spawn': True, 'no_spawn': True, 'socket': '/x.sock',
+                'detach': True, 'docs': True, 'view': 'admin',
+                'idle_timeout': 60, 'instance': 'i2',
+                'instance_root': '/tmp'})
+        self.assertEqual(tokens, [])
+        self.assertEqual(sorted(dropped),
+                         ['detach', 'docs', 'idle-timeout',
+                          'instance', 'instance-root', 'no-spawn',
+                          'socket', 'spawn', 'view'])
+
+    def test_an_unusable_value_is_a_config_error(self):
+        with self.assertRaises(ValueError) as context:
+            repl.spawn_options_tokens({'log': ['/a', '/b']})
+        self.assertIn('autospawn_options', str(context.exception))
+
+
 class BannerTestCase(unittest.TestCase):
     def test_the_banner_names_the_version_and_the_protocol(self):
         client = FakeClient()

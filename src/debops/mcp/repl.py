@@ -75,16 +75,56 @@ def ask(message, default=False):
     return reply in ('y', 'yes')
 
 
+# The daemon options a project may preset for an autospawned daemon
+# ('project.autospawn_options'); the dropped keys belong to the spawn
+# machinery (the transport, the identity) or carry knobs of their own
+# (the view, the policy)
+_SPAWN_OPTIONS_DROP = frozenset((
+        'spawn', 'no-spawn', 'socket', 'instance', 'instance-root',
+        'detach', 'stdio', 'docs', 'view', 'view-lock',
+        'idle-timeout'))
+
+
+def spawn_options_tokens(options):
+    """The 'project.autospawn_options' mapping as 'mcp serve' command
+    line tokens: a true value is a bare flag, a false one is left
+    out, anything else becomes a '--key value' pair; the keys the
+    spawn machinery or another knob already owns are dropped.
+    Returns (tokens, dropped keys); raises ValueError on an entry of
+    an unusable type."""
+    tokens = []
+    dropped = []
+    for key, value in sorted((options or {}).items()):
+        key = str(key).replace('_', '-')
+        if key in _SPAWN_OPTIONS_DROP:
+            dropped.append(key)
+            continue
+        if value is True:
+            tokens.append('--' + key)
+        elif value is False or value is None:
+            continue
+        elif isinstance(value, (str, int)):
+            tokens.extend(('--' + key, str(value)))
+        else:
+            raise ValueError(
+                    'project.autospawn_options.{}: not a string, a '
+                    'number or a boolean'.format(key))
+    return tokens, dropped
+
+
 def connect_or_spawn(socket_path, project, docs=False, spawn=None,
-                     interactive=False, legacy=False, err=sys.stderr):
+                     interactive=False, legacy=False, err=sys.stderr,
+                     spawn_options=()):
     """The client for the daemon at the socket, spawning it when it
     is missing.
 
     'spawn' is None (ask when interactive, spawn quietly in a pipe),
     True (never ask) or False (never spawn). The spawned daemon is
-    detached: it keeps running for the next client. With 'legacy'
-    the REPL speaks the 2025-era protocol revision, to match a
-    daemon started with '--legacy'.
+    detached: it keeps running for the next client. 'spawn_options'
+    carries the preset daemon options of the project (the filtered
+    'project.autospawn_options'). With 'legacy' the REPL speaks the
+    2025-era protocol revision, to match a daemon started with
+    '--legacy'.
     """
     probe = UnixClient(socket_path, timeout=30)
     answer = None
@@ -138,6 +178,8 @@ def connect_or_spawn(socket_path, project, docs=False, spawn=None,
     # --log sends its audit log to the syslog (the journal)
     command = [sys.executable, '-m', 'debops', 'mcp', 'serve',
                '--socket', '--detach', '--log']
+    # The preset daemon options of the project, if any
+    command.extend(spawn_options)
     if docs:
         command.append('--docs')
     if legacy:

@@ -89,6 +89,13 @@ def test_mcp_repl_no_longer_has_stop():
         parse_cli("mcp", "repl", "--stop")
 
 
+def test_a_bare_debops_parses_to_no_section():
+    # The project's own start configuration is the Interpreter's call
+    subcommands = Subcommands(["debops"])
+    assert subcommands.section is None
+    assert subcommands.login_shell is None
+
+
 def test_unknown_config_command_exits_with_an_error(capsys):
     with pytest.raises(SystemExit) as exc:
         parse_cli("config", "bogus")

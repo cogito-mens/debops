@@ -88,7 +88,11 @@ class Interpreter(object):
         logger.debug('Command line interpreter initialized')
         logger.debug('Control user=' + getpass.getuser())
 
-        if self.parsed_args.section == 'project':
+        if self.parsed_args.section is None:
+            # A bare 'debops': the project's own start configuration,
+            # or the help
+            self.do_autostart()
+        elif self.parsed_args.section == 'project':
             if self.parsed_args.command == 'init':
                 self.do_project_init(self.parsed_args.args)
             elif self.parsed_args.command == 'refresh':
@@ -1010,10 +1014,12 @@ class Interpreter(object):
             print('\n'.join(mcp_client.format_resources(
                     result.get('resources', []))))
 
-    def _mcp_interpreter(self, args, frontend=None):
+    def _mcp_interpreter(self, args, frontend=None, spawn_options=()):
         """The shared launch of the interpreter interfaces ('repl',
         'shell'): probe the project, connect or spawn the daemon, run
-        the session."""
+        the session. 'spawn_options' carries the filtered daemon
+        options of the 'project.autospawn_options' knob when the
+        invocation is the bare 'debops' one."""
         self._mcp_refuse_if_disabled()
         from .mcp import repl as repl_mod
         # The ambient confinement of the account, captured before a
@@ -1056,7 +1062,7 @@ class Interpreter(object):
             client = repl_mod.connect_or_spawn(
                     socket_path, project, docs=args.docs,
                     spawn=args.spawn, interactive=interactive,
-                    legacy=args.legacy)
+                    legacy=args.legacy, spawn_options=spawn_options)
         except repl_mod.ReplError as errmsg:
             print('Error:', errmsg, file=sys.stderr)
             sys.exit(1)
@@ -1092,6 +1098,58 @@ class Interpreter(object):
                     command=getattr(args, 'command', None),
                     confined=confined)
         sys.exit(code)
+
+    def do_autostart(self):
+        """A bare 'debops' in a project directory: the configured
+        MCP front end ('project.autostart'), with the project's own
+        spawn policy ('project.autospawn') and daemon options
+        ('project.autospawn_options')."""
+        import argparse
+        from .mcp import repl as repl_mod
+        invoked_in = os.getcwd()
+        try:
+            project = ProjectDir(config=self.config)
+        except (IsADirectoryError, NotADirectoryError):
+            os.chdir(invoked_in)
+            project = None
+        raw = self.config.raw.get('project', {})
+        autostart = raw.get('autostart')
+        if project is None or not autostart:
+            # The bare invocation stays what it always was here
+            self.parsed_args._top_parser.print_help(sys.stderr)
+            sys.exit(2)
+        if autostart not in ('repl', 'shell', 'console'):
+            print("Error: unknown project.autostart value: {!r} "
+                  "('repl', 'shell' or 'console')".format(autostart),
+                  file=sys.stderr)
+            sys.exit(1)
+        autospawn = raw.get('autospawn')
+        if autospawn is not None and not isinstance(autospawn, bool):
+            print('Error: project.autospawn wants true or false',
+                  file=sys.stderr)
+            sys.exit(1)
+        options = raw.get('autospawn_options', {}) or {}
+        if not isinstance(options, dict):
+            print('Error: project.autospawn_options wants a mapping '
+                  'of daemon options', file=sys.stderr)
+            sys.exit(1)
+        options = dict(options)
+        # The era drives the spawned daemon and the client alike
+        legacy = bool(options.pop('legacy', False))
+        try:
+            tokens, dropped = repl_mod.spawn_options_tokens(options)
+        except ValueError as errmsg:
+            print('Error:', errmsg, file=sys.stderr)
+            sys.exit(1)
+        for key in dropped:
+            print('note: project.autospawn_options: {} belongs to '
+                  'the spawn machinery or has a knob of its own, '
+                  'dropped'.format(key), file=sys.stderr)
+        args = argparse.Namespace(
+                project_dir=project.path, docs=False, socket=None,
+                spawn=autospawn, legacy=legacy, command=None)
+        self._mcp_interpreter(args, frontend=autostart,
+                              spawn_options=tokens)
 
     def do_mcp_repl(self, args):
         self._mcp_interpreter(args)

@@ -97,6 +97,7 @@ class Subcommands(object):
                                         help='path to the project directory')
 
         parser = _argument_parser(
+                parents=[self.global_parser],
                 description="DebOps CLI",
                 usage='''debops <section> [<args>]
 
@@ -109,13 +110,21 @@ Sections:
     config   display DebOps configuration options
     mcp      run a Model Context Protocol server or client''')
 
-        parser.add_argument('section', help='Section to run')
+        parser.add_argument('section', nargs='?',
+                            help='Section to run')
         parser.add_argument('--version', action='version',
                             version='%(prog)s {version}'
                                     .format(version=__version__))
 
         self._section = parser.parse_args(self.args[1:2])
         self.section = self._section.section
+        if self.section is None:
+            # A bare 'debops': the project's own start configuration
+            # (or the help) is the Interpreter's call — the parser
+            # is kept for it
+            self._top_parser = parser
+            self.args = self._section
+            return
         if not hasattr(self, 'do_' + self._section.section):
             print('Error: unrecognized section:', self._section.section)
             parser.print_help()
