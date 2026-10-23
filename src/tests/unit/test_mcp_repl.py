@@ -240,6 +240,39 @@ class VerbTestCase(unittest.TestCase):
         self.assertIn('the daemon is not answering',
                       str(context.exception))
 
+    def test_the_queue_verbs(self):
+        self.client.queue(
+                'tools/call',
+                {'resultType': 'complete', 'isError': False,
+                 'content': [{'type': 'text', 'text': 'Queue: park'}]},
+                {'resultType': 'complete', 'isError': False,
+                 'content': [{'type': 'text', 'text': 'created'}]},
+                {'resultType': 'complete', 'isError': False,
+                 'content': [{'type': 'text', 'text': 'queued'}]},
+                {'resultType': 'complete', 'isError': False,
+                 'content': [{'type': 'text', 'text': 'accepted'}]})
+        self.repl.execute('queue')
+        self.repl.execute('batch create work')
+        self.repl.execute('job add work site mode=check --limit web1')
+        self.repl.execute('batch accept work')
+        names = [call[1]['name'] for call in self.client.calls]
+        self.assertEqual(names, ['queue.list', 'batch.create',
+                                 'job.add', 'batch.pending'])
+        job_call = self.client.calls[2][1]['arguments']
+        self.assertEqual(job_call['batch'], 'work')
+        self.assertEqual(job_call['mode'], 'check')
+        self.assertEqual(job_call['playbook'], 'site')
+        self.assertEqual(job_call['limit'], 'web1')
+        # The review mark clears with pending=false
+        self.assertEqual(self.client.calls[3][1]['arguments'],
+                         {'name': 'work', 'pending': False})
+
+    def test_the_queue_verbs_usage_errors(self):
+        with self.assertRaises(ReplError):
+            self.repl.execute('queue bogus')
+        with self.assertRaises(ReplError):
+            self.repl.execute('job pop')
+
 
 class ConfirmationTestCase(unittest.TestCase):
 

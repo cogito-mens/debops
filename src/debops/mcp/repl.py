@@ -643,6 +643,59 @@ class Repl(object):
     def cmd_check(self, args):
         return self._call_tool('check', execution_arguments(args))
 
+    def cmd_queue(self, args):
+        """The execution queue: its state ('queue'), or steer it
+        ('queue start|stop|clear')."""
+        if not args or args == ['list']:
+            return self._call_tool('queue.list', {})
+        if len(args) == 1 and args[0] in ('start', 'stop', 'clear'):
+            return self._call_tool('queue.' + args[0], {})
+        raise ReplError('usage: queue [list|start|stop|clear]')
+
+    def cmd_batch(self, args):
+        """A job batch of the queue: 'batch <name>' shows it;
+        'batch create|remove|prune|pending|accept <name>' steers
+        it."""
+        if len(args) == 1:
+            return self._call_tool('batch.info', {'name': args[0]})
+        if len(args) == 2 and args[0] in ('create', 'remove',
+                                          'prune', 'pending'):
+            return self._call_tool('batch.' + args[0],
+                                   {'name': args[1]})
+        if len(args) == 2 and args[0] == 'accept':
+            # The review mark clears; the daemon wants the trust
+            # for it (the elevation answers it)
+            return self._call_tool('batch.pending',
+                                   {'name': args[1],
+                                    'pending': False})
+        raise ReplError('usage: batch [create|remove|prune|pending|'
+                        'accept] <name>  (or: batch <name>)')
+
+    def cmd_job(self, args):
+        """A queue job: 'job add <batch> <playbook> [...] '
+        '[mode=run|check|debug] [the run options]', 'job prune <id>'
+        or 'job pop <batch>'."""
+        if len(args) >= 2 and args[0] == 'add':
+            tokens = list(args[1:])
+            batch = tokens.pop(0)
+            mode = 'run'
+            rest = []
+            for token in tokens:
+                if token.startswith('mode='):
+                    mode = token.split('=', 1)[1]
+                else:
+                    rest.append(token)
+            job_args = dict(execution_arguments(rest))
+            job_args['batch'] = batch
+            job_args['mode'] = mode
+            return self._call_tool('job.add', job_args)
+        if len(args) == 2 and args[0] == 'prune':
+            return self._call_tool('job.prune', {'id': args[1]})
+        if len(args) == 2 and args[0] == 'pop':
+            return self._call_tool('job.pop', {'batch': args[1]})
+        raise ReplError('usage: job add <batch> <playbook> [...] | '
+                        'job prune <id> | job pop <batch>')
+
     def cmd_run(self, args):
         return self._call_tool('run', execution_arguments(args))
 
@@ -1328,6 +1381,12 @@ HELP = {
     'check <targets> [opts]': 'a check-mode run (opts: --limit, '
                               '--tags, --list-hosts, ...)',
     'run <targets> [opts]': 'execute playbooks (same options)',
+    'queue [start|stop|clear]': 'the execution queue and its state',
+    'batch [verb] <name>': 'a job batch of the queue (verbs: '
+                           'create, remove, prune, pending, accept; '
+                           'bare shows it)',
+    'job add <batch> <pb> [mode=…]': 'a new queue job (prune <id>, '
+                                     'pop <batch> remove)',
     'logs': 'the recorded executions',
     'log <id>': 'the output of an execution',
     'purge <seconds>': 'drop the run logs older than the age',
