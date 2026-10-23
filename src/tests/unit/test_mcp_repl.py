@@ -577,7 +577,7 @@ class StopDaemonTestCase(unittest.TestCase):
         self.socket = os.path.join(self.tmpdir, 'x.sock')
 
     def _pid_file(self, *lines):
-        with open(self.socket + '.pid', 'w') as fp:
+        with open(repl.socket_pid_path(self.socket), 'w') as fp:
             fp.write('\n'.join(lines) + '\n')
 
     def test_no_pid_file(self):
@@ -608,7 +608,7 @@ class StopDaemonTestCase(unittest.TestCase):
         def fake_kill(pid, signal):
             kills.append(signal)
             # The daemon cleans its sidecar up on the way out
-            os.unlink(self.socket + '.pid')
+            os.unlink(repl.socket_pid_path(self.socket))
 
         with mock.patch.object(repl, '_daemon_pid',
                                return_value=(4242, 'spawned')), \
@@ -634,7 +634,8 @@ class StopDaemonTestCase(unittest.TestCase):
         self.assertIn('was killed', out.getvalue())
         # No drain, no cleanup: the sidecar stays for the next
         # daemon to reap
-        self.assertTrue(os.path.exists(self.socket + '.pid'))
+        self.assertTrue(os.path.exists(repl.socket_pid_path(
+                self.socket)))
 
 
 class HistoryFormatTestCase(unittest.TestCase):

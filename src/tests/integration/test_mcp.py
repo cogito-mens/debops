@@ -9,6 +9,7 @@ subprocess, so they exercise the argument handling and the protocol
 framing a user (or an MCP client) sees.
 """
 
+from debops.mcp.client import socket_pid_path
 from debops.mcp.server import McpServer
 from debops.mcp.skills import SkillLibrary
 from debops.mcp.transport import UnixSocketTransport
@@ -3479,12 +3480,12 @@ def test_repl_spawns_a_daemon_on_the_well_known_socket(
         # pid sidecar rides next to the well-known socket
         sockets = list((runtime / "debops" / "mcp").glob("*.sock"))
         assert len(sockets) == 1
-        pid_path = Path(str(sockets[0]) + ".pid")
+        pid_path = Path(socket_pid_path(str(sockets[0])))
         assert pid_path.read_text().split()[1] == "spawned"
     finally:
         # Clean up the spawned daemon via its pid file
         if sockets:
-            pid_path = Path(str(sockets[0]) + ".pid")
+            pid_path = Path(socket_pid_path(str(sockets[0])))
             if pid_path.exists():
                 os.kill(int(pid_path.read_text().split()[0]), 15)
 
@@ -3500,7 +3501,7 @@ def test_mcp_stop_reaps_the_spawned_daemon(run_debops, mcp_env,
     assert result.returncode == 0
     sockets = list((runtime / "debops" / "mcp").glob("*.sock"))
     assert len(sockets) == 1
-    pid_path = Path(str(sockets[0]) + ".pid")
+    pid_path = Path(socket_pid_path(str(sockets[0])))
     assert pid_path.read_text().split()[1] == "spawned"
 
     result = run_debops("mcp", "stop", env=env, cwd=str(project_dir))
@@ -3527,7 +3528,7 @@ def test_mcp_stop_reaps_a_hand_started_daemon(run_debops, mcp_env,
     assert result.returncode == 0
     sockets = list((runtime / "debops" / "mcp").glob("*.sock"))
     assert len(sockets) == 1
-    pid_path = Path(str(sockets[0]) + ".pid")
+    pid_path = Path(socket_pid_path(str(sockets[0])))
     lines = pid_path.read_text().split()
     pid = int(lines[0])
     # The hand-started daemon carries no origin note
@@ -3552,7 +3553,7 @@ def test_mcp_stop_kill_is_the_sigkill(run_debops, mcp_env, project_dir,
     assert result.returncode == 0
     sockets = list((runtime / "debops" / "mcp").glob("*.sock"))
     assert len(sockets) == 1
-    pid_path = Path(str(sockets[0]) + ".pid")
+    pid_path = Path(socket_pid_path(str(sockets[0])))
     pid = int(pid_path.read_text().split()[0])
     result = run_debops("mcp", "stop", "--kill", env=env,
                         cwd=str(project_dir))
@@ -3577,7 +3578,7 @@ def test_serve_detach_reports_and_serves(run_debops, mcp_env,
     assert "The daemon runs detached: pid " in result.stdout
     sockets = list((runtime / "debops" / "mcp").glob("*.sock"))
     assert len(sockets) == 1
-    pid_path = Path(str(sockets[0]) + ".pid")
+    pid_path = Path(socket_pid_path(str(sockets[0])))
     pid = int(pid_path.read_text().strip())
     try:
         # The pid file names the serving process

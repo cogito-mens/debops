@@ -54,6 +54,20 @@ def default_socket_path(project=None):
     return _fit_socket_path(directory, project_key(project, view=''))
 
 
+def socket_sidecar_path(socket_path, suffix):
+    """A sidecar of a daemon socket: the '.sock' suffix makes way
+    for the sidecar's own ('x.sock' carries 'x.pid', 'x.err' — the
+    UNIX convention)."""
+    if socket_path.endswith('.sock'):
+        return socket_path[:-len('.sock')] + suffix
+    return socket_path + suffix
+
+
+def socket_pid_path(socket_path):
+    """The pid sidecar of a daemon socket — 'kill $(cat x.pid)'."""
+    return socket_sidecar_path(socket_path, '.pid')
+
+
 def _fit_socket_path(directory, key):
     """The socket path, the name truncated to fit the AF_UNIX limit."""
     # 108 bytes on Linux, the terminator included; keep a margin

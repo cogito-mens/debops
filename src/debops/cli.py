@@ -25,7 +25,8 @@ from .mcp.tools.playbooks import COLLECTION_PLAYBOOKS
 from .mcp.role_skills import RoleSkillSource
 from .mcp.playbook_skills import PlaybookSkillSource
 from .mcp import client as mcp_client
-from .mcp.client import UnixClient, default_socket_path
+from .mcp.client import (UnixClient, default_socket_path,
+                         socket_pid_path, socket_sidecar_path)
 from .mcp.transport import StdioTransport, UnixSocketTransport
 from .mcp.transport import (SHUTDOWN_DRAIN_TIMEOUT,
                             bridge_stdio_to_unix, ping_unix)
@@ -387,7 +388,7 @@ class Interpreter(object):
             # The pid sidecar of a well-known socket
             pid = None
             try:
-                with open(socket_path + '.pid') as fp:
+                with open(socket_pid_path(socket_path)) as fp:
                     pid = fp.read().strip()
             except OSError:
                 pass
@@ -676,7 +677,7 @@ class Interpreter(object):
                 # The daemon's crash output lands next to the socket
                 # from here on; the startup errors rode the parent's
                 # pipe (the socket directory exists by now)
-                fd = os.open(socket_path + '.err',
+                fd = os.open(socket_sidecar_path(socket_path, '.err'),
                              os.O_WRONLY | os.O_CREAT | os.O_APPEND,
                              0o600)
                 os.dup2(fd, 2)
@@ -712,7 +713,7 @@ class Interpreter(object):
                         # name, bound by the time it is called)
                         idle_held=(lambda: stdio_transport.serving)
                         if args.stdio else None,
-                        pid_path=(socket_path + '.pid'
+                        pid_path=(socket_pid_path(socket_path)
                                   if not args.socket else None),
                         pid_note=('spawned' if spawned else None))
             if not socket_path or args.stdio:
@@ -755,8 +756,9 @@ class Interpreter(object):
             if detached and socket_path is not None:
                 # The crash channel leaves no empty file behind
                 try:
-                    if os.path.getsize(socket_path + '.err') == 0:
-                        os.unlink(socket_path + '.err')
+                    crash_log = socket_sidecar_path(socket_path, '.err')
+                    if os.path.getsize(crash_log) == 0:
+                        os.unlink(crash_log)
                 except OSError:
                     pass
 

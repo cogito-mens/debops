@@ -21,7 +21,8 @@ import threading
 import time
 
 from . import server as _server
-from .client import UnixClient, default_socket_path
+from .client import (UnixClient, default_socket_path,
+                     socket_pid_path)
 from .runs import path_key
 from .trust import TRUST_PATH
 
@@ -232,7 +233,7 @@ def _daemon_pid(socket_path):
     to 'debops-mcp' in /proc first. Returns (pid, origin); the
     refusals raise a ReplError naming the reason.
     """
-    pid_path = socket_path + '.pid'
+    pid_path = socket_pid_path(socket_path)
     try:
         with open(pid_path) as fp:
             lines = fp.read().split()
@@ -269,7 +270,7 @@ def stop_daemon(socket_path, out=sys.stdout, kill=False):
     same-account process can always kill(2) its own daemons, and a
     daemon on another account is unreachable either way.
     """
-    pid_path = socket_path + '.pid'
+    pid_path = socket_pid_path(socket_path)
     pid, origin = _daemon_pid(socket_path)
     if kill:
         os.kill(pid, 9)

@@ -400,6 +400,24 @@ class SocketPathTestCase(unittest.TestCase):
             self.assertTrue(default_socket_path().endswith(
                     'documentation.sock'))
 
+    def test_the_pid_sidecar_name(self):
+        # 'x.sock' carries 'x.pid', the UNIX convention
+        from debops.mcp.client import socket_pid_path
+        self.assertEqual(socket_pid_path('/run/user/1000/debops/mcp/'
+                                         'a1b2-project.sock'),
+                         '/run/user/1000/debops/mcp/a1b2-project.pid')
+        self.assertEqual(socket_pid_path('/tmp/custom'),
+                         '/tmp/custom.pid')
+
+    def test_the_err_sidecar_name(self):
+        # The crash channel of a detached daemon follows the pid
+        from debops.mcp.client import socket_sidecar_path
+        self.assertEqual(socket_sidecar_path(
+                '/run/user/1000/debops/mcp/a1b2-project.sock', '.err'),
+                '/run/user/1000/debops/mcp/a1b2-project.err')
+        self.assertEqual(socket_sidecar_path('/tmp/custom', '.err'),
+                         '/tmp/custom.err')
+
     def test_a_socket_name_too_long_for_af_unix_is_truncated(self):
         from debops.mcp.client import default_socket_path
         deep = '/tmp/' + 'x' * 60
