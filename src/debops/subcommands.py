@@ -478,6 +478,8 @@ Commands:
     serve    run an MCP server over stdio or a UNIX socket
     repl     talk to the project's MCP daemon: an interactive
              interpreter for the MCP tools (pipes work too)
+    shell    the interpreter with a status bar (the place, the
+             trust state) under the input line
     connect  bridge stdio to an MCP server UNIX socket
     inspect  inspect an MCP server on a UNIX socket
     configure  write the client configuration of an LLM harness
@@ -641,6 +643,34 @@ Commands:
                            help="stop the project's client-spawned "
                                 'daemon and exit (a daemon started by '
                                 'hand is refused, with its pid named)')
+        self.args = parser.parse_args(self.args[3:])
+
+    def do_mcp_shell(self):
+        parser = _argument_parser(
+                parents=[self.global_parser],
+                description="talk to the project's MCP daemon: the "
+                            'interpreter with a status bar (the place, '
+                            'the trust state) under the input line; a '
+                            'pipe stays the plain interpreter',
+                usage='debops mcp shell [<args>]')
+        parser.add_argument('--socket', type=str, metavar='PATH',
+                            help="the daemon's socket (default: the "
+                                 'well-known runtime path)')
+        parser.add_argument('--docs', action='store_true',
+                            help='talk to a documentation-mode daemon '
+                                 '(no project)')
+        parser.add_argument('--legacy', action='store_true',
+                            help='speak the 2025-era protocol '
+                                 'revision, matching a daemon started '
+                                 'with --legacy')
+        spawn = parser.add_mutually_exclusive_group()
+        spawn.add_argument('--spawn', dest='spawn',
+                           action='store_true', default=None,
+                           help='spawn the daemon without asking when '
+                                'none is running')
+        spawn.add_argument('--no-spawn', dest='spawn',
+                           action='store_false',
+                           help='never spawn the daemon; fail instead')
         self.args = parser.parse_args(self.args[3:])
 
     def do_mcp_connect(self):

@@ -1321,9 +1321,12 @@ def _execute_line(repl, line):
 
 
 def run(client, project_name=None, view=None, interactive=None,
-        project_path=None, project_type=None, view_root_rel=None):
+        project_path=None, project_type=None, view_root_rel=None,
+        frontend=None):
     """Build and run an interpreter session against the connected
-    daemon."""
+    daemon. 'frontend' selects the chrome: None for the plain
+    interpreter, 'shell' for the status-bar interface (a pipe stays
+    a pipe either way)."""
     if interactive is None:
         interactive = sys.stdin.isatty()
     session = Repl(client, project_name=project_name, view=view,
@@ -1331,5 +1334,8 @@ def run(client, project_name=None, view=None, interactive=None,
                    project_type=project_type,
                    view_root_rel=view_root_rel)
     if interactive:
+        if frontend == 'shell':
+            from .shell import run_shell
+            return run_shell(session)
         return run_interactive(session)
     return run_pipe(session)

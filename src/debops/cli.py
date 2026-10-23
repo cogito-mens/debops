@@ -128,6 +128,8 @@ class Interpreter(object):
                 self.do_mcp_serve(self.parsed_args.args)
             elif self.parsed_args.command == 'repl':
                 self.do_mcp_repl(self.parsed_args.args)
+            elif self.parsed_args.command == 'shell':
+                self.do_mcp_shell(self.parsed_args.args)
             elif self.parsed_args.command == 'connect':
                 self.do_mcp_connect(self.parsed_args.args)
             elif self.parsed_args.command == 'inspect':
@@ -983,7 +985,10 @@ class Interpreter(object):
             print('\n'.join(mcp_client.format_resources(
                     result.get('resources', []))))
 
-    def do_mcp_repl(self, args):
+    def _mcp_interpreter(self, args, frontend=None):
+        """The shared launch of the interpreter interfaces ('repl',
+        'shell'): probe the project, connect or spawn the daemon, run
+        the session."""
         self._mcp_refuse_if_disabled()
         from .mcp import repl as repl_mod
         project = None
@@ -1001,7 +1006,7 @@ class Interpreter(object):
                 sys.exit(1)
         socket_path = (os.path.abspath(os.path.expanduser(args.socket))
                        if args.socket else default_socket_path(project))
-        if args.stop:
+        if getattr(args, 'stop', False):
             try:
                 repl_mod.stop_daemon(socket_path)
             except repl_mod.ReplError as errmsg:
@@ -1044,8 +1049,15 @@ class Interpreter(object):
                     project_path=(project.path if project is not None
                                   else None),
                     project_type=project_type,
-                    view_root_rel=view_root_rel)
+                    view_root_rel=view_root_rel,
+                    frontend=frontend)
         sys.exit(code)
+
+    def do_mcp_repl(self, args):
+        self._mcp_interpreter(args)
+
+    def do_mcp_shell(self, args):
+        self._mcp_interpreter(args, frontend='shell')
 
     def do_mcp_configure(self, args):
         self._mcp_refuse_if_disabled()
