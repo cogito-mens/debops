@@ -56,6 +56,26 @@ class ViewRootTestCase(unittest.TestCase):
         self.assertFalse(McpPolicy(project).confined)
         self.assertFalse(McpPolicy.for_documentation().confined)
 
+    def test_lock_wait_parses(self):
+        # The default fails fast: a refusal answers instead of a
+        # frozen call
+        policy = McpPolicy(FakeProject('/srv/projects/example'))
+        self.assertEqual(policy.lock_wait, 0)
+        policy = McpPolicy(FakeProject(
+                '/srv/projects/example',
+                raw_config={'project': {'mcp': {'lock_wait': 30}}}))
+        self.assertEqual(policy.lock_wait, 30)
+        # A negative value waits forever (the previous behavior)
+        policy = McpPolicy(FakeProject(
+                '/srv/projects/example',
+                raw_config={'project': {'mcp': {'lock_wait': -1}}}))
+        self.assertEqual(policy.lock_wait, -1)
+        policy = McpPolicy(FakeProject(
+                '/srv/projects/example',
+                raw_config={'project': {'mcp': {'lock_wait':
+                                                'junk'}}}))
+        self.assertEqual(policy.lock_wait, 0)
+
 
 class ConfineTestCase(unittest.TestCase):
 
@@ -166,6 +186,7 @@ class McpConfigTemplateTestCase(unittest.TestCase):
 
         self.assertEqual(values['execute'], policy.execute)
         self.assertEqual(values['execute_timeout'], policy.execute_timeout)
+        self.assertEqual(values['lock_wait'], policy.lock_wait)
         self.assertEqual(values['sync_interval'], policy.sync_interval)
         self.assertEqual(values['min_free_mb'],
                          policy.min_free_bytes // (1024 * 1024))

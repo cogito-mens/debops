@@ -109,6 +109,7 @@ class FlockTestCase(unittest.TestCase):
         })()
         self.policy = type('Policy', (), {
             'view_root': os.path.join(self.tmpdir, 'ansible'),
+            'lock_wait': 0,
         })()
 
     def test_exclusive_conflicts(self):
@@ -146,7 +147,18 @@ class FlockTestCase(unittest.TestCase):
                     pass
 
     def test_exclusive_blocks_a_reader(self):
-        # flock LOCK_SH blocks (does not raise) while a writer holds it
+        # The default policy refuses the reader right away while a
+        # run holds the lock, instead of parking the call for the
+        # run's whole duration
+        from debops.mcp.tools.common import ProjectLockedError
+        with project_flock(self.project, self.policy, exclusive=True):
+            with self.assertRaises(ProjectLockedError):
+                with project_flock(self.project, self.policy,
+                                   exclusive=False):
+                    pass
+
+    def test_a_reader_with_a_lock_wait_waits_for_the_writer(self):
+        self.policy.lock_wait = 5
         with project_flock(self.project, self.policy, exclusive=True):
             entered = threading.Event()
 
@@ -157,9 +169,21 @@ class FlockTestCase(unittest.TestCase):
 
             thread = threading.Thread(target=reader)
             thread.start()
+            # The reader waits while the writer holds the lock
             self.assertFalse(entered.wait(0.3))
         thread.join(timeout=5)
         self.assertTrue(entered.is_set())
+
+    def test_a_reader_with_a_lock_wait_times_out(self):
+        from debops.mcp.tools.common import ProjectLockedError
+        self.policy.lock_wait = 1
+        with project_flock(self.project, self.policy, exclusive=True):
+            started = time.monotonic()
+            with self.assertRaises(ProjectLockedError):
+                with project_flock(self.project, self.policy,
+                                   exclusive=False):
+                    pass
+            self.assertGreaterEqual(time.monotonic() - started, 0.9)
 
 
 class ProjectLockTestCase(unittest.TestCase):
@@ -175,6 +199,7 @@ class ProjectLockTestCase(unittest.TestCase):
         })()
         self.policy = type('Policy', (), {
             'view_root': os.path.join(self.tmpdir, 'ansible'),
+            'lock_wait': 0,
         })()
 
     def test_write_blocks_a_reader(self):
@@ -209,6 +234,7 @@ class ProjectLockTestCase(unittest.TestCase):
         })()
         policy = type('Policy', (), {
             'view_root': os.path.join(self.tmpdir, 'ansible'),
+            'lock_wait': 0,
         })()
         with exclusive_project(project, policy, note='run site',
                                paths=['site.yml']):
@@ -226,6 +252,7 @@ class ProjectLockTestCase(unittest.TestCase):
         })()
         policy = type('Policy', (), {
             'view_root': os.path.join(self.tmpdir, 'ansible'),
+            'lock_wait': 0,
         })()
         # Undeclared paths and no repository to read: the delta is
         # empty and the commit never fires
@@ -245,6 +272,7 @@ class ProjectLockTestCase(unittest.TestCase):
         })()
         policy = type('Policy', (), {
             'view_root': os.path.join(self.tmpdir, 'ansible'),
+            'lock_wait': 0,
         })()
         with self.assertLogs('debops.mcp.tools.common', level='WARNING') \
                 as recorded:
@@ -276,6 +304,7 @@ class SweepTestCase(unittest.TestCase):
                 raw={'project': {'git': {'auto_commit': True}}})
         self.policy = type('Policy', (), {
             'view_root': os.path.join(self.tmpdir, 'ansible'),
+            'lock_wait': 0,
             'view_lock': False,
         })()
 

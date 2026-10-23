@@ -15,7 +15,8 @@ import threading
 import toml
 import yaml
 
-from ...filelock import RunLockedError, run_lock_path
+from ...filelock import (RunLockedError, flock_wait,
+                         run_lock_path)
 
 logger = logging.getLogger(__name__)
 
@@ -439,22 +440,27 @@ def project_flock(project, policy, exclusive):
     """Hold an flock(2) on the project's lock file.
 
     Exclusive holders fail fast when another process holds the lock;
-    readers share it. The kernel releases the lock when the process
-    dies, so a crashed daemon never wedges the project.
+    the readers' wait is the policy's: 'project.mcp.lock_wait'
+    seconds (0 fails fast — a refusal answers instead of freezing the
+    call — a negative value waits forever). The kernel releases the
+    lock when the process dies, so a crashed daemon never wedges the
+    project.
     """
     path = _project_lock_path(project, policy)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fp = open(path, 'a')
     try:
-        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
         if exclusive:
-            mode |= fcntl.LOCK_NB
+            wait = 0
+            mode = fcntl.LOCK_EX
+        else:
+            wait = (None if policy.lock_wait < 0
+                    else policy.lock_wait)
+            mode = fcntl.LOCK_SH
         try:
-            fcntl.flock(fp.fileno(), mode)
-        except BlockingIOError:
-            raise ProjectLockedError(
-                    'another process is working on this project '
-                    '({} is locked)'.format(path))
+            flock_wait(fp, mode, wait)
+        except RunLockedError as errmsg:
+            raise ProjectLockedError(str(errmsg))
         previous = getattr(_LOCK_STATE, 'fd', None)
         _LOCK_STATE.fd = fp.fileno()
         try:

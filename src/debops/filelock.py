@@ -9,6 +9,7 @@ never run at the same time."""
 import contextlib
 import fcntl
 import os
+import time
 
 
 def run_lock_path(project):
@@ -39,29 +40,46 @@ class RunLockedError(RuntimeError):
     """
 
 
+def flock_wait(fp, mode, wait):
+    """flock(2) with a wait policy: 0 fails fast, None blocks
+    forever, a positive number of seconds polls until that deadline.
+    Raises RunLockedError on contention, naming the lock file."""
+    if wait is None:
+        fcntl.flock(fp.fileno(), mode)
+        return
+    mode |= fcntl.LOCK_NB
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            fcntl.flock(fp.fileno(), mode)
+            return
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                raise RunLockedError(
+                        'another process is working on this project '
+                        '({} is locked)'.format(fp.name))
+            time.sleep(0.05)
+
+
 @contextlib.contextmanager
 def run_lock(project, wait=False):
     """Hold the project's exclusive run lock for the duration of a
     command.
 
-    Contention is a RunLockedError right away, unless 'wait' — then
-    the call blocks until the lock is free. The kernel releases the
-    lock when the process dies, so a crashed command never wedges the
-    project.
+    'wait' accepts False (fail fast), True (block until the lock is
+    free) and a number of seconds (poll until that deadline). The
+    kernel releases the lock when the process dies, so a crashed
+    command never wedges the project.
     """
     path = run_lock_path(project)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fp = open(path, 'a')
     try:
-        mode = fcntl.LOCK_EX
-        if not wait:
-            mode |= fcntl.LOCK_NB
-        try:
-            fcntl.flock(fp.fileno(), mode)
-        except BlockingIOError:
-            raise RunLockedError(
-                    'another process is working on this project '
-                    '({} is locked)'.format(path))
+        if wait is True:
+            wait = None
+        elif wait is False:
+            wait = 0
+        flock_wait(fp, fcntl.LOCK_EX, wait)
         yield path
     finally:
         fp.close()

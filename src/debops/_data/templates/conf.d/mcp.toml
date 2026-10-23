@@ -31,6 +31,12 @@ execute = "check"
 # 0 means no limit (the run still ends when the client cancels it).
 execute_timeout = 3600
 
+# How long a tool call waits for the project lock — held by a run in
+# flight — before it refuses with a busy answer, in seconds; 0 means
+# no wait (the refusal comes right away), a negative value waits
+# forever.
+lock_wait = 0
+
 # The ansible-playbook options an execution may pass through. The
 # default set is the safe one: the pattern narrowers plus the
 # verification modes, which parse or list and exit without executing

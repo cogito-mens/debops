@@ -8,6 +8,7 @@ Written with 'unittest' so that the suite runs under pytest without extra
 dependencies.
 """
 
+import fcntl
 import os
 import shutil
 import tempfile
@@ -91,6 +92,36 @@ class RunLockTestCase(unittest.TestCase):
         self.assertEqual(len(acquired), 1)
         # It went through only after the release
         self.assertGreaterEqual(acquired[0], released_at)
+
+    def test_a_bounded_wait_gives_up_after_the_deadline(self):
+        with run_lock(self.project):
+            started = time.monotonic()
+            with self.assertRaises(RunLockedError):
+                with run_lock(self.project, wait=0.4):
+                    pass
+            waited = time.monotonic() - started
+        self.assertGreaterEqual(waited, 0.35)
+        self.assertLess(waited, 5)
+
+    def test_a_bounded_wait_acquires_when_freed(self):
+        path = run_lock_path(self.project)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        holder = open(path, 'a')
+        self.addCleanup(holder.close)
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+
+        def release_soon():
+            time.sleep(0.3)
+            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+
+        thread = threading.Thread(target=release_soon, daemon=True)
+        thread.start()
+        started = time.monotonic()
+        with run_lock(self.project, wait=5):
+            waited = time.monotonic() - started
+        # It waited for the release, not the deadline
+        self.assertGreaterEqual(waited, 0.25)
+        self.assertLess(waited, 4)
 
     def _acquire_waiting(self):
         with run_lock(self.project, wait=True):

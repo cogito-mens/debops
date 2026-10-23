@@ -147,6 +147,7 @@ class McpPolicy(object):
         policy.write_allow = []
         policy.execute = 'none'
         policy.execute_timeout = 3600
+        policy.lock_wait = 0
         policy.sync_interval = 60
         policy.idle_timeout = 0
         policy.trust_ttl = 43200
@@ -247,6 +248,16 @@ class McpPolicy(object):
                 raise ValueError()
         except (TypeError, ValueError):
             self.execute_timeout = 3600
+        # The write-lock wait of the tools, in seconds: 0 (the
+        # default) fails fast on a held lock — a run in flight — so
+        # the refusal answers instead of freezing the call; a
+        # negative value waits forever
+        try:
+            self.lock_wait = int(mcp_config.get('lock_wait', 0))
+        except (TypeError, ValueError):
+            logger.warning('Unknown project.mcp.lock_wait value %r, '
+                           'using 0', mcp_config.get('lock_wait'))
+            self.lock_wait = 0
         if self.execute != 'none':
             timeout = ('unlimited' if self.execute_timeout == 0
                        else '{}s'.format(self.execute_timeout))
