@@ -22,6 +22,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 
 from . import server as _server
 from .client import (UnixClient, default_socket_path,
@@ -465,6 +466,12 @@ class Repl(object):
         # console) flags the busy state; the completion never calls
         # the server while it is set — the client is one connection
         self._busy = False
+        # A front end with a live interface (the shell, the console)
+        # answers questions on the input line and drives the command
+        # submission itself
+        self.gate_input = False
+        self._gate = None
+        self._app = None
         # The server's tool surface ({name: summary}), fetched lazily
         # for the help and the completion; the 'tools' verb governs
         # their visibility in both
@@ -610,7 +617,10 @@ class Repl(object):
                 'content': {'confirmed': answer}}
 
     def _ask(self, message):
-        """Ask a yes/no question; the default is 'no'."""
+        """Ask a yes/no question; the default is 'no'. A live
+        interface answers on its input line."""
+        if self.gate_input:
+            return bool(self._gate_ask(message))
         return ask(message)
 
     # -- the execution flow -----------------------------------------
@@ -746,6 +756,103 @@ class Repl(object):
     def _invalidate(self):
         """The repaint hook of a live chrome (the console overrides
         it); the line readers have nothing to repaint."""
+
+    def _echo(self, text):
+        """A line of the session transcript; the console writes it to
+        the scrollback pane instead."""
+        print(text, end='', file=self._out)
+
+    def _prompt_marker(self):
+        """The marker of the input line and the transcript echo; the
+        elevation shows on it."""
+        return 'debops!>' if self.elevated else 'debops>'
+
+    # -- the input gate (questions answered on the input line) -------
+    #
+    # The front ends with a live interface ('gate_input') run the
+    # commands on a worker thread; a question is answered on the
+    # input line, Escape declines. The gate runs on the worker —
+    # never the interface thread, which has to stay free to do the
+    # answering.
+
+    def _gate_ask(self, message, secret=False):
+        """Ask in the transcript; the input line answers."""
+        gate = {'secret': secret, 'answered': threading.Event(),
+                'value': None}
+        self._gate = gate
+        self._echo(message + '\n')
+        self._invalidate()
+        gate['answered'].wait()
+        self._gate = None
+        self._invalidate()
+        return gate['value']
+
+    def _gate_answer(self, line):
+        """The input line answering a pending question."""
+        gate = self._gate
+        if gate is None:
+            return False
+        if gate['secret']:
+            gate['value'] = line
+            self._echo('\n')
+        else:
+            gate['value'] = line.strip().lower() in ('y', 'yes')
+            self._echo(line + '\n')
+        gate['answered'].set()
+        self._invalidate()
+        return True
+
+    def _gate_decline(self):
+        """Escape declines the pending question."""
+        gate = self._gate
+        if gate is None:
+            return False
+        gate['value'] = '' if gate['secret'] else False
+        self._echo('\n')
+        gate['answered'].set()
+        self._invalidate()
+        return True
+
+    # -- the command submission (front ends with a live app) ---------
+
+    def submit(self, line):
+        """One input line: an answer when a question is pending, a
+        command otherwise (one at a time)."""
+        if self._gate is not None:
+            self._gate_answer(line)
+            return
+        if self._busy:
+            self._echo('a command is running; Ctrl-C drops its '
+                       'connection\n')
+            return
+        if not line.strip():
+            return
+        self._busy = True
+        thread = threading.Thread(target=self._execute_guarded,
+                                  args=(line,), daemon=True)
+        thread.start()
+
+    def _execute_guarded(self, line):
+        """Run one command on the worker thread; the interface stays
+        alive and repaints as the answer lands. An unexpected error
+        lands in the transcript — a traceback on the raw terminal
+        would corrupt the display and cost the session its worker."""
+        self._echo('{} {}\n'.format(self._prompt_marker(), line))
+        try:
+            done = _execute_line(self, line)
+        except KeyboardInterrupt:
+            done = False
+        except Exception as errmsg:
+            self._echo('error: internal: {}\n'.format(errmsg))
+            self._echo(traceback.format_exc())
+            done = False
+        finally:
+            self._busy = False
+            self._invalidate()
+        if done:
+            app = self._app
+            if app is not None:
+                app.exit()
 
     # -- the server tool surface (the 'tool/<name>' hatch) -----------
 
@@ -1170,8 +1277,14 @@ class Repl(object):
         return self._ask_passphrase()
 
     def _ask_passphrase(self):
-        """The hidden passphrase prompt; the presentation hook — the
-        console asks through its own input line."""
+        """The hidden passphrase prompt; the presentation hook — a
+        live interface asks through its own input line."""
+        if self.gate_input:
+            phrase = self._gate_ask('the trust passphrase: ',
+                                    secret=True)
+            if not phrase:
+                raise ReplError('cancelled')
+            return phrase
         try:
             return getpass.getpass('the trust passphrase: ')
         except (EOFError, KeyboardInterrupt):

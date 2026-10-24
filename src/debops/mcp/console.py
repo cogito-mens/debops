@@ -18,10 +18,9 @@ reader.
 import re
 import threading
 import time
-import traceback
 
-from .repl import (Repl, ReplError, _banner, _execute_line,
-                   _format_duration, _run_verb, run_interactive_plain)
+from .repl import (Repl, ReplError, _banner, _format_duration,
+                   _run_verb, run_interactive_plain)
 
 # The scrollback keeps this many lines; the activity pane this many
 _SCROLLBACK_LINES = 5000
@@ -71,8 +70,8 @@ class ConsoleRepl(Repl):
         # status lines
         self.run_display = 'lines'
         self._tree_lines = []
-        self._gate = None
-        self._app = None
+        # The questions are answered on the input line
+        self.gate_input = True
         # The prompt_toolkit buffers, attached by _build_app
         self._scroll_buffer = None
         self._activity_buffer = None
@@ -130,111 +129,15 @@ class ConsoleRepl(Repl):
 
     # -- the input gate (questions answered on the input line) -------
 
-    def _gate_ask(self, message, secret=False):
-        """Ask in the scrollback; the input line answers, Escape
-        declines. Runs on the worker thread — never the interface
-        thread, which has to stay free to do the answering."""
-        gate = {'secret': secret, 'answered': threading.Event(),
-                'value': None}
-        self._gate = gate
-        self._echo(message + '\n')
-        gate['answered'].wait()
-        self._gate = None
-        self._invalidate()
-        return gate['value']
-
-    def _gate_answer(self, line):
-        """The input line answering a pending question."""
-        gate = self._gate
-        if gate is None:
-            return False
-        if gate['secret']:
-            gate['value'] = line
-            self._echo('\n')
-        else:
-            gate['value'] = line.strip().lower() in ('y', 'yes')
-            self._echo(line + '\n')
-        gate['answered'].set()
-        return True
-
-    def _gate_decline(self):
-        """Escape declines the pending question."""
-        gate = self._gate
-        if gate is None:
-            return False
-        gate['value'] = '' if gate['secret'] else False
-        self._echo('\n')
-        gate['answered'].set()
-        return True
-
-    def _ask(self, message):
-        return bool(self._gate_ask(message))
-
-    def _ask_passphrase(self):
-        phrase = self._gate_ask('the trust passphrase: ', secret=True)
-        if not phrase:
-            raise ReplError('cancelled')
-        return phrase
-
-    # -- the command submission ---------------------------------------
-
-    def _echo(self, text):
-        if self._scroll_buffer is not None:
-            self._scroll_buffer.insert_text(text)
-            # The scrollback keeps the tail of the session
-            lines = self._scroll_buffer.text.split('\n')
-            if len(lines) > _SCROLLBACK_LINES:
-                self._scroll_buffer.text = \
-                    '\n'.join(lines[-_SCROLLBACK_LINES:])
-                self._scroll_buffer.cursor_position = \
-                    len(self._scroll_buffer.text)
-            self._invalidate()
-
-    def submit(self, line):
-        """One input line: an answer when a question is pending, a
-        command otherwise (one at a time)."""
-        if self._gate is not None:
-            self._gate_answer(line)
-            return
-        if self._busy:
-            self._echo('a command is running; Ctrl-C drops its '
-                       'connection\n')
-            return
-        if not line.strip():
-            return
-        self._busy = True
-        thread = threading.Thread(target=self._execute_guarded,
-                                  args=(line,), daemon=True)
-        thread.start()
-
     def _prompt_marker(self):
         """The input-line marker: '>' normally, '!' while elevated.
         The live prompt and the scrollback echo share it."""
         return '!>' if self.elevated else '>'
 
     def _execute_guarded(self, line):
-        """Run one command on the worker thread; the interface stays
-        alive and repaints as the answer lands. An unexpected error
-        lands in the scrollback — a traceback on the raw terminal
-        would corrupt the display and cost the session its worker."""
-        self._echo(self._prompt_marker() + ' ' + line + '\n')
-        try:
-            done = _execute_line(self, line)
-        except KeyboardInterrupt:
-            done = False
-        except Exception as errmsg:
-            self._echo('error: internal: {}\n'.format(errmsg))
-            self._echo(traceback.format_exc())
-            done = False
-        finally:
-            self._busy = False
-            if self.pane == 'tree':
-                self._refresh_tree()
-            self._invalidate()
-        if done:
-            app = self._app
-            if app is not None:
-                app.exit()
+        super()._execute_guarded(line)
+        if self.pane == 'tree':
+            self._refresh_tree()
 
     # -- the side pane -------------------------------------------------
 
