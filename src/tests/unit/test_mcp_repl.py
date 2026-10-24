@@ -17,7 +17,9 @@ import unittest
 from unittest import mock
 
 from debops.mcp import repl
-from debops.mcp.repl import Repl, ReplError, execution_arguments
+from debops.mcp.repl import (COMMAND_SPECS, Repl, ReplError,
+                             _HelpRequested, _candidates_for,
+                             _command_help, execution_arguments)
 
 
 class FakeClient(object):
@@ -98,18 +100,19 @@ def tool_params(name, arguments, view='system'):
 class ExecutionArgumentsTestCase(unittest.TestCase):
 
     def test_a_single_target(self):
-        self.assertEqual(execution_arguments(['site']),
-                         {'playbook': 'site'})
+        self.assertEqual(execution_arguments(
+                ['site'], COMMAND_SPECS['run']), {'playbook': 'site'})
 
     def test_multiple_targets_keep_the_order(self):
         self.assertEqual(
-                execution_arguments(['service/nginx', 'site']),
+                execution_arguments(['service/nginx', 'site'],
+                                    COMMAND_SPECS['run']),
                 {'playbook': ['service/nginx', 'site']})
 
     def test_options(self):
         arguments = execution_arguments(
                 ['site', '--limit', 'web1', '--forks', '4',
-                 '--list-hosts'])
+                 '--list-hosts'], COMMAND_SPECS['run'])
         self.assertEqual(arguments['limit'], 'web1')
         self.assertEqual(arguments['forks'], '4')
         self.assertIs(arguments['list_hosts'], True)
@@ -117,16 +120,127 @@ class ExecutionArgumentsTestCase(unittest.TestCase):
 
     def test_an_unknown_option_is_a_clean_error(self):
         with self.assertRaises(ReplError) as context:
-            execution_arguments(['site', '--background'])
+            execution_arguments(['site', '--background'],
+                                COMMAND_SPECS['run'])
         self.assertIn('--background', str(context.exception))
 
     def test_a_valued_option_needs_a_value(self):
         with self.assertRaises(ReplError):
-            execution_arguments(['site', '--limit'])
+            execution_arguments(['site', '--limit'],
+                                COMMAND_SPECS['run'])
 
     def test_a_target_is_required(self):
         with self.assertRaises(ReplError):
-            execution_arguments(['--list-hosts'])
+            execution_arguments(['--list-hosts'], COMMAND_SPECS['run'])
+
+
+class CommandEngineTestCase(unittest.TestCase):
+    """The command-line engine of the verbs: the ansible-playbook
+    forms, the verbose help and the completion."""
+
+    def setUp(self):
+        self.spec = COMMAND_SPECS['run']
+
+    def test_the_short_forms(self):
+        arguments = execution_arguments(
+                ['site', '-l', 'web*', '-t', 'php,nginx'], self.spec)
+        self.assertEqual(arguments['limit'], 'web*')
+        self.assertEqual(arguments['tags'], 'php,nginx')
+
+    def test_the_attached_and_equals_forms(self):
+        arguments = execution_arguments(
+                ['site', '-lweb*', '--tags=php'], self.spec)
+        self.assertEqual(arguments['limit'], 'web*')
+        self.assertEqual(arguments['tags'], 'php')
+
+    def test_a_flag_never_consumes_the_next_token(self):
+        arguments = execution_arguments(
+                ['site', '--list-tasks', 'other'], self.spec)
+        self.assertIs(arguments['list_tasks'], True)
+        self.assertEqual(arguments['playbook'], ['site', 'other'])
+
+    def test_a_double_dash_ends_the_options(self):
+        arguments = execution_arguments(['--', '-odd'], self.spec)
+        self.assertEqual(arguments['playbook'], '-odd')
+
+    def test_an_unknown_short_form_is_a_clean_error(self):
+        with self.assertRaises(ReplError) as context:
+            execution_arguments(['site', '-x'], self.spec)
+        self.assertIn("'-x'", str(context.exception))
+        self.assertIn('run -h', str(context.exception))
+
+    def test_a_flag_takes_no_value(self):
+        with self.assertRaises(ReplError) as context:
+            execution_arguments(['site', '--list-tasks=yes'],
+                                self.spec)
+        self.assertIn('takes no value', str(context.exception))
+
+    def test_the_help_lists_everything(self):
+        text = _command_help(self.spec)
+        self.assertIn('usage: run [-h] [-l SUBSET]', text)
+        # (the usage wraps; the tail carries the positional)
+        self.assertIn('[PLAYBOOK ...]', text)
+        self.assertIn('positional arguments:', text)
+        self.assertIn('options:', text)
+        for form in ('-l, --limit SUBSET', '-t, --tags TAGS',
+                     '--skip-tags TAGS', '-f, --forks N',
+                     '--start-at-task NAME', '-u, --user NAME',
+                     '--syntax-check', '--list-hosts', '--list-tasks',
+                     '--list-tags', '--force-handlers',
+                     '--flush-cache'):
+            self.assertIn(form, text)
+        # The opt-ins are marked as such
+        self.assertIn('policy opt-in', text)
+
+    def test_the_help_request_carries_the_text(self):
+        with self.assertRaises(_HelpRequested) as context:
+            execution_arguments(['-h'], self.spec)
+        self.assertIn('usage: run', context.exception.text)
+
+    def test_the_job_spec_adds_the_mode(self):
+        text = _command_help(COMMAND_SPECS['job'])
+        self.assertIn('usage: job add', text)
+        self.assertIn('-m, --mode MODE', text)
+        self.assertIn('BATCH', text)
+
+    def test_the_completion_offers_the_option_forms(self):
+        session = make_repl(FakeClient())[0]
+        _word, found = _candidates_for(session, 'check site -')
+        self.assertIn('-l', found)
+        self.assertIn('--limit', found)
+        self.assertIn('-h', found)
+        _word, found = _candidates_for(session, 'job add site --')
+        self.assertIn('--mode', found)
+        self.assertIn('--limit', found)
+        # ... but not after its other subcommands
+        _word, found = _candidates_for(session, 'job prune --')
+        self.assertEqual(found, [])
+
+    def test_a_verbs_dash_h_prints_without_calling(self):
+        session, out, _err = make_repl(FakeClient())
+        session.execute('check -h')
+        self.assertIn('usage: check', out.getvalue())
+        self.assertEqual(session.client.calls, [])
+
+    def test_help_takes_a_verb(self):
+        session, out, err = make_repl(FakeClient())
+        session.execute('help run')
+        self.assertIn('usage: run', out.getvalue())
+        # ... and a verb without a spec gets a note
+        session.execute('help view')
+        self.assertIn('no detailed help', err.getvalue())
+
+    def test_job_add_takes_the_execution_short_forms(self):
+        session, _out, _err = make_repl(FakeClient())
+        session.client.queue(
+                'tools/call',
+                {'resultType': 'complete', 'isError': False,
+                 'content': [{'type': 'text', 'text': 'queued'}]})
+        session.execute('job add work site -l web1')
+        call = session.client.calls[0][1]
+        self.assertEqual(call['name'], 'job.add')
+        self.assertEqual(call['arguments']['limit'], 'web1')
+        self.assertEqual(call['arguments']['playbook'], 'site')
 
 
 class VerbTestCase(unittest.TestCase):

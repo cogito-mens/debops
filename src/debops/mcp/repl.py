@@ -21,6 +21,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import traceback
@@ -48,21 +49,271 @@ DEFAULT_PROMPT = 'debops> '
 # How often a running task is polled for its status tail
 POLL_INTERVAL = 0.5  # seconds
 
-# The execution options of check/run: the REPL spelling to the tool
-# argument; a valued option takes the next token
-EXECUTION_OPTIONS = {
-    '--limit': ('limit', True),
-    '--tags': ('tags', True),
-    '--skip-tags': ('skip_tags', True),
-    '--forks': ('forks', True),
-    '--start-at-task': ('start_at_task', True),
-    '--user': ('user', True),
-    '--syntax-check': ('syntax_check', False),
-    '--list-hosts': ('list_hosts', False),
-    '--list-tasks': ('list_tasks', False),
-    '--list-tags': ('list_tags', False),
-    '--force-handlers': ('force_handlers', False),
-    '--flush-cache': ('flush_cache', False),
+
+class _HelpRequested(Exception):
+    """The command asked for its help ('-h'/'--help'): carries the
+    rendered text; the interpreter prints it and nothing runs."""
+
+    def __init__(self, text):
+        super().__init__(text)
+        self.text = text
+
+
+class _Option(object):
+    """One option of a command spec: the short and long forms, the
+    destination name, the value shape (a metavar when the option
+    takes a value) and the help line."""
+
+    def __init__(self, short, long, dest, metavar=None, help=''):
+        self.short = short
+        self.long = long
+        self.dest = dest
+        self.metavar = metavar
+        self.help = help
+
+    @property
+    def takes_value(self):
+        return self.metavar is not None
+
+    def forms(self):
+        """The option strings, for the help and the completion."""
+        names = [name for name in (self.short, self.long)
+                 if name is not None]
+        if self.takes_value:
+            return ', '.join(names) + ' ' + self.metavar
+        return ', '.join(names)
+
+
+class _CommandSpec(object):
+    """The argument shape of a verb: the usage name, the verbose
+    description for '-h', the positionals ((name, help, nargs)) and
+    the options. The one table drives the parsing, the help and the
+    completion."""
+
+    def __init__(self, name, description='', positionals=(),
+                 options=()):
+        self.name = name
+        self.description = description
+        self.positionals = list(positionals)
+        self.options = list(options)
+
+    def option_named(self, long=None, short=None):
+        for option in self.options:
+            if long is not None and option.long == long:
+                return option
+            if short is not None and option.short == short:
+                return option
+        return None
+
+
+def _usage(spec):
+    """The wrapped usage line of a command, à la argparse."""
+    parts = ['[-h]']
+    for option in spec.options:
+        form = option.short or option.long
+        if option.takes_value:
+            form += ' ' + option.metavar
+        parts.append('[{}]'.format(form))
+    for name, _help, nargs in spec.positionals:
+        parts.append('{} [{} ...]'.format(name, name)
+                     if nargs == '+' else name)
+    return '\n'.join(textwrap.wrap(
+            'usage: {} {}'.format(spec.name, ' '.join(parts)), 76,
+            subsequent_indent='    ', break_on_hyphens=False,
+            break_long_words=False))
+
+
+def _help_rows(rows):
+    """The name/help rows of a help section, aligned on a column;
+    a help line longer than the room wraps under itself."""
+    column = min(max(len(name) for name, _help in rows) + 2, 26)
+    lines = []
+    for name, help in rows:
+        head = '  ' + name.ljust(column)
+        if len(head) > 28:
+            lines.append(head)
+            lines.extend(textwrap.wrap(help, 78,
+                                       initial_indent=' ' * 30,
+                                       subsequent_indent=' ' * 30))
+        else:
+            lines.extend(textwrap.wrap(
+                    help, 78, initial_indent=head,
+                    subsequent_indent=' ' * len(head)))
+    return lines
+
+
+def _command_help(spec):
+    """The verbose help of a command, à la argparse: the usage, the
+    description, the positionals and the options."""
+    lines = [_usage(spec)]
+    if spec.description:
+        lines.extend([''] + spec.description.splitlines())
+    rows = []
+    for name, help, _nargs in spec.positionals:
+        rows.append((name, help))
+    if rows:
+        lines.extend(['', 'positional arguments:'])
+        lines.extend(_help_rows(rows))
+    if spec.options:
+        option_rows = [('-h, --help', 'show this help')]
+        option_rows.extend((option.forms(), option.help)
+                           for option in spec.options)
+        lines.extend(['', 'options:'])
+        lines.extend(_help_rows(option_rows))
+    return '\n'.join(lines)
+
+
+def _parse_arguments(spec, tokens):
+    """The tokens of a command against its spec: the (option values,
+    positionals) pair. '-h'/'--help' raises _HelpRequested with the
+    rendered help; a mistake raises ReplError with a pointer to it.
+
+    The forms are the ansible-playbook ones: '-l VALUE' and
+    '-lVALUE', '--limit VALUE' and '--limit=VALUE'; a flag never
+    consumes the next token; '--' ends the option parsing.
+    """
+    values = {}
+    positionals = []
+    options_open = True
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if options_open and token == '--':
+            options_open = False
+        elif options_open and token in ('-h', '--help'):
+            raise _HelpRequested(_command_help(spec))
+        elif options_open and token.startswith('--'):
+            name, equal, inline = token.partition('=')
+            option = spec.option_named(long=name)
+            if option is None:
+                raise ReplError("unknown option: {!r} — try '{} -h'"
+                                .format(name, spec.name))
+            if not option.takes_value:
+                if equal:
+                    raise ReplError('{} takes no value'.format(name))
+                values[option.dest] = True
+            elif equal:
+                values[option.dest] = inline
+            else:
+                index += 1
+                if index >= len(tokens):
+                    raise ReplError('{} needs a value'.format(name))
+                values[option.dest] = tokens[index]
+        elif options_open and token.startswith('-') and token != '-':
+            short, attached = token[:2], token[2:]
+            option = spec.option_named(short=short)
+            if option is None or (attached and not option.takes_value):
+                raise ReplError("unknown option: {!r} — try '{} -h'"
+                                .format(token, spec.name))
+            if attached:
+                values[option.dest] = attached
+            else:
+                index += 1
+                if index >= len(tokens):
+                    raise ReplError('{} needs a value'.format(short))
+                values[option.dest] = tokens[index]
+        else:
+            positionals.append(token)
+        index += 1
+    return values, positionals
+
+
+# The execution options of 'check'/'run'/'job add': the set the
+# daemon knows, with the ansible-playbook short forms; the opt-ins
+# are marked — the project policy (project.mcp.execute_options)
+# decides what passes, the daemon relays the refusal
+_EXECUTION_OPTIONS = (
+    _Option('-l', '--limit', 'limit', metavar='SUBSET',
+            help='only run plays and tasks whose hosts match the '
+                 'pattern'),
+    _Option('-t', '--tags', 'tags', metavar='TAGS',
+            help='only run tasks with these tags (a comma list)'),
+    _Option(None, '--skip-tags', 'skip_tags', metavar='TAGS',
+            help='skip tasks with these tags (a comma list)'),
+    _Option('-f', '--forks', 'forks', metavar='N',
+            help='this many parallel host processes (policy opt-in)'),
+    _Option(None, '--start-at-task', 'start_at_task', metavar='NAME',
+            help='start at the task with this name (policy opt-in)'),
+    _Option('-u', '--user', 'user', metavar='NAME',
+            help='the default connection user (a bootstrap override '
+                 'of the policy)'),
+    _Option(None, '--syntax-check', 'syntax_check',
+            help='parse the playbooks and exit; nothing runs'),
+    _Option(None, '--list-hosts', 'list_hosts',
+            help='list the affected hosts and exit; nothing runs'),
+    _Option(None, '--list-tasks', 'list_tasks',
+            help='list the tasks and exit; nothing runs'),
+    _Option(None, '--list-tags', 'list_tags',
+            help='list the tags and exit; nothing runs'),
+    _Option(None, '--force-handlers', 'force_handlers',
+            help='run the notified handlers immediately '
+                 '(policy opt-in)'),
+    _Option(None, '--flush-cache', 'flush_cache',
+            help='flush the local fact cache first (policy opt-in)'),
+)
+
+COMMAND_SPECS = {
+    'check': _CommandSpec(
+            'check',
+            description=(
+                    'Check the playbooks against the managed hosts '
+                    'without changing\n'
+                    'them (ansible-playbook --check): the tasks '
+                    'report what they would\n'
+                    'have changed.\n'
+                    '\n'
+                    'The run tallies the tasks first — the status '
+                    "line's progress and\n"
+                    'time estimate come from the tally — and a '
+                    'project-local playbook\n'
+                    'asks for confirmation before it runs. The '
+                    'session blocks until\n'
+                    'the run ends; Ctrl-C cancels the run.'),
+            positionals=[('PLAYBOOK',
+                          'the playbook target(s); a set name '
+                          'expands to its playbooks', '+')],
+            options=_EXECUTION_OPTIONS),
+    'run': _CommandSpec(
+            'run',
+            description=(
+                    'Execute the playbooks on the managed hosts '
+                    '(ansible-playbook).\n'
+                    '\n'
+                    'The run tallies the tasks first — the status '
+                    "line's progress and\n"
+                    'time estimate come from the tally. The session '
+                    'blocks until the\n'
+                    'run ends; Ctrl-C cancels the run.'),
+            positionals=[('PLAYBOOK',
+                          'the playbook target(s); a set name '
+                          'expands to its playbooks', '+')],
+            options=_EXECUTION_OPTIONS),
+    'job': _CommandSpec(
+            'job add',
+            description=(
+                    "Queue a playbook run in a batch. The queue runs "
+                    "a batch's jobs\n"
+                    "in order once started ('queue start'); 'job "
+                    "prune <id>' drops a queued\n"
+                    "job, 'job del <batch>' removes a finished "
+                    'batch.\n'
+                    '\n'
+                    'The mode word comes before the playbook, '
+                    'UNIX-style; -m|--mode\n'
+                    'names it explicitly — with the option, a '
+                    "playbook named exactly\n"
+                    "'check', 'run' or 'debug' stays a playbook. "
+                    'The options are\n'
+                    "the execution options of 'check' and 'run'."),
+            positionals=[('BATCH', 'the batch to queue the job in',
+                          '1'),
+                         ('PLAYBOOK',
+                          'the playbook target(s); a set name '
+                          'expands to its playbooks', '+')],
+            options=(_Option('-m', '--mode', 'mode', metavar='MODE',
+                             help="the run mode: 'check', 'run' or "
+                                  "'debug' (default: run)"),)
+            + _EXECUTION_OPTIONS),
 }
 
 
@@ -362,32 +613,14 @@ def tool_arguments(tokens):
     return arguments
 
 
-def execution_arguments(tokens):
-    """The check/run arguments: the targets plus the policy options."""
-    playbooks = []
-    arguments = {}
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
-        if token.startswith('--'):
-            spec = EXECUTION_OPTIONS.get(token)
-            if spec is None:
-                raise ReplError('unknown option: {} (the policy allows: '
-                                '{})'.format(token, ', '.join(sorted(
-                                        EXECUTION_OPTIONS))))
-            name, takes_value = spec
-            if takes_value:
-                index += 1
-                if index >= len(tokens):
-                    raise ReplError('{} needs a value'.format(token))
-                arguments[name] = tokens[index]
-            else:
-                arguments[name] = True
-        else:
-            playbooks.append(token)
-        index += 1
+def execution_arguments(tokens, spec):
+    """The check/run arguments: the targets plus the policy options,
+    parsed against the verb's spec (the ansible-playbook short and
+    long forms)."""
+    arguments, playbooks = _parse_arguments(spec, tokens)
     if not playbooks:
-        raise ReplError('a playbook target is required')
+        raise ReplError("a playbook target is required — try '{} -h'"
+                        .format(spec.name))
     arguments['playbook'] = (playbooks[0] if len(playbooks) == 1
                              else playbooks)
     return arguments
@@ -1515,7 +1748,8 @@ class Repl(object):
                    'to its root'.format(view or '(none)'))
 
     def cmd_check(self, args):
-        return self._call_tool('check', execution_arguments(args))
+        return self._call_tool('check', execution_arguments(
+                args, COMMAND_SPECS['check']))
 
     def cmd_queue(self, args):
         """The execution queue: its state ('queue'), or steer it
@@ -1555,46 +1789,47 @@ class Repl(object):
         word is not consumed, so a playbook named exactly 'check',
         'run' or 'debug' stays a playbook.
         """
-        if len(args) >= 2 and args[0] == 'add':
-            tokens = list(args[1:])
-            batch = tokens.pop(0)
-            mode = None
-            rest = []
-            index = 0
-            while index < len(tokens):
-                token = tokens[index]
-                if token in ('-m', '--mode'):
-                    index += 1
-                    if index >= len(tokens):
-                        raise ReplError('-m/--mode needs a value: '
-                                        'check, run or debug')
-                    mode = tokens[index]
-                elif token.startswith('--mode='):
-                    mode = token.split('=', 1)[1]
-                else:
-                    rest.append(token)
-                index += 1
+        if args in (['-h'], ['--help']):
+            raise _HelpRequested(_command_help(COMMAND_SPECS['job']))
+        if args and args[0] == 'add':
+            values, positionals = _parse_arguments(
+                    COMMAND_SPECS['job'], args[1:])
+            if len(positionals) < 2:
+                raise ReplError('a batch and a playbook are required '
+                                "— try 'job -h'")
+            batch = positionals[0]
+            playbooks = positionals[1:]
+            mode = values.pop('mode', None)
             if mode is None:
                 mode = 'run'
-                if rest and rest[0] in ('check', 'run', 'debug'):
-                    mode = rest.pop(0)
+                if playbooks and playbooks[0] in ('check', 'run',
+                                                  'debug'):
+                    mode = playbooks.pop(0)
             elif mode not in ('check', 'run', 'debug'):
                 raise ReplError("the mode is one of: 'check', 'run', "
                                 "'debug'")
-            job_args = dict(execution_arguments(rest))
+            if not playbooks:
+                raise ReplError("a playbook target is required — try "
+                                "'job -h'")
+            job_args = values
             job_args['batch'] = batch
             job_args['mode'] = mode
+            job_args['playbook'] = (playbooks[0]
+                                    if len(playbooks) == 1
+                                    else playbooks)
             return self._call_tool('job.add', job_args)
         if len(args) == 2 and args[0] == 'prune':
             return self._call_tool('job.prune', {'id': args[1]})
         if len(args) == 2 and args[0] == 'del':
             return self._call_tool('job.del', {'batch': args[1]})
         raise ReplError('usage: job add <batch> [check|run|debug] '
-                        '[-m mode] <playbook> [...] | job prune <id> '
-                        '| job del <batch>')
+                        '[-m mode] <playbook> [...] [options] | '
+                        'job prune <id> | job del <batch> '
+                        "('job -h' details the options)")
 
     def cmd_run(self, args):
-        return self._call_tool('run', execution_arguments(args))
+        return self._call_tool('run', execution_arguments(
+                args, COMMAND_SPECS['run']))
 
     def cmd_elevate(self, args):
         """Raise the session: the gates answer themselves while it
@@ -2261,7 +2496,7 @@ class Repl(object):
         if verb in ('exit', 'quit'):
             raise EOFError()
         if verb == 'help':
-            self._print_help()
+            self._print_help(args)
             return
         if verb == 'debops' and args and (
                 args[0] in self.verbs() or args[0] in ('help', 'exit')
@@ -2278,7 +2513,11 @@ class Repl(object):
                                     'drop the prefix')
                 raise ReplError("unknown verb: {!r} ('help' lists them)"
                                 .format(verb))
-            result = handler(args)
+            try:
+                result = handler(args)
+            except _HelpRequested as request:
+                print(request.text, file=self._out)
+                result = None
         if verb in ('edit', 'mkdir', 'rm', 'mv', 'cp') or \
                 verb.startswith('tool/'):
             # The directory listings the completion serves may have
@@ -2296,8 +2535,18 @@ class Repl(object):
     # declares them here
     HELP_EXTRA = {}
 
-    def _print_help(self):
-        print('Commands (the MCP tools of the project, for a human):',
+    def _print_help(self, args=None):
+        if args:
+            spec = COMMAND_SPECS.get(' '.join(args)) or \
+                    COMMAND_SPECS.get(args[0])
+            if spec is not None:
+                print(_command_help(spec), file=self._out)
+            else:
+                self._note('no detailed help for {!r} (the listing '
+                           'is all there is)'.format(args[0]))
+            return
+        print('Commands (the MCP tools of the project, for a human; '
+              "a verb takes '-h' for the verbose form):",
               file=self._out)
         entries = dict(HELP)
         entries.update(self.HELP_EXTRA)
@@ -2423,18 +2672,18 @@ HELP = {
     'status': 'the project state',
     'views': 'the infrastructure views',
     'view <name>': 'switch the active view',
-    'check <targets> [opts]': 'a check-mode run (opts: --limit, '
-                              '--tags, --list-hosts, ...)',
-    'run <targets> [opts]': 'execute playbooks (same options)',
+    'check <targets> [options]': 'a check-mode run '
+                                 '("check -h" details the options)',
+    'run <targets> [options]': 'execute the playbooks (same '
+                               'options; "run -h" details them)',
     'queue [start|stop|clear]': 'the execution queue and its state',
     'batch [verb] <name>': 'a job batch of the queue (verbs: '
                            'create, remove, prune, pending, accept; '
                            'bare shows it)',
-    'job add <batch> [mode] <pb> [...]': 'a new queue job; the mode '
-                                         'word before the playbook, '
-                                         'or -m|--mode (prune <id>, '
-                                         'del <batch> removes the '
-                                         'last job)',
+    'job add <batch> [mode] <pb> [...]': 'a new queue job '
+                                         '("job -h" details it; '
+                                         'also: prune <id>, '
+                                         'del <batch>)',
     'logs': 'the recorded executions',
     'log <id> [-f]': 'the output of an execution; --follow tails a live one',
     'purge <seconds>': 'drop the run logs older than the age',
@@ -2510,8 +2759,15 @@ def _candidates_for(repl, before):
             candidates.extend('tool/' + name
                               for name in repl._server_tool_list())
         return word, sorted(candidates)
-    if words[0] in ('check', 'run') and word.startswith('--'):
-        return word, sorted(EXECUTION_OPTIONS)
+    if word.startswith('-') and words[0] in COMMAND_SPECS:
+        # The job options apply to its 'add' subcommand only
+        if words[0] == 'job' and (len(words) < 2 or words[1] != 'add'):
+            return word, []
+        forms = ['-h', '--help']
+        for option in COMMAND_SPECS[words[0]].options:
+            forms.extend(name for name in (option.short, option.long)
+                         if name is not None)
+        return word, sorted(forms)
     if words[0] == 'doc' and word.startswith('--'):
         return word, ['--type', '--list', '--snippet', '--json']
     if words[0] in Repl._PATH_VERBS:
