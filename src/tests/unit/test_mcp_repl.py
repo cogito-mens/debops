@@ -701,6 +701,63 @@ class TaskFlowTestCase(unittest.TestCase):
         self.assertTrue(client.tail.closed)
         self.assertEqual(client.tail.subscriptions, [{'runLog': 7}])
 
+    def test_the_run_opens_with_the_playbook_prelude(self):
+        # The plain CLI's 'Executing Ansible playbooks:' list, the
+        # paths through the presentation filter, before the tail
+        client = FakeClient()
+        client.tail = FakeTailConnection(['ok: [localhost]'])
+        repl_obj, out, _err = make_repl(client)
+        home = os.path.expanduser('~')
+        self._run_task_script(repl_obj, [
+                {'status': 'working',
+                 'run': {'mode': 'run', 'playbooks': ['site'],
+                         'executionId': 7,
+                         'playbookPaths': [os.path.join(
+                                 home, 'projects', 'x', 'site.yml')]}},
+                {'status': 'completed',
+                 'result': {'isError': False,
+                            'structuredContent': {'exitCode': 0},
+                            'content': []}}])
+        text = out.getvalue()
+        self.assertLess(text.index('Executing Ansible playbooks:'),
+                        text.index('ok: [localhost]'))
+        self.assertIn('~/projects/x/site.yml', text)
+
+    def test_the_tail_is_colored_on_a_terminal(self):
+        client = FakeClient()
+        client.tail = FakeTailConnection(
+                ['TASK [one]', 'ok: [localhost]', 'changed: [x]'])
+        repl_obj, out, _err = make_repl(client, interactive=True)
+        out.isatty = lambda: True
+        self._run_task_script(repl_obj, [
+                {'status': 'working',
+                 'run': {'mode': 'run', 'playbooks': ['site'],
+                         'executionId': 7, 'taskIndex': 1}},
+                {'status': 'completed',
+                 'result': {'isError': False,
+                            'structuredContent': {'exitCode': 0},
+                            'content': []}}])
+        text = out.getvalue()
+        # ansible's own defaults: ok green, changed yellow, the
+        # banner plain
+        self.assertIn('\x1b[0;32mok: [localhost]\x1b[0m', text)
+        self.assertIn('\x1b[0;33mchanged: [x]\x1b[0m', text)
+        self.assertIn('TASK [one]\n', text)
+
+    def test_the_tail_stays_plain_in_a_pipe(self):
+        client = FakeClient()
+        client.tail = FakeTailConnection(['ok: [localhost]'])
+        repl_obj, out, _err = make_repl(client)
+        self._run_task_script(repl_obj, [
+                {'status': 'working',
+                 'run': {'mode': 'run', 'playbooks': ['site'],
+                         'executionId': 7, 'taskIndex': 1}},
+                {'status': 'completed',
+                 'result': {'isError': False,
+                            'structuredContent': {'exitCode': 0},
+                            'content': []}}])
+        self.assertNotIn('\x1b[', out.getvalue())
+
     def test_a_legacy_client_keeps_the_status_digest(self):
         # The 2025 era has no streams; the digest prints as before
         client = FakeClient()
@@ -783,6 +840,119 @@ class TaskFlowTestCase(unittest.TestCase):
         self.assertEqual(repl._run_title({'mode': 'debug',
                                           'playbooks': ['a', 'b']}),
                          'Debugging playbook a, b')
+
+
+class ColorizerTestCase(unittest.TestCase):
+    """The ansible output, colored the way ansible colors
+    a terminal."""
+
+    def test_the_line_classes(self):
+        classify = repl.classify_ansible_line
+        self.assertEqual(classify('ok: [web1]'), 'ok')
+        self.assertEqual(classify('changed: [web1]'), 'changed')
+        self.assertEqual(classify('fatal: [web1]: FAILED!'), 'failed')
+        self.assertEqual(classify('failed: [web1]'), 'failed')
+        self.assertEqual(classify('unreachable: [web1]'),
+                         'unreachable')
+        self.assertEqual(classify('skipping: [web1]'), 'skipped')
+        self.assertEqual(classify('TASK [nginx : Install] ***'),
+                         'header')
+        self.assertEqual(classify('PLAY RECAP ***'), 'header')
+        self.assertEqual(classify('PLAYBOOK RECAP ***'), 'header')
+        self.assertEqual(classify('[WARNING]: watch out'), 'warning')
+        self.assertEqual(classify('[DEPRECATION WARNING]: old'),
+                         'deprecation')
+        self.assertEqual(classify('[ERROR]: nope'), 'error')
+        self.assertEqual(classify('web1 : ok=3 changed=1'),
+                         'recap')
+        self.assertEqual(classify('just some output'), 'plain')
+
+    def test_the_default_theme_mirrors_ansible(self):
+        colorize = repl.AnsibleColorizer()
+        self.assertEqual(colorize.colorize('ok: [h]'),
+                         '\x1b[0;32mok: [h]\x1b[0m')
+        self.assertEqual(colorize.colorize('changed: [h]'),
+                         '\x1b[0;33mchanged: [h]\x1b[0m')
+        self.assertEqual(colorize.colorize('fatal: [h]: FAILED!'),
+                         '\x1b[0;31mfatal: [h]: FAILED!\x1b[0m')
+        self.assertEqual(colorize.colorize('unreachable: [h]'),
+                         '\x1b[1;31munreachable: [h]\x1b[0m')
+        self.assertEqual(colorize.colorize('skipping: [h]'),
+                         '\x1b[0;36mskipping: [h]\x1b[0m')
+        self.assertEqual(colorize.colorize('[WARNING]: x'),
+                         '\x1b[1;35m[WARNING]: x\x1b[0m')
+        self.assertEqual(colorize.colorize('[DEPRECATION WARNING]: x'),
+                         '\x1b[0;35m[DEPRECATION WARNING]: x\x1b[0m')
+        # The banners and the recap line are uncolored upstream
+        self.assertEqual(colorize.colorize('TASK [x] ***'),
+                         'TASK [x] ***')
+
+    def test_the_recap_counts_color_by_value(self):
+        colorize = repl.AnsibleColorizer()
+        line = 'web1 : ok=3 changed=2 unreachable=0 failed=1'
+        text = colorize.colorize(line)
+        self.assertIn('ok=3', text)
+        self.assertIn('\x1b[0;33mchanged=2\x1b[0m', text)
+        self.assertIn('unreachable=0', text)
+        self.assertIn('\x1b[0;31mfailed=1\x1b[0m', text)
+
+    def test_the_diff_block_colors_until_it_ends(self):
+        colorize = repl.AnsibleColorizer()
+        self.assertEqual(colorize.colorize('--- before'),
+                         '\x1b[0;36m--- before\x1b[0m')
+        self.assertEqual(colorize.colorize('+added'),
+                         '\x1b[0;32m+added\x1b[0m')
+        self.assertEqual(colorize.colorize('-removed'),
+                         '\x1b[0;31m-removed\x1b[0m')
+        self.assertEqual(colorize.colorize('ok: [h]'),
+                         '\x1b[0;32mok: [h]\x1b[0m')
+        # The block ended at the result line; a stray plus stays plain
+        self.assertEqual(colorize.colorize('+ not a diff'),
+                         '+ not a diff')
+
+    def test_a_theme_overrides_the_map(self):
+        colorize = repl.AnsibleColorizer({'ok': '1;32'})
+        self.assertEqual(colorize.colorize('ok: [h]'),
+                         '\x1b[1;32mok: [h]\x1b[0m')
+        # A class missing from the theme stays plain
+        self.assertEqual(colorize.colorize('changed: [h]'),
+                         'changed: [h]')
+
+    def test_the_retry_line_is_dark_gray(self):
+        # ansible's own: the retry counter prints with COLOR_DEBUG
+        colorize = repl.AnsibleColorizer()
+        line = ('FAILED - RETRYING: [kometa]: Download custom APT '
+                'keys (3 retries left).')
+        self.assertEqual(repl.classify_ansible_line(line), 'retry')
+        self.assertEqual(colorize.colorize(line),
+                         '\x1b[1;30m' + line + '\x1b[0m')
+        # ... and the next one is its own line, not a sticky block
+        self.assertEqual(repl.classify_ansible_line('ok: [kometa]'),
+                         'ok')
+
+    def test_a_warning_block_keeps_its_color_until_the_next_marker(self):
+        # The multi-line blocks color whole: the deprecation
+        # warning's explanation lines stay purple until the next
+        # recognized line class
+        colorize = repl.AnsibleColorizer()
+        first = '[DEPRECATION WARNING]: DEFAULT_MANAGED_STR option.'
+        second = ('Alternatives: Set the `ansible_managed` variable, '
+                  'or use any custom variable.')
+        third = 'TASK [core : Save local facts] ' + '*' * 20
+        self.assertEqual(colorize.colorize(first),
+                         '\x1b[0;35m' + first + '\x1b[0m')
+        self.assertEqual(colorize.colorize(second),
+                         '\x1b[0;35m' + second + '\x1b[0m')
+        # The header resets the stickiness (and stays plain itself)
+        self.assertEqual(colorize.colorize(third), third)
+        after = 'ok: [kometa]'
+        self.assertEqual(colorize.colorize(after),
+                         '\x1b[0;32m' + after + '\x1b[0m')
+
+    def test_a_plain_line_without_a_block_stays_plain(self):
+        colorize = repl.AnsibleColorizer()
+        self.assertEqual(colorize.colorize('just some output'),
+                         'just some output')
 
 
 class InteractiveLoopTestCase(unittest.TestCase):

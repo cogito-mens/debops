@@ -427,6 +427,132 @@ def _run_title(run):
                                    playbooks)
 
 
+# -- the ansible output coloring ------------------------------------
+
+# The line classes of the ansible output, mapped to the ANSI codes
+# ansible itself assigns by default (its [colors] configuration).
+# The table is the theme: another front end maps the same classes
+# into its own style vocabulary (the console: the prompt_toolkit
+# styles). None leaves the line plain — the banners and the recap
+# line are uncolored upstream
+ANSI_THEME = {
+    'ok': '0;32',
+    'changed': '0;33',
+    'failed': '0;31',
+    'unreachable': '1;31',
+    'skipped': '0;36',
+    'warning': '1;35',
+    'deprecation': '0;35',
+    'error': '0;31',
+    'debug': '1;30',
+    'verbose': '0;34',
+    'diff-add': '0;32',
+    'diff-remove': '0;31',
+    'diff-lines': '0;36',
+    'retry': '1;30',
+    'header': None,
+    'recap': None,
+    'plain': None,
+}
+
+_RESULT_LINE = re.compile(
+        r'^(ok|changed|fatal|failed|unreachable|skipping)\b')
+_RETRY_LINE = re.compile(r'^FAILED - RETRYING: ')
+_HEADER_LINE = re.compile(
+        r'^(PLAY \[|TASK \[|PLAY RECAP|PLAYBOOK RECAP|CHECK MODE)')
+_RECAP_LINE = re.compile(r'^\S+\s+: ok=\d+')
+_WARNING_LINE = re.compile(r'^\[(WARNING|DEPRECATION WARNING|ERROR)\]')
+_DIFF_OPEN = re.compile(r'^(--- |\+\+\+ |@@ )')
+_RECAP_COUNT = re.compile(r'\b(changed|unreachable|failed)=(\d+)')
+
+
+def classify_ansible_line(line):
+    """The class of an ansible output line: 'ok', 'changed',
+    'failed', 'unreachable', 'skipped', 'retry', 'header',
+    'warning', 'deprecation', 'error', 'recap' — or 'plain'."""
+    if _HEADER_LINE.match(line):
+        return 'header'
+    warning = _WARNING_LINE.match(line)
+    if warning is not None:
+        return {'WARNING': 'warning', 'DEPRECATION WARNING':
+                'deprecation', 'ERROR': 'error'}[warning.group(1)]
+    if _RETRY_LINE.match(line):
+        return 'retry'
+    if _RECAP_LINE.match(line):
+        return 'recap'
+    result = _RESULT_LINE.match(line)
+    if result is not None:
+        word = result.group(1)
+        if word in ('fatal', 'failed'):
+            return 'failed'
+        if word == 'skipping':
+            return 'skipped'
+        return word
+    return 'plain'
+
+
+class AnsibleColorizer(object):
+    """The ansible output, colored the way ansible itself colors a
+    terminal. The theme maps the line classes to ANSI codes (None
+    leaves the line plain). The diff block is stateful: it opens on
+    the '---'/'+++'/'@@' lines and ends at the first line outside
+    its shapes.
+
+    A multi-line block keeps its color until the next recognized
+    line class: the continuation of a deprecation warning reads as
+    one block, like ansible's own."""
+
+    # The classes whose blocks span several lines
+    _STICKY = frozenset(('warning', 'deprecation', 'error', 'failed',
+                         'unreachable'))
+
+    def __init__(self, theme=ANSI_THEME):
+        self.theme = theme
+        self._in_diff = False
+        self._sticky = None
+
+    def _wrap(self, cls, line):
+        code = self.theme.get(cls)
+        if code is None:
+            return line
+        return '\x1b[{}m{}\x1b[0m'.format(code, line)
+
+    def colorize(self, line):
+        if self._in_diff:
+            if _DIFF_OPEN.match(line):
+                return self._wrap('diff-lines', line)
+            if line.startswith('+'):
+                return self._wrap('diff-add', line)
+            if line.startswith('-'):
+                return self._wrap('diff-remove', line)
+            # The diff ends at the first line outside its shapes
+            self._in_diff = False
+        elif _DIFF_OPEN.match(line):
+            self._in_diff = True
+            return self._wrap('diff-lines', line)
+        cls = classify_ansible_line(line)
+        if cls == 'plain':
+            # A multi-line block (a warning's explanation, a failed
+            # task's module output) keeps its color until the next
+            # recognized line
+            if self._sticky is not None:
+                return self._wrap(self._sticky, line)
+            return line
+        self._sticky = cls if cls in self._STICKY else None
+        if cls == 'recap':
+            # The counts color by value, a nonzero one takes its face
+            def _count(match):
+                if int(match.group(2)) == 0:
+                    return match.group(0)
+                word = match.group(1)
+                face = ('changed' if word == 'changed' else
+                        'unreachable' if word == 'unreachable'
+                        else 'failed')
+                return self._wrap(face, match.group(0))
+            return _RECAP_COUNT.sub(_count, line)
+        return self._wrap(cls, line)
+
+
 class Repl(object):
     """One interpreter session against a daemon."""
 
@@ -507,6 +633,14 @@ class Repl(object):
         self._follow_client = None
         # The lines the run's tail printed (the skip-render decision)
         self._tail_lines = 0
+        # The colorizer of the active tail; and the print futures of
+        # the app-driven front ends, drained before the marker
+        self._run_colorizer = None
+        self._pending_prints = []
+        # The output color theme of the session (the line-class to
+        # ANSI table of ansible's own defaults); None follows the
+        # terminal capability
+        self.theme = None
 
     @property
     def prompt(self):
@@ -598,9 +732,7 @@ class Repl(object):
                 segments.append('{}/{}'.format(index, total))
             task = run.get('currentTask')
             if task:
-                header = re.match(r'^(TASK|PLAY) \[(.*)\]$', task)
-                segments.append(header.group(2) if header is not None
-                                else task)
+                segments.append(task)
             run_text = ' · '.join(segments)
             right = (run_text + ' | ' + right) if right else run_text
         return left, right
@@ -699,6 +831,7 @@ class Repl(object):
                                         'started': time.monotonic(),
                                         'task_id': task.get('taskId')}
             if self.run_display in ('tail', 'dots'):
+                self._run_prelude(run)
                 self._start_log_tail(run)
         else:
             active['run'] = run
@@ -709,6 +842,50 @@ class Repl(object):
         return run
 
     # -- the run's live log tail --------------------------------------
+
+    def _run_prelude(self, run):
+        """The 'Executing Ansible playbooks:' list of the plain CLI,
+        the paths through the presentation filter."""
+        paths = run.get('playbookPaths') or []
+        if not paths:
+            return
+        from .present import make_path_presenter
+        present = make_path_presenter(())
+        print('Executing Ansible playbooks:', file=self._out)
+        for path in paths:
+            print(present(path), file=self._out)
+
+    def _color_output(self):
+        """Colorize the run's output when it reaches a terminal;
+        pipes and the plain text channels stay ANSI-free."""
+        return (self.interactive
+                and hasattr(self._out, 'isatty')
+                and self._out.isatty())
+
+    def _print_output_line(self, line):
+        """One line of the run's own output; colored on a terminal.
+        A live prompt application takes its own printer: the plain
+        write sanitizes the escape bytes away, so the ANSI text goes
+        through the ANSI reader — our codes become real attributes
+        while the content keeps the sanitization."""
+        colorizer = self._run_colorizer
+        if colorizer is not None:
+            line = colorizer.colorize(line)
+        app = self._app
+        if app is None or not app.is_running:
+            print(line, file=self._out)
+            return
+        import asyncio
+        from prompt_toolkit.application.run_in_terminal import (
+                in_terminal)
+        from prompt_toolkit.formatted_text import ANSI
+
+        async def _print():
+            async with in_terminal():
+                app.print_text(ANSI(line + '\n'))
+
+        future = asyncio.run_coroutine_threadsafe(_print(), app.loop)
+        self._pending_prints.append(future)
 
     def _start_log_tail(self, run):
         """Tail the run's log over a side connection: the run's own
@@ -726,6 +903,9 @@ class Repl(object):
             return
         self._tail_client = watcher
         self._tail_lines = 0
+        self._run_colorizer = (AnsibleColorizer(self.theme
+                                                or ANSI_THEME)
+                               if self._color_output() else None)
         thread = threading.Thread(target=self._tail_loop,
                                   args=(watcher, execution_id),
                                   daemon=True)
@@ -734,14 +914,15 @@ class Repl(object):
 
     def _tail_loop(self, watcher, execution_id):
         """Print the run's log lines as they stream; the server ends
-        the stream when the run finalizes."""
+        the stream when the run finalizes. On a terminal the lines
+        take ansible's own colors."""
         try:
             for message in watcher.request_streaming(
                     'subscriptions/listen',
                     {'notifications': {'runLog': execution_id}}):
                 if message.get('method') == 'notifications/runs/log':
-                    print(message.get('params', {}).get('line', ''),
-                          file=self._out)
+                    self._print_output_line(
+                            message.get('params', {}).get('line', ''))
                     self._tail_lines += 1
         except (EOFError, ConnectionError, OSError, RuntimeError):
             pass
@@ -761,8 +942,17 @@ class Repl(object):
             if watcher is not None:
                 watcher.close()
             thread.join(timeout=3)
+        # The app-driven prints of the tail queued on its loop; let
+        # them land before the marker
+        for future in self._pending_prints:
+            try:
+                future.result(timeout=3)
+            except Exception:
+                pass
+        self._pending_prints = []
         self._tail_client = None
         self._tail_thread = None
+        self._run_colorizer = None
 
     def _finish_run(self, outcome, result=None, tailed=False):
         """Close the progress rendering of a run. The log tail drains

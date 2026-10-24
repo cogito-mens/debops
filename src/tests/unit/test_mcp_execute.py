@@ -1059,10 +1059,12 @@ class ProgressTestCase(unittest.TestCase):
         self.project = FakeProject(self.tmpdir)
         self.policy = McpPolicy(self.project)
 
-    def run_with_context(self, context, output=PROGRESS_OUTPUT):
+    def run_with_context(self, context, output=PROGRESS_OUTPUT,
+                         runner_playbooks=None):
         from debops.mcp.tools.execute import _execute_playbook
         with mock.patch(
-                'debops.mcp.tools.execute.AnsiblePlaybookRunner'), \
+                'debops.mcp.tools.execute.AnsiblePlaybookRunner') \
+                as runner, \
                 mock.patch('debops.mcp.tools.execute.AnsibleInventory'), \
                 mock.patch('debops.mcp.tools.execute.run_hooks',
                            return_value=True), \
@@ -1070,6 +1072,8 @@ class ProgressTestCase(unittest.TestCase):
                            return_value=make_resolve_result()), \
                 mock.patch(
                 'debops.mcp.tools.execute.subprocess.Popen') as popen:
+            if runner_playbooks is not None:
+                runner.return_value._found_playbooks = runner_playbooks
             popen.side_effect = make_popen(output=output)
             return _execute_playbook(self.project, self.policy,
                                      {'playbook': 'site'}, context,
@@ -1141,6 +1145,20 @@ class ProgressTestCase(unittest.TestCase):
         self.assertEqual(task.run_info['taskIndex'], 1)
         self.assertEqual(task.run_info['currentTask'],
                          'TASK [Say hello]')
+
+    def test_the_run_bookkeeping_carries_the_resolved_paths(self):
+        # The prelude of the plain CLI is rebuilt client-side from
+        # them; the runner's shell quoting comes off
+        from debops.mcp.tasks import Task
+        task = Task(60000)
+        context = ToolContext(1, threading.Event(), task=task)
+        self.run_with_context(
+                context,
+                runner_playbooks=['/home/x/projects/p/site.yml',
+                                  '"/home/x/with space/other.yml"'])
+        self.assertEqual(task.run_info['playbookPaths'],
+                         ['/home/x/projects/p/site.yml',
+                          '/home/x/with space/other.yml'])
 
     def test_the_run_log_streams_to_the_subscribers(self):
         # Every output line of the run goes to the run's

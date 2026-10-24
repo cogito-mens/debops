@@ -411,6 +411,14 @@ def _build_ansible_args(arguments, check, allowed_options=EXECUTE_OPTIONS,
     return args
 
 
+def _unquote(path):
+    """The runner shell-quotes its playbook paths; the bookkeeping
+    wants them plain."""
+    if path.startswith('"') and path.endswith('"'):
+        return path[1:-1]
+    return path
+
+
 def _shell_command(command):
     """A command as a shell line, with every part quoted."""
     return ' '.join(shlex.quote(str(part)) for part in command)
@@ -743,17 +751,21 @@ class _RunProgress(object):
         """The play/task header without its asterisk padding."""
         return re.sub(r'\s+\*+\s*$', '', line.rstrip())
 
-    def begin(self, mode, targets, tally, execution_id=None):
+    def begin(self, mode, targets, tally, execution_id=None,
+              playbook_paths=None):
         """The run details at the start of the run: the mode, the
         playbooks and the tally, for the client's tracking. A run
         without a probe carries no counts. The execution id lets the
-        client tail the run's log."""
+        client tail the run's log; the resolved playbook paths feed
+        its 'Executing Ansible playbooks:' prelude."""
         task = self._context.task
         if task is None:
             return
         info = {'mode': mode, 'playbooks': list(targets)}
         if execution_id is not None:
             info['executionId'] = execution_id
+        if playbook_paths:
+            info['playbookPaths'] = list(playbook_paths)
         if tally is not None:
             info.update({'taskCount': tally['taskCount'],
                          'hostCount': tally['hostCount'],
@@ -1083,8 +1095,11 @@ def _execute_playbook(project, policy, arguments, context, check,
                     command, policy.execute_timeout,
                     _finalize_command(project))
             # The run's details reach the client's tracker before the
-            # first output line can
-            run_progress.begin(mode, targets, tally, execution_id)
+            # first output line can; the resolved paths feed the
+            # 'Executing Ansible playbooks:' prelude there
+            run_progress.begin(mode, targets, tally, execution_id,
+                               playbook_paths=[_unquote(path) for path in
+                                               runner._found_playbooks])
             output, returncode, status = run_cancellable(
                     command, env=env, cwd=project.path, context=context,
                     timeout=policy.execute_timeout, on_line=on_line,
