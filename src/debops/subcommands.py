@@ -826,11 +826,15 @@ Commands:
     def do_mcp_connect(self):
         parser = _argument_parser(
                 parents=[self.global_parser],
-                description='bridge stdio to an MCP server UNIX socket',
-                usage='debops mcp connect [<args>] <socket> '
-                      '[<key=value>...]')
-        parser.add_argument('socket', type=str,
-                            help='path of the MCP server UNIX socket')
+                description="bridge stdio to the project's MCP daemon "
+                            '(or to a server on a given socket)',
+                usage='debops mcp connect [<args>] [<key=value>...]')
+        parser.add_argument('--socket', type=str, metavar='PATH',
+                            help="the daemon's socket (default: the "
+                                 'well-known runtime path)')
+        parser.add_argument('--docs', action='store_true',
+                            help='bridge to a documentation-mode '
+                                 'daemon (no project)')
         action = parser.add_mutually_exclusive_group()
         action.add_argument('--ping', dest='ping', action='store_true',
                             help='probe the server with a server/discover '
@@ -838,8 +842,8 @@ Commands:
         action.add_argument('-c', '--call', dest='call', type=str,
                             metavar='TOOL',
                             help='call a tool on the server and print '
-                                 'the result; tool arguments follow the '
-                                 'socket as key=value pairs')
+                                 'the result; its arguments follow as '
+                                 'key=value pairs')
         parser.add_argument('arguments', type=str, nargs='*',
                             metavar='key=value',
                             help='arguments for --call')
@@ -852,6 +856,14 @@ Commands:
         parser.add_argument('--raw', dest='raw', action='store_true',
                             help='print the server response as received '
                                  '(only with --ping or --call)')
+        spawn = parser.add_mutually_exclusive_group()
+        spawn.add_argument('--spawn', dest='spawn',
+                           action='store_true', default=None,
+                           help='spawn the daemon without asking when '
+                                'none is running')
+        spawn.add_argument('--no-spawn', dest='spawn',
+                           action='store_false',
+                           help='never spawn the daemon; fail instead')
         # The key=value pairs follow optionals, which plain parse_args()
         # cannot interleave with the socket positional
         self.args = parser.parse_intermixed_args(self.args[3:])

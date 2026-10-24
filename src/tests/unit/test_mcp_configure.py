@@ -260,7 +260,7 @@ class ConfigureTestCase(unittest.TestCase):
                                              'opencode.json'))
         entry = config['mcp']['servers']['prod']
         self.assertEqual(entry['command'],
-                         ['debops', 'mcp', 'connect', socket_path])
+                         ['debops', 'mcp', 'connect', '--socket', socket_path])
         # The socket does not exist yet; the note says so
         self.assertTrue(any('does not exist' in line
                             for line in lines), lines)
@@ -297,7 +297,7 @@ class ConfigureTestCase(unittest.TestCase):
         self.assertEqual(servers['debops']['args'][:2],
                          ['mcp', 'serve'])
         self.assertEqual(servers['prod']['args'],
-                         ['mcp', 'connect', '/run/prod.sock'])
+                         ['mcp', 'connect', '--socket', '/run/prod.sock'])
 
     def test_verbosity_and_log_ride_the_serve_entry(self):
         configure_harness(self.tmpdir, 'opencode', verbosity=3,
@@ -362,7 +362,7 @@ class ConfigureTestCase(unittest.TestCase):
                 connect='/run/prod.sock', verbosity=3, log='')
         config = self.read_json('.mcp.json')
         self.assertEqual(config['mcpServers']['prod']['args'],
-                         ['mcp', 'connect', '/run/prod.sock'])
+                         ['mcp', 'connect', '--socket', '/run/prod.sock'])
         self.assertTrue(any('dumb relay' in line for line in lines),
                         lines)
 

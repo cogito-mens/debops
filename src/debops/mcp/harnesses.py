@@ -12,7 +12,7 @@ keyed by name, so a rerun updates in place instead of duplicating.
 
 An entry either launches the server per invocation ('debops mcp
 serve', the default) or bridges the harness to a running daemon
-('--connect' writes 'debops mcp connect <socket>'). Connect entries
+('--connect' writes 'debops mcp connect --socket <path>'). Connect entries
 are per-instance and always named: the default entry must never be
 repurposed into a bridge — outside a project it launches the
 documentation mode, which a stray socket would silently replace.
@@ -81,7 +81,7 @@ def _serve_argv(verbosity=0, log=None, legacy=False, docs=False,
 
 def _connect_argv(path):
     """The argv of an entry which bridges to a running daemon."""
-    return ['debops', 'mcp', 'connect', path]
+    return ['debops', 'mcp', 'connect', '--socket', path]
 
 
 def _opencode_entry(argv):

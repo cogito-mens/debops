@@ -2003,7 +2003,7 @@ def test_kill_switch_flow(run_debops, mcp_env, project_dir):
 
     # Now the server and the other commands refuse to run
     for args in (("mcp", "serve"), ("mcp", "skills"),
-                 ("mcp", "connect", "nosuch.sock")):
+                 ("mcp", "connect", "--socket", "nosuch.sock")):
         result = run_debops(*args, cwd=str(project_dir), env=mcp_env,
                             input_text="")
         assert result.returncode == 1
@@ -2028,7 +2028,7 @@ def test_connect_ping(run_debops, mcp_env, tmp_path):
                 break
             time.sleep(0.01)
 
-        result = run_debops("mcp", "connect", socket_path, "--ping",
+        result = run_debops("mcp", "connect", "--socket", socket_path, "--ping",
                             env=mcp_env)
         assert result.returncode == 0
         assert "name: debops" in result.stdout
@@ -2039,7 +2039,7 @@ def test_connect_ping(run_debops, mcp_env, tmp_path):
         # The test server is not confined to a project
         assert "project:" not in result.stdout
 
-        result = run_debops("mcp", "connect", socket_path, "--ping",
+        result = run_debops("mcp", "connect", "--socket", socket_path, "--ping",
                             "--raw", env=mcp_env)
         assert result.returncode == 0
         response = json.loads(result.stdout)
@@ -2071,7 +2071,7 @@ def test_connect_ping_shows_project_and_view(run_debops,
                 break
             time.sleep(0.01)
 
-        result = run_debops("mcp", "connect", socket_path, "--ping",
+        result = run_debops("mcp", "connect", "--socket", socket_path, "--ping",
                             env=mcp_env)
         assert result.returncode == 0
         assert "project: " + project_dir.name in result.stdout
@@ -2110,7 +2110,7 @@ def test_serve_a_named_instance(run_debops, debops_source_dir, mcp_env,
                 break
             time.sleep(0.01)
 
-        result = run_debops("mcp", "connect", socket_path, "--ping",
+        result = run_debops("mcp", "connect", "--socket", socket_path, "--ping",
                             env=mcp_env)
         assert result.returncode == 0
         assert "project: containers" in result.stdout
@@ -2263,12 +2263,12 @@ def test_connect_call_via_socket(run_debops, mcp_env, tmp_path):
                 break
             time.sleep(0.01)
 
-        result = run_debops("mcp", "connect", socket_path,
+        result = run_debops("mcp", "connect", "--socket", socket_path,
                             "--call", "mop", "bucket=zinc", env=mcp_env)
         assert result.returncode == 0
         assert result.stdout.strip() == "mopping with zinc"
 
-        result = run_debops("mcp", "connect", socket_path,
+        result = run_debops("mcp", "connect", "--socket", socket_path,
                             "--call", "mop", "bucket=zinc", "--raw",
                             env=mcp_env)
         assert result.returncode == 0
@@ -2276,14 +2276,14 @@ def test_connect_call_via_socket(run_debops, mcp_env, tmp_path):
         assert response["result"]["isError"] is False
 
         # The short forms
-        result = run_debops("mcp", "connect", socket_path,
+        result = run_debops("mcp", "connect", "--socket", socket_path,
                             "-c", "mop", "bucket=zinc", "-t", "5",
                             env=mcp_env)
         assert result.returncode == 0
         assert "mopping with zinc" in result.stdout
 
         # A malformed pair is a usage error
-        result = run_debops("mcp", "connect", socket_path,
+        result = run_debops("mcp", "connect", "--socket", socket_path,
                             "--call", "mop", "bogus", env=mcp_env)
         assert result.returncode == 2
     finally:
@@ -2312,7 +2312,7 @@ def test_connect_call_asks_for_confirmation(run_debops, mcp_env,
             time.sleep(0.01)
 
         # A non-interactive caller cannot answer the confirmation
-        result = run_debops("mcp", "connect", socket_path,
+        result = run_debops("mcp", "connect", "--socket", socket_path,
                             "--call", "run", "playbook=site",
                             env=mcp_env, input_text="")
         assert result.returncode == 1
@@ -2346,14 +2346,14 @@ def test_connect_call_timeout(run_debops, mcp_env, tmp_path):
             time.sleep(0.01)
 
         # With a timeout, the client gives up while the tool runs on
-        result = run_debops("mcp", "connect", socket_path,
+        result = run_debops("mcp", "connect", "--socket", socket_path,
                             "--call", "slow", "--timeout", "0.5",
                             env=mcp_env)
         assert result.returncode == 1
         assert "no response within" in result.stderr
 
         # Without one, the client waits for the tool to finish
-        result = run_debops("mcp", "connect", socket_path,
+        result = run_debops("mcp", "connect", "--socket", socket_path,
                             "--call", "slow", env=mcp_env)
         assert result.returncode == 0
         assert "finally" in result.stdout
@@ -2395,7 +2395,7 @@ def test_connect_call_interrupt_cancels(debops_source_dir, mcp_env,
 
         process = subprocess.Popen(
                 [sys.executable, "-m", "debops", "mcp", "connect",
-                 socket_path, "--call", "slow"],
+                 "--socket", socket_path, "--call", "slow"],
                 env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE)
         time.sleep(1)
@@ -2449,15 +2449,40 @@ def test_serve_pre_start_hook_aborts_startup(run_debops, mcp_env,
 
 
 def test_connect_ping_missing_socket(run_debops, mcp_env, tmp_path):
-    result = run_debops("mcp", "connect", str(tmp_path / "nosuch.sock"),
-                        "--ping", env=mcp_env)
+    result = run_debops("mcp", "connect", "--socket",
+                        str(tmp_path / "nosuch.sock"), "--ping",
+                        env=mcp_env)
     assert result.returncode == 1
     assert "cannot connect" in result.stderr
 
 
+def test_connect_finds_the_projects_daemon(run_debops, mcp_env,
+                                           project_dir, tmp_path):
+    """A bare 'mcp connect --ping' resolves the well-known socket of
+    the project and spawns the daemon when it is missing; the spawn
+    note stays off the protocol channel."""
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    env = dict(mcp_env, XDG_RUNTIME_DIR=str(runtime))
+    try:
+        result = run_debops("mcp", "connect", "--ping",
+                            cwd=str(project_dir), env=env)
+        assert result.returncode == 0
+        assert "project: " + project_dir.name in result.stdout
+        assert "Spawning the MCP daemon" in result.stderr
+        # The daemon it spawned is the front ends' own
+        sockets = list((runtime / "debops" / "mcp").glob("*.sock"))
+        assert len(sockets) == 1
+        result = run_debops("mcp", "inspect", cwd=str(project_dir),
+                            env=env)
+        assert result.returncode == 0
+        assert "Spawning" not in result.stderr
+    finally:
+        run_debops("mcp", "stop", env=env, cwd=str(project_dir))
+
+
 def test_connect_raw_without_ping(run_debops, mcp_env, tmp_path):
-    result = run_debops("mcp", "connect", "nosuch.sock", "--raw",
-                        env=mcp_env)
+    result = run_debops("mcp", "connect", "--raw", env=mcp_env)
     assert result.returncode == 2
     assert "--ping" in result.stderr
 
@@ -2654,7 +2679,7 @@ def test_connect_exits_quietly_on_sigint(debops_source_dir, mcp_env,
         env.update(mcp_env)
         process = subprocess.Popen(
                 [sys.executable, "-m", "debops", "mcp", "connect",
-                 socket_path],
+                 "--socket", socket_path],
                 cwd=str(tmp_path), env=env, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
@@ -2674,8 +2699,8 @@ def test_connect_exits_quietly_on_sigint(debops_source_dir, mcp_env,
 
 
 def test_connect_to_missing_socket_fails(run_debops, mcp_env, tmp_path):
-    result = run_debops("mcp", "connect", str(tmp_path / "missing.sock"),
-                        env=mcp_env)
+    result = run_debops("mcp", "connect", "--socket",
+                        str(tmp_path / "missing.sock"), env=mcp_env)
 
     assert result.returncode == 1
     assert "Error" in result.stderr
@@ -2694,7 +2719,7 @@ def test_connect_bridges_stdio_to_unix_socket(run_debops, mcp_env,
                 break
             time.sleep(0.01)
 
-        result = run_debops("mcp", "connect", socket_path,
+        result = run_debops("mcp", "connect", "--socket", socket_path,
                             cwd=str(project_dir), env=mcp_env,
                             input_text=make_discover_request())
 

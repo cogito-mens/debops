@@ -237,8 +237,8 @@ class FormatterTestCase(unittest.TestCase):
     def test_format_examples(self):
         lines = client.format_examples('run')
         self.assertEqual(lines[0], 'examples:')
-        self.assertIn('debops mcp connect <socket> --call run '
-                      'playbook=service/nginx', lines[1])
+        self.assertIn('debops mcp connect --socket <path> '
+                      '--call run playbook=service/nginx', lines[1])
         # A tool without curated examples gets no section
         self.assertEqual(client.format_examples('nosuch'), [])
 

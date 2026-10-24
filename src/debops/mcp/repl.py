@@ -16,6 +16,7 @@ import logging
 import os
 import shlex
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -117,6 +118,54 @@ def spawn_options_tokens(options):
     return tokens, dropped
 
 
+def daemon_alive(socket_path):
+    """Whether something accepts connections at the socket path — a
+    bare connect, no protocol spoken (the bridge is era-agnostic)."""
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.connect(socket_path)
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def spawn_daemon(socket_path, project, docs=False, legacy=False,
+                 err=sys.stderr, spawn_options=()):
+    """Spawn the daemon detached at the well-known socket; raise
+    ReplError when it does not come up. 'spawn_options' carries the
+    preset daemon options of the project (the filtered
+    'project.autospawn_options')."""
+    # The client creates the runtime directory: the daemon's own log
+    # files land next to the socket, ahead of its startup
+    os.makedirs(os.path.dirname(socket_path), mode=0o700,
+                exist_ok=True)
+    print('Spawning the MCP daemon (detached): {}'
+          .format(socket_path), file=err)
+    # The bare --socket makes the daemon compute the same well-known
+    # path (and write its pid sidecar); --detach reports when it is
+    # up, the spawned marker gives it the idle timeout, and the bare
+    # --log sends its audit log to the syslog (the journal)
+    command = [sys.executable, '-m', 'debops', 'mcp', 'serve',
+               '--socket', '--detach', '--log']
+    # The preset daemon options of the project, if any
+    command.extend(spawn_options)
+    if docs:
+        command.append('--docs')
+    if legacy:
+        command.append('--legacy')
+    spawned = subprocess.run(
+            command, cwd=project.path if project is not None else None,
+            env=dict(os.environ, DEBOPS_MCP_SPAWNED='1'),
+            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=30)
+    if spawned.returncode != 0:
+        details = (spawned.stderr or '').strip()
+        raise ReplError('the daemon did not start: {}'.format(
+                details or 'unknown error'))
+
+
 def connect_or_spawn(socket_path, project, docs=False, spawn=None,
                      interactive=False, legacy=False, err=sys.stderr,
                      spawn_options=()):
@@ -175,33 +224,8 @@ def connect_or_spawn(socket_path, project, docs=False, spawn=None,
         raise ReplError('no MCP daemon is running (socket: {}); start '
                         'one with: debops mcp serve --socket'
                         .format(socket_path))
-    # The REPL creates the runtime directory: the daemon's own log
-    # files land next to the socket, ahead of its startup
-    os.makedirs(os.path.dirname(socket_path), mode=0o700,
-                exist_ok=True)
-    print('Spawning the MCP daemon (detached): {}'
-          .format(socket_path), file=err)
-    # The bare --socket makes the daemon compute the same well-known
-    # path (and write its pid sidecar); --detach reports when it is
-    # up, the spawned marker gives it the idle timeout, and the bare
-    # --log sends its audit log to the syslog (the journal)
-    command = [sys.executable, '-m', 'debops', 'mcp', 'serve',
-               '--socket', '--detach', '--log']
-    # The preset daemon options of the project, if any
-    command.extend(spawn_options)
-    if docs:
-        command.append('--docs')
-    if legacy:
-        command.append('--legacy')
-    spawned = subprocess.run(
-            command, cwd=project.path if project is not None else None,
-            env=dict(os.environ, DEBOPS_MCP_SPAWNED='1'),
-            stdin=subprocess.DEVNULL, capture_output=True, text=True,
-            timeout=30)
-    if spawned.returncode != 0:
-        details = (spawned.stderr or '').strip()
-        raise ReplError('the daemon did not start: {}'.format(
-                details or 'unknown error'))
+    spawn_daemon(socket_path, project, docs=docs, legacy=legacy,
+                 err=err, spawn_options=spawn_options)
     spawned_client = UnixClient(socket_path, timeout=30,
                                 capabilities=INTERACTIVE_CAPABILITIES,
                                 legacy=legacy)

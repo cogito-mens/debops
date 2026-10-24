@@ -97,6 +97,24 @@ def test_mcp_inspect_parses_its_arguments():
     assert subcommands.args.docs is False
 
 
+def test_mcp_connect_parses_its_arguments():
+    subcommands = parse_cli("mcp", "connect", "--socket", "/tmp/x.sock",
+                            "--call", "run", "playbook=site")
+    assert subcommands.command == "connect"
+    assert subcommands.args.socket == "/tmp/x.sock"
+    assert subcommands.args.call == "run"
+    # The key=value pairs land in the arguments either way around
+    assert subcommands.args.arguments == ["playbook=site"]
+    subcommands = parse_cli("mcp", "connect", "--call", "run",
+                            "playbook=site", "--socket", "/tmp/x.sock")
+    assert subcommands.args.socket == "/tmp/x.sock"
+    assert subcommands.args.arguments == ["playbook=site"]
+    # The defaults: the well-known path, spawn allowed
+    subcommands = parse_cli("mcp", "connect")
+    assert subcommands.args.socket is None
+    assert subcommands.args.spawn is None
+
+
 def test_mcp_repl_no_longer_has_stop():
     # The daemon stop moved to its own command: 'debops mcp stop'
     with pytest.raises(SystemExit):

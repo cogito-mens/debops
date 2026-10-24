@@ -821,13 +821,30 @@ class Interpreter(object):
             print('Error: tool arguments require --call',
                   file=sys.stderr)
             sys.exit(2)
+        from .mcp import repl as repl_mod
+        socket_path, project = self._mcp_daemon_socket(args)
+        if not args.socket and not repl_mod.daemon_alive(socket_path):
+            # The well-known daemon of the project: spawn it unless
+            # refused. An explicit socket stays bridge-only and its
+            # connection errors speak for themselves below
+            if args.spawn is False:
+                print('Error: no MCP daemon is running (socket: {}); '
+                      'start one with: debops mcp serve --socket'
+                      .format(socket_path), file=sys.stderr)
+                sys.exit(1)
+            try:
+                repl_mod.spawn_daemon(socket_path, project,
+                                      docs=args.docs)
+            except repl_mod.ReplError as errmsg:
+                print('Error:', errmsg, file=sys.stderr)
+                sys.exit(1)
         if args.call:
-            self._mcp_call(args.socket, args.call, args.arguments,
+            self._mcp_call(socket_path, args.call, args.arguments,
                            args.raw, timeout=args.timeout)
             return
         if not args.ping:
             try:
-                bridge_stdio_to_unix(args.socket)
+                bridge_stdio_to_unix(socket_path)
             except (ConnectionError, OSError) as errmsg:
                 print('Error:', errmsg, file=sys.stderr)
                 sys.exit(1)
@@ -837,7 +854,7 @@ class Interpreter(object):
 
         started = time.monotonic()
         with _mcp_client_errors():
-            raw = ping_unix(args.socket,
+            raw = ping_unix(socket_path,
                             timeout=args.timeout if args.timeout
                             is not None else 5)
         rtt = time.monotonic() - started

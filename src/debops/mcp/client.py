@@ -424,7 +424,7 @@ def format_examples(name):
     lines = ['examples:']
     for arguments in examples:
         suffix = ' ' + arguments if arguments else ''
-        lines.append('    debops mcp connect <socket> --call {}{}'
+        lines.append('    debops mcp connect --socket <path> --call {}{}'
                      .format(name, suffix))
     return lines
 
