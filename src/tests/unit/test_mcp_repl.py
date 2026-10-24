@@ -1324,6 +1324,129 @@ class CompletionTestCase(unittest.TestCase):
         self.assertEqual(dispositions, [signal.SIG_DFL])
 
 
+class ToolHatchTestCase(unittest.TestCase):
+    """The 'tool/<name>' hatch: the server's own surface, callable
+    directly, listable in the help and the completion."""
+
+    TOOLS = {'tools': [
+            {'name': 'project.status',
+             'description': 'Report the status of the project.'},
+            {'name': 'playbook.list',
+             'description': 'List the playbook targets. More text.'}]}
+
+    def make_listed_repl(self):
+        client = FakeClient()
+        client.queue('tools/list', self.TOOLS)
+        session, out, err = make_repl(client)
+        return client, session, out, err
+
+    def test_the_hatch_calls_the_tool(self):
+        self.client = FakeClient()
+        self.repl, self.out, self.err = make_repl(self.client)
+        self.client.queue('tools/call', {
+                'resultType': 'complete', 'isError': False,
+                'content': [{'type': 'text', 'text': 'ok'}]})
+        self.repl.execute('tool/playbook.list detail=full')
+        self.assertEqual(self.client.calls[0],
+                         ('tools/call',
+                          tool_params('playbook.list',
+                                      {'detail': 'full'})))
+        self.assertIn('ok', self.out.getvalue())
+
+    def test_the_hatch_needs_a_name(self):
+        session, _out, _err = make_repl(FakeClient())
+        with self.assertRaises(ReplError) as context:
+            session.execute('tool/')
+        self.assertIn('usage: tool/', str(context.exception))
+
+    def test_the_hatch_rejects_a_bare_token(self):
+        session, _out, _err = make_repl(FakeClient())
+        with self.assertRaises(ReplError) as context:
+            session.execute('tool/playbook.list full')
+        self.assertIn('key=value', str(context.exception))
+
+    def test_an_unknown_tool_gets_the_servers_pointer(self):
+        client = FakeClient()
+
+        def unknown(method, params):
+            return {'error': {'code': -32602, 'message': 'Invalid params',
+                              'data': {'details':
+                                       "unknown tool: nope; did you mean "
+                                       "'role.info'?"}}}
+        client.request = unknown
+        session, _out, _err = make_repl(client)
+        with self.assertRaises(ReplError) as context:
+            session.execute('tool/nope')
+        self.assertIn("did you mean 'role.info'?", str(context.exception))
+
+    def test_the_argument_coercions(self):
+        self.assertEqual(
+                repl.tool_arguments(['a=1', 'b=true', 'c=false',
+                                     'd=1.5', 'e=x', 'e=y']),
+                {'a': 1, 'b': True, 'c': False, 'd': '1.5',
+                 'e': ['x', 'y']})
+
+    def test_tools_toggle_lists_and_hides(self):
+        client, session, _out, err = self.make_listed_repl()
+        self.assertFalse(session._tools_visible)
+        session.execute('tools')
+        self.assertTrue(session._tools_visible)
+        self.assertIn('server tools are listed (2)', err.getvalue())
+        session.execute('tools')
+        self.assertFalse(session._tools_visible)
+        self.assertIn('hidden', err.getvalue())
+        self.assertEqual([call[0] for call in client.calls],
+                         ['tools/list'])
+        # Unhiding refetches: the daemon may have restarted with a
+        # changed policy
+        session.execute('tools')
+        self.assertEqual([call[0] for call in client.calls],
+                         ['tools/list', 'tools/list'])
+
+    def test_help_lists_the_tools_sorted_when_visible(self):
+        client, session, out, _err = self.make_listed_repl()
+        session.execute('tools')
+        out.seek(0)
+        out.truncate(0)
+        session.execute('help')
+        text = out.getvalue()
+        self.assertIn('Server tools', text)
+        self.assertLess(text.index('tool/playbook.list'),
+                        text.index('tool/project.status'))
+        # The summary is the first sentence of the description
+        self.assertIn('List the playbook targets', text)
+        self.assertNotIn('More text', text)
+
+    def test_help_hides_them_by_default(self):
+        client = FakeClient()
+        session, out, _err = make_repl(client)
+        session.execute('help')
+        text = out.getvalue()
+        self.assertIn('server tools are hidden', text)
+        self.assertNotIn('\n  tool/', text)
+        # ... and the hidden listing costs no call
+        self.assertEqual(client.calls, [])
+
+    def test_the_completion_offers_the_tools_when_visible(self):
+        client, session, _out, _err = self.make_listed_repl()
+        _word, candidates = repl._candidates_for(session, '')
+        self.assertNotIn('tool/playbook.list', candidates)
+        session.execute('tools')
+        _word, candidates = repl._candidates_for(session, '')
+        self.assertIn('tool/playbook.list', candidates)
+        self.assertIn('tool/project.status', candidates)
+        # The human verbs stay
+        self.assertIn('status', candidates)
+
+    def test_the_busy_session_completes_from_the_cache_only(self):
+        client, session, _out, _err = self.make_listed_repl()
+        session._tools_visible = True
+        session._busy = True
+        _word, candidates = repl._candidates_for(session, 'tool/p')
+        self.assertNotIn('tool/playbook.list', candidates)
+        self.assertEqual(client.calls, [])
+
+
 class NavigationTestCase(unittest.TestCase):
     """The working-directory navigation: the resolution, the verbs,
     the prompt, the completion."""

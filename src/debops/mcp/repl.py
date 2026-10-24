@@ -299,6 +299,38 @@ def stop_daemon(socket_path, out=sys.stdout, kill=False):
               file=out)
 
 
+def tool_arguments(tokens):
+    """The 'tool/<name>' hatch arguments: key=value pairs.
+
+    'true'/'false' are booleans, integers are numbers, everything
+    else is a string; a repeated key gathers the values into a list.
+    """
+    arguments = {}
+    for token in tokens:
+        if '=' not in token:
+            raise ReplError('the tool arguments are key=value pairs; '
+                            'got {!r}'.format(token))
+        key, value = token.split('=', 1)
+        if not key:
+            raise ReplError('the tool arguments are key=value pairs; '
+                            'got {!r}'.format(token))
+        if value in ('true', 'false'):
+            value = value == 'true'
+        else:
+            try:
+                value = int(value)
+            except ValueError:
+                pass
+        if key in arguments:
+            previous = arguments[key]
+            if not isinstance(previous, list):
+                arguments[key] = [previous]
+            arguments[key].append(value)
+        else:
+            arguments[key] = value
+    return arguments
+
+
 def execution_arguments(tokens):
     """The check/run arguments: the targets plus the policy options."""
     playbooks = []
@@ -387,6 +419,11 @@ class Repl(object):
         # console) flags the busy state; the completion never calls
         # the server while it is set — the client is one connection
         self._busy = False
+        # The server's tool surface ({name: summary}), fetched lazily
+        # for the help and the completion; the 'tools' verb governs
+        # their visibility in both
+        self._server_tools = None
+        self._tools_visible = False
 
     @property
     def prompt(self):
@@ -599,6 +636,60 @@ class Repl(object):
         """A status line on the error channel; the presentation hook
         for the interfaces with a status bar of their own."""
         print(text, file=self._err)
+
+    # -- the server tool surface (the 'tool/<name>' hatch) -----------
+
+    def _fetch_tools(self):
+        """The server's tools/list as {name: summary}; empty when the
+        daemon cannot answer. The summary is the first sentence, cut
+        to a help line."""
+        if self._busy:
+            # A command is holding the one connection
+            return {}
+        try:
+            result = self._request('tools/list', {})
+        except ReplError:
+            return {}
+        tools = {}
+        for tool in result.get('tools') or []:
+            description = (tool.get('description') or '').strip()
+            summary = description.split('. ', 1)[0]
+            if len(summary) > 76:
+                summary = summary[:73].rstrip() + '...'
+            tools[tool['name']] = summary
+        return tools
+
+    def _server_tool_list(self):
+        """The cached tool surface; a failed fetch caches as empty so
+        the completion does not hammer a dead daemon. The 'tools'
+        verb refetches when it unhides the listing — the daemon may
+        have restarted with a changed policy."""
+        if self._server_tools is None:
+            self._server_tools = self._fetch_tools()
+        return self._server_tools
+
+    def _tool_hatch(self, name, tokens):
+        """The 'tool/<name>' hatch: the server's own tool surface,
+        reached directly. The server answers an unknown name with its
+        own pointer; the local cache is the listing's business, not
+        the call's."""
+        if not name:
+            raise ReplError('usage: tool/<name> [key=value ...]')
+        return self._call_tool(name, tool_arguments(tokens))
+
+    def cmd_tools(self, args):
+        """Toggle the server tools in the help and the completion."""
+        if args:
+            raise ReplError('tools takes no arguments')
+        self._tools_visible = not self._tools_visible
+        if self._tools_visible:
+            self._server_tools = self._fetch_tools()
+            self._note('the server tools are listed ({}) — call one '
+                       "as tool/<name>, 'tools' again hides them"
+                       .format(len(self._server_tools)))
+        else:
+            self._note('the server tools are hidden from the help '
+                       'and the completion')
 
     # -- the verbs ------------------------------------------------------
 
@@ -1244,12 +1335,16 @@ class Repl(object):
         if verb == 'help':
             self._print_help()
             return
-        handler = self.verbs().get(verb)
-        if handler is None:
-            raise ReplError("unknown verb: {!r} ('help' lists them)"
-                            .format(verb))
-        result = handler(args)
-        if verb in ('edit', 'mkdir', 'rm', 'mv', 'cp'):
+        if verb.startswith('tool/'):
+            result = self._tool_hatch(verb[5:], args)
+        else:
+            handler = self.verbs().get(verb)
+            if handler is None:
+                raise ReplError("unknown verb: {!r} ('help' lists them)"
+                                .format(verb))
+            result = handler(args)
+        if verb in ('edit', 'mkdir', 'rm', 'mv', 'cp') or \
+                verb.startswith('tool/'):
             # The directory listings the completion serves may have
             # changed
             self._completion_cache = {
@@ -1272,6 +1367,20 @@ class Repl(object):
         entries.update(self.HELP_EXTRA)
         for verb, synopsis in sorted(entries.items()):
             print('  {:24s} {}'.format(verb, synopsis), file=self._out)
+        if self._tools_visible:
+            tools = self._server_tool_list()
+            print('Server tools (call as tool/<name>, the arguments '
+                  'are key=value pairs):', file=self._out)
+            for name in sorted(tools):
+                print('  {:32s} {}'.format('tool/' + name,
+                                           tools[name]),
+                      file=self._out)
+        else:
+            # The listing stays out of the way; the hatch answers
+            # either way
+            print('(the server tools are hidden — the "tools" verb '
+                  "lists them; call one as tool/<name>)",
+                  file=self._out)
 
     # -- the completion candidates ----------------------------------
 
@@ -1426,6 +1535,8 @@ HELP = {
              '(a trusted session; Ctrl-C ends it — in the shell it '
              'runs in the background and "watch" toggles it)',
     'help': 'this text',
+    'tools': 'show/hide the server tools in the help and the '
+             'completion (call one as tool/<name>)',
     'exit': 'leave the interpreter (Ctrl-D works too)',
 }
 
@@ -1453,7 +1564,11 @@ def _candidates_for(repl, before):
     else:
         word = ''
     if not words:
-        return word, sorted(list(repl.verbs()) + ['help', 'exit'])
+        candidates = list(repl.verbs()) + ['help', 'exit']
+        if repl._tools_visible:
+            candidates.extend('tool/' + name
+                              for name in repl._server_tool_list())
+        return word, sorted(candidates)
     if words[0] in ('check', 'run') and word.startswith('--'):
         return word, sorted(EXECUTION_OPTIONS)
     if words[0] == 'doc' and word.startswith('--'):
