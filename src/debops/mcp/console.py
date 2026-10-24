@@ -432,7 +432,7 @@ def _build_app(session):
                             lambda: session.active_run is not None)),
             VSplit([
                     Window(FormattedTextControl(
-                            lambda: session._prompt_marker() + ' '),
+                            lambda: session._console_marker() + ' '),
                            dont_extend_width=True),
                     Window(input_control),
             ], height=1),

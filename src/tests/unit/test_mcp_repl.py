@@ -2900,6 +2900,32 @@ class NavigationTestCase(unittest.TestCase):
                         {'name': name, 'type': kind}
                         for name, kind in entries]})
 
+    def test_the_prompt_marks_root_and_confinement(self):
+        session, _client, _out, _err = self.make_session()
+        with mock.patch('os.geteuid', return_value=0):
+            # The root shell convention: '#' replaces the '>'
+            self.assertEqual(session.prompt, 'debops project:system# ')
+            session.elevated = True
+            self.assertEqual(session.prompt,
+                             'debops! project:system# ')
+            session.elevated = False
+        # The confined session wears the brackets
+        session.confined = True
+        self.assertEqual(session.prompt, '[debops project:system>] ')
+
+    def test_the_console_marker_is_a_flags_chip(self):
+        session, _client, _out, _err = self.make_session()
+        self.assertEqual(session._console_marker(), '>')
+        session.elevated = True
+        self.assertEqual(session._console_marker(), '!>')
+        with mock.patch('os.geteuid', return_value=0):
+            self.assertEqual(session._console_marker(), '!#')
+            session.elevated = False
+            self.assertEqual(session._console_marker(), '#')
+        session.elevated = False
+        session.confined = True
+        self.assertEqual(session._console_marker(), '[>]')
+
     def test_the_prompt_collapses_the_parents(self):
         session, _client, _out, _err = self.make_session()
         session.cwd = 'ansible/inventory/group_vars/all'

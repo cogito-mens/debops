@@ -1026,11 +1026,20 @@ class Repl(object):
         # terminal capability
         self.theme = None
 
+    def _state_marks(self):
+        """The state marks of a prompt: the elevation bang and the
+        terminator (the root shell's '#' replaces '>')."""
+        return ('!' if self.elevated else '',
+                '#' if os.geteuid() == 0 else '>')
+
     @property
     def prompt(self):
+        """The repl's prompt: the location between the name and the
+        terminator; the marks tell the elevation and the root shell,
+        the brackets the confined session."""
         name = self.project_name or 'docs'
         view = ':{}'.format(self.view) if self.view else ''
-        marker = '!' if self.elevated else ''
+        bang, terminator = self._state_marks()
         place = ''
         root = self._view_root_rel
         if self.view and root is not None:
@@ -1045,7 +1054,11 @@ class Repl(object):
                 place = ':/' + self.cwd if self.cwd else ':/'
         elif self.cwd:
             place = ':/' + self.cwd
-        return 'debops{} {}{}{}> '.format(marker, name, view, place)
+        marker = 'debops{} {}{}{}{}'.format(bang, name, view, place,
+                                            terminator)
+        if self.confined:
+            marker = '[{}]'.format(marker)
+        return marker + ' '
 
     @property
     def history_file(self):
@@ -1634,13 +1647,19 @@ class Repl(object):
         """The marker of the input line and the transcript echo; the
         elevation shows on it. The root shell convention holds ('#'
         for EUID 0), and the confined session wears brackets."""
-        marker = 'debops'
-        if self.elevated:
-            marker += '!'
-        marker += '#' if os.geteuid() == 0 else '>'
+        bang, terminator = self._state_marks()
+        marker = 'debops' + bang + terminator
         if self.confined:
             marker = '[{}]'.format(marker)
         return marker
+
+    def _console_marker(self):
+        """The console's prompt chip: the state flags alone — the
+        panes carry the place; the brackets mark the confined
+        session."""
+        bang, terminator = self._state_marks()
+        chip = bang + terminator
+        return '[{}]'.format(chip) if self.confined else chip
 
     # -- the input gate (questions answered on the input line) -------
     #
