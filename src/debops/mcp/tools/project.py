@@ -74,8 +74,20 @@ def tool_project_status(project, policy, arguments):
         if log is not None:
             metadata = runs.read_metadata(log) or {}
             targets = metadata.get('playbooks')
+            if targets:
+                structured['playbooks'] = targets
+            mode = metadata.get('mode')
+            if mode:
+                structured['mode'] = mode
             total = metadata.get('taskCount')
             done = runs.task_count(log)
+            # The playbook of the running task, by its tally span
+            counts = metadata.get('taskCounts')
+            if counts and targets and done is not None:
+                span = runs.current_span(counts, min(done, total
+                                                     or done))
+                if span is not None and span < len(targets):
+                    structured['currentPlaybook'] = targets[span]
             progress = []
             if total and done is not None:
                 progress.append('task {}/{}'.format(min(done, total),

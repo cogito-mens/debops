@@ -773,6 +773,11 @@ class _RunProgress(object):
             info.update({'taskCount': tally['taskCount'],
                          'hostCount': tally['hostCount'],
                          'estimateSeconds': tally['estimateSeconds']})
+            # The spans let the client map the running task onto its
+            # playbook; a probe miscount drops the map, not the run
+            counts = tally.get('taskCounts')
+            if counts is not None and len(counts) == len(targets):
+                info['taskCounts'] = list(counts)
         task.update_run(**info)
 
     def on_line(self, line, tail):
@@ -802,17 +807,24 @@ class _RunProgress(object):
 
 def _tally_from_lists(tasks_text, hosts_text):
     """The (per-play task counts, per-play host counts) of the
-    ansible-playbook --list-tasks and --list-hosts outputs.
+    ansible-playbook --list-tasks and --list-hosts outputs, plus the
+    task counts grouped per playbook (the 'playbook:' headers split
+    the list) — the spans a client maps the running task onto.
 
     The play headers read 'play #N (…)', the task lines carry their
     'TAGS:' marker, the host sections open with 'hosts (N):'.
     """
     tasks_per_play = []
+    tasks_per_playbook = []
     for line in tasks_text.splitlines():
-        if re.match(r'^\s*play #\d+', line):
+        if line.startswith('playbook: '):
+            tasks_per_playbook.append(0)
+        elif re.match(r'^\s*play #\d+', line):
             tasks_per_play.append(0)
         elif 'TAGS:' in line and tasks_per_play:
             tasks_per_play[-1] += 1
+            if tasks_per_playbook:
+                tasks_per_playbook[-1] += 1
     hosts_per_play = []
     for line in hosts_text.splitlines():
         if re.match(r'^\s*play #\d+', line):
@@ -821,7 +833,7 @@ def _tally_from_lists(tasks_text, hosts_text):
             match = re.search(r'hosts \((\d+)\):', line)
             if match is not None and hosts_per_play:
                 hosts_per_play[-1] += int(match.group(1))
-    return tasks_per_play, hosts_per_play
+    return tasks_per_play, hosts_per_play, tasks_per_playbook
 
 
 def _estimate_seconds(tasks_per_play, hosts_per_play):
@@ -864,13 +876,17 @@ def _probe_tally(runner, project, timeout=30):
                           '%s', flag, probe.stderr.strip()[:200])
             return None
         counts.append(probe.stdout)
-    tasks_per_play, hosts_per_play = _tally_from_lists(*counts)
+    tasks_per_play, hosts_per_play, tasks_per_playbook = (
+            _tally_from_lists(*counts))
     if not tasks_per_play:
         return None
     # The names dodge the sidecar's own 'hosts' (the resolved host
-    # names) — these are the tally's counts
+    # names) — these are the tally's counts. 'taskCounts' spans the
+    # playbooks in order, for the client mapping the running task
+    # onto its playbook
     return {'taskCount': sum(tasks_per_play),
             'hostCount': sum(hosts_per_play) or 1,
+            'taskCounts': tasks_per_playbook,
             'estimateSeconds': _estimate_seconds(tasks_per_play,
                                                  hosts_per_play)}
 

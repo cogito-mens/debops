@@ -15,6 +15,8 @@ shell degrades to the plain reader.
 """
 
 import sys
+import threading
+import time
 
 from .repl import (_banner, _Completer, _key_bindings,
                    run_interactive_plain)
@@ -41,11 +43,25 @@ def _shell_bindings(session):
     connection, or clears the line; Escape declines a question."""
     bindings = _key_bindings(session)
 
+    from prompt_toolkit.filters import Condition
+
+    # The console's own Ctrl-Z carries the job control of the custom
+    # application (enable_suspend is a PromptSession knob)
+    @bindings.add('c-z', filter=Condition(lambda: not session.confined))
+    def _suspend(event):
+        event.app.suspend_to_background()
+
     @bindings.add('c-c')
     def _ctrl_c(event):
         if session._gate is not None:
             session._gate_decline()
-        elif session.active_run is not None:
+        elif (session.active_run is not None
+                or time.monotonic() < session._abort_armed_until):
+            now = time.monotonic()
+            if now < session._abort_armed_until:
+                # The second one stops the client
+                event.app.exit(exception=EOFError())
+                return
             # Cancel the run's task on a side connection — the worker
             # holds the main one
             task_id = session.active_run.get('task_id')
@@ -55,7 +71,10 @@ def _shell_bindings(session):
                 side.close()
             except Exception:
                 session.client.close()
-            session._note('the run is cancelled')
+            # The window outlives the abort itself by a moment, so
+            # the impatient second Ctrl-C still exits
+            session._abort_armed_until = now + 3
+            session._note('aborting the run (Ctrl-C again exits)')
         elif session._follow_client is not None:
             # A 'log --follow' tail ends; the run is untouched
             session._follow_client.close()
@@ -66,6 +85,14 @@ def _shell_bindings(session):
             session._note('the command lost its connection')
         else:
             event.app.current_buffer.reset()
+
+    # Ctrl-D on an empty line leaves, the way it does everywhere;
+    # with text on it, the default delete-char answers
+    @bindings.add('c-d', filter=Condition(
+            lambda: not getattr(session, '_input_buffer', None)
+            or not session._input_buffer.text))
+    def _eof(event):
+        event.app.exit(exception=EOFError(), style='class:exiting')
 
     @bindings.add('escape')
     def _escape(event):
@@ -79,18 +106,26 @@ def _shell_bindings(session):
 
 
 def _build_shell(session):
-    """The shell's prompt_toolkit session, headless-buildable for the
-    tests: the persistent app, the worker-submitted commands, the
-    bindings."""
-    from prompt_toolkit import PromptSession
+    """The shell's own prompt_toolkit application, headless-buildable
+    for the tests: the input line (gone while a run is active, back
+    for a pending question), the toolbar with the run tally, the
+    completion menu."""
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.buffer import Buffer
+    from prompt_toolkit.filters import Condition
+    from prompt_toolkit.layout import (BufferControl,
+                                       ConditionalContainer,
+                                       Float, FloatContainer,
+                                       FormattedTextControl, HSplit,
+                                       Layout, VSplit, Window)
+    from prompt_toolkit.layout.menus import CompletionsMenu
     from prompt_toolkit.layout.processors import (DynamicProcessor,
                                                   PasswordProcessor)
-    from prompt_toolkit.shortcuts import CompleteStyle
     from prompt_toolkit.styles import Style
     # The questions are answered on the input line; the run progress
-    # rides the toolbar and the dotted completion marker
+    # rides the toolbar
     session.gate_input = True
-    session.run_display = 'dots'
+    session.run_display = 'shell'
     session.busy_note = ('a command is running; Ctrl-C aborts a run, '
                          'drops the rest\n')
     # The local commands echo inside the handoff (ordered against
@@ -99,23 +134,6 @@ def _build_shell(session):
     bindings = _shell_bindings(session)
 
     password = PasswordProcessor()
-    prompt_session = PromptSession(
-            message=lambda: session._prompt_marker() + ' ',
-            completer=_Completer(session),
-            # The shell habit: Tab inserts the completion, a double
-            # Tab lists the candidates
-            complete_style=CompleteStyle.READLINE_LIKE,
-            # Job control, unless the account is confined
-            enable_suspend=not session.confined,
-            key_bindings=bindings,
-            history=session._new_history(),
-            # A pending secret gate (the trust passphrase) masks the
-            # input line
-            input_processors=[DynamicProcessor(
-                    lambda: (password if session._gate is not None
-                             and session._gate['secret'] else None))],
-            bottom_toolbar=lambda: _toolbar(session),
-            style=Style.from_dict({'bottom-toolbar': 'reverse'}))
 
     def accept(buffer):
         line = buffer.text
@@ -134,41 +152,93 @@ def _build_shell(session):
             return
         session.submit(line)
 
-    prompt_session.default_buffer.accept_handler = accept
-    return prompt_session
+    input_buffer = Buffer(
+            completer=_Completer(session), multiline=False,
+            accept_handler=accept,
+            # The history file is shared with the other front ends
+            # of this project and view
+            history=session._new_history())
+    session._input_buffer = input_buffer
+    # A view switch moves the recall and the record to the view's
+    # own history file
+    session._history_changed = lambda: setattr(
+            input_buffer, 'history', session._new_history())
+    input_control = BufferControl(
+            buffer=input_buffer,
+            # A pending secret gate (the trust passphrase) masks the
+            # input line
+            input_processors=[DynamicProcessor(
+                    lambda: (password if session._gate is not None
+                             and session._gate['secret'] else None))])
+
+    # The input line is gone while a run is active — the REPL's
+    # blocking feel — and back for a question pending mid-run
+    input_row = ConditionalContainer(
+            VSplit([
+                    Window(FormattedTextControl(
+                            lambda: session._prompt_marker() + ' '),
+                           dont_extend_width=True),
+                    Window(input_control),
+            ], height=1),
+            filter=Condition(lambda: session.active_run is None
+                             or session._gate is not None))
+
+    panes = HSplit([
+            input_row,
+            Window(FormattedTextControl(lambda: _toolbar(session)),
+                   height=1, style='class:status'),
+    ])
+    layout = Layout(
+            FloatContainer(
+                    content=panes,
+                    floats=[Float(xcursor=True, ycursor=True,
+                                  content=CompletionsMenu())]),
+            focused_element=input_buffer)
+    return Application(
+            layout=layout, key_bindings=bindings, full_screen=False,
+            # The transcript is the printed lines above; the chrome
+            # leaves with the session
+            erase_when_done=True,
+            style=Style.from_dict({'status': 'reverse'}))
 
 
-def run_shell(session):
+def run_shell(session, app=None):
     """Run the interpreter with the prompt_toolkit chrome: the status
-    toolbar under the input line, the short prompt."""
+    toolbar under the input line, the short prompt. A prebuilt app
+    is the tests' seam."""
     try:
         import prompt_toolkit  # noqa: F401
         from prompt_toolkit.patch_stdout import patch_stdout
     except ImportError:
         # No library, no chrome; the plain reader carries the session
         return run_interactive_plain(session)
-    prompt_session = _build_shell(session)
+    if app is None:
+        app = _build_shell(session)
     # The toolbar invalidations land on the app
-    session._app = prompt_session.app
-    # A view switch moves the recall and the record to the view's
-    # own history file
-    session._history_changed = lambda: setattr(
-            prompt_session.default_buffer, 'history',
-            session._new_history())
+    session._app = app
     print(_banner(session), file=session._err)
     # The shell streams the watch in the background: a reader thread
     # on its own connection, the lines printed above the prompt
     session.background_watch = True
+    # The status poller: the runs started elsewhere ride the toolbar
+    watcher = session.client.clone()
+    poll_stop = threading.Event()
+    poller = threading.Thread(
+            target=session._poll_foreign_runs,
+            args=(watcher, poll_stop), daemon=True)
+    poller.start()
     with patch_stdout():
         # The session's channels were captured at construction time;
         # re-bind them so the prints inside the loop reach the proxy
         original_out, original_err = session._out, session._err
         session._out, session._err = sys.stdout, sys.stderr
         try:
-            prompt_session.prompt()
-        except EOFError:
+            app.run()
+        except (EOFError, KeyboardInterrupt):
             pass
         finally:
+            poll_stop.set()
+            watcher.close()
             session.stop_watch()
             session._out, session._err = original_out, original_err
     return 0

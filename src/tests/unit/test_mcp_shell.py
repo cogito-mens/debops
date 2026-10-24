@@ -66,28 +66,24 @@ class FakeWatcher(object):
 
 
 def run_shell_once(session, lines=()):
-    """Run the shell with a mocked prompt_toolkit session: the lines
-    go through the accept handler (the worker picks them up), then
-    EOF ends it."""
+    """Run the shell with its real layout and a stubbed event loop:
+    the lines go through the input buffer, then the app exits."""
     try:
         import prompt_toolkit  # noqa: F401
     except ImportError:
         raise unittest.SkipTest('prompt_toolkit is not installed')
-    with mock.patch('prompt_toolkit.PromptSession') as pt_class:
-        prompt_session = pt_class.return_value
+    app = shell._build_shell(session)
 
-        def prompt():
-            buffer = prompt_session.default_buffer
-            for line in lines:
-                buffer.text = line
-                buffer.accept_handler(buffer)
-            raise EOFError()
+    def fake_run():
+        buffer = session._input_buffer
+        for line in lines:
+            buffer.text = line
+            buffer.validate_and_handle()
+            wait_for(lambda: not session._busy)
 
-        prompt_session.prompt.side_effect = prompt
-        code = shell.run_shell(session)
-        # The commands run on the worker thread; wait them out
-        wait_for(lambda: not session._busy)
-    return code, pt_class
+    with mock.patch.object(app, 'run', fake_run):
+        code = shell.run_shell(session, app=app)
+    return code, app
 
 
 class ShellTestCase(unittest.TestCase):
@@ -116,20 +112,19 @@ class ShellTestCase(unittest.TestCase):
 
     def test_the_shell_uses_the_toolbar_and_the_short_prompt(self):
         session, _client, _out, _err = make_session()
-        code, pt_class = run_shell_once(session)
+        code, app = run_shell_once(session)
         self.assertEqual(code, 0)
-        _args, kwargs = pt_class.call_args
-        self.assertIn('bottom_toolbar', kwargs)
-        self.assertIn('style', kwargs)
-        # The prompt marker is dynamic (the elevation shows on it)
-        message = kwargs['message']
-        self.assertEqual(message(), 'debops> ')
+        # The inline chrome: the input buffer focused, the toolbar
+        # below it, and the marker read off the session
+        self.assertFalse(app.full_screen)
+        self.assertIs(app.layout.current_buffer,
+                      session._input_buffer)
+        self.assertEqual(session._prompt_marker() + ' ', 'debops> ')
 
     def test_the_shell_prompt_marks_the_elevation(self):
         session, _client, _out, _err = make_session(elevated=True)
-        _code, pt_class = run_shell_once(session)
-        message = pt_class.call_args[1]['message']
-        self.assertEqual(message(), 'debops!> ')
+        _code, _app = run_shell_once(session)
+        self.assertEqual(session._prompt_marker() + ' ', 'debops!> ')
 
     def test_the_shell_restores_the_session_channels(self):
         session, _client, out, err = make_session()
@@ -179,26 +174,37 @@ class ShellTestCase(unittest.TestCase):
         session, _client, _out, _err = make_session()
         session.project_path = os.path.join(tmpdir, 'project')
         with mock.patch.dict(os.environ, {'XDG_DATA_HOME': tmpdir}):
-            _code, pt_session = run_shell_once(session)
-            _args, kwargs = pt_session.call_args
-            self.assertTrue(kwargs['history'].filename.endswith(
+            _code, _app = run_shell_once(session)
+            buffer = session._input_buffer
+            self.assertTrue(buffer.history.filename.endswith(
                     '-project-system'))
             # The hook re-points the buffer at the current view's
             # file
             session.view = 'admin'
             session._history_changed()
-            history = pt_session.return_value.default_buffer.history
+            history = buffer.history
             self.assertIsInstance(history, FileHistory)
             self.assertTrue(history.filename.endswith(
                     '-project-admin'))
 
     def test_suspend_enabled_unless_confined(self):
-        for confined, expected in ((False, True), (True, False)):
-            session, _client, _out, _err = make_session()
+        # The custom application carries the job control on its own
+        # Ctrl-Z binding: free accounts background, confined ones
+        # get the note
+        for confined in (False, True):
+            session, _client, _out, err = make_session()
             session.confined = confined
-            _code, pt_session = run_shell_once(session)
-            _args, kwargs = pt_session.call_args
-            self.assertIs(kwargs['enable_suspend'], expected)
+            bindings = shell._shell_bindings(session)
+            active = [b for b in bindings.bindings
+                      if b.keys == ('c-z',) and b.filter()]
+            self.assertEqual(len(active), 1, confined)
+            event = mock.MagicMock()
+            active[0].handler(event)
+            if confined:
+                self.assertIn('does not background', err.getvalue())
+                event.app.suspend_to_background.assert_not_called()
+            else:
+                event.app.suspend_to_background.assert_called_once_with()
 
     def test_a_terminal_gets_the_shell(self):
         client = mock.MagicMock()

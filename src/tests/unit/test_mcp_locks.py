@@ -402,6 +402,36 @@ class SweepTestCase(unittest.TestCase):
         self.assertIn('Pending changes (1): operator.txt',
                       result['content'][0]['text'])
 
+    def test_status_reports_the_in_flight_run(self):
+        # The busy branch: the tally, the playbooks and the mode for
+        # the status lines of other clients, and the current playbook
+        # by its span
+        from debops.mcp import runs
+        from debops.mcp.tools.common import project_flock
+        from debops.mcp.tools.project import tool_project_status
+        self.project.view = 'system'
+        _id, log_path = runs.new_log(self.project)
+        with open(log_path, 'w') as fp:
+            fp.write('TASK [one] ***\n' * 25)
+        runs.write_metadata(log_path, {
+                'executionId': _id, 'mode': 'check',
+                'playbooks': ['service/core', 'service/ferm'],
+                'taskCount': 50, 'taskCounts': [20, 30],
+                'startedAt': '2026-10-24T10:00:00Z'})
+        with project_flock(self.project, self.policy, exclusive=True):
+            result = tool_project_status(self.project, self.policy, {})
+        structured = result['structuredContent']
+        self.assertTrue(structured['runInFlight'])
+        self.assertEqual(structured['mode'], 'check')
+        self.assertEqual(structured['playbooks'],
+                         ['service/core', 'service/ferm'])
+        self.assertEqual(structured['tasksDone'], 25)
+        self.assertEqual(structured['tasksTotal'], 50)
+        # Task 25 of 50 sits past the first playbook's span of 20
+        self.assertEqual(structured['currentPlaybook'],
+                         'service/ferm')
+        self.assertIn('Run: in flight', result['content'][0]['text'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -79,11 +79,6 @@ class ConsoleRepl(Repl):
 
     # -- the scrollback plumbing -------------------------------------
 
-    def _invalidate(self):
-        app = self._app
-        if app is not None:
-            app.invalidate()
-
     def _run_status_text(self):
         """The two status lines of the active run, floated above the
         prompt: the title with the counters, then the current task."""

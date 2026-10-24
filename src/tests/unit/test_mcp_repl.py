@@ -10,6 +10,7 @@ import shutil
 import signal
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -581,13 +582,13 @@ class TaskFlowTestCase(unittest.TestCase):
                 command='check site')
         self.assertIn('recap', out.getvalue())
 
-    def test_the_shell_tails_and_marks_the_completion(self):
-        # The shell tails the log like the repl does, the toolbar
-        # carries the live status, and the dotted marker line lands
-        # at completion — the result is not rendered twice
+    def test_the_shell_tails_without_a_completion_marker(self):
+        # The shell tails the log like the repl does and the toolbar
+        # carries the live status; the verdict is in the log itself
+        # (the recap, the sendoff), so nothing more prints
         client = FakeClient()
         repl_obj, out, err = make_repl(client)
-        repl_obj.run_display = 'dots'
+        repl_obj.run_display = 'shell'
         self._run_task_script(repl_obj, [
                 {'status': 'working',
                  'statusMessage': 'TASK [a]',
@@ -604,47 +605,48 @@ class TaskFlowTestCase(unittest.TestCase):
                                          'text': 'recap'}]}}])
         text = err.getvalue()
         self.assertIn('TASK [a]', text)
-        self.assertIn('Running playbook site ... OK', text)
+        self.assertNotIn('OK', text)
         self.assertNotIn('recap', out.getvalue())
         self.assertIsNone(repl_obj.active_run)
 
-    def test_the_dots_mark_the_failure(self):
+    def test_a_failed_tailed_run_prints_no_excerpt(self):
+        # The failure scrolled by in the tail; the session fails
+        # without a re-dump
         client = FakeClient()
         repl_obj, _out, err = make_repl(client)
-        repl_obj.run_display = 'dots'
-        with mock.patch('debops.mcp.repl.POLL_INTERVAL', 0), \
-                self.assertRaises(ReplError):
-            client.queue('tools/call', {'resultType': 'task',
-                                        'taskId': 't1',
-                                        'status': 'working'})
-            client.queue('tasks/get',
-                         {'status': 'working',
-                          'run': {'mode': 'run', 'playbooks': ['site'],
-                                  'taskIndex': 1}},
-                         {'status': 'failed',
-                          'error': {'message': 'boom'}})
+        repl_obj.run_display = 'shell'
+        client.queue('tools/call', {'resultType': 'task',
+                                    'taskId': 't1', 'status': 'working'})
+        client.queue('tasks/get',
+                     {'status': 'working',
+                      'statusMessage': 'TASK [a]',
+                      'run': {'mode': 'run', 'playbooks': ['site'],
+                              'taskIndex': 1}},
+                     {'status': 'failed',
+                      'error': {'message': 'boom'}})
+        with mock.patch('debops.mcp.repl.POLL_INTERVAL', 0):
             repl_obj.execute('run site')
-        self.assertIn(' FAILED', err.getvalue())
+        self.assertNotIn('boom', err.getvalue())
+        self.assertTrue(repl_obj.had_error)
         self.assertIsNone(repl_obj.active_run)
 
-    def test_the_dots_mark_the_cancellation(self):
+    def test_a_cancelled_tailed_run_prints_no_excerpt(self):
         client = FakeClient()
         repl_obj, _out, err = make_repl(client)
-        repl_obj.run_display = 'dots'
-        with mock.patch('debops.mcp.repl.POLL_INTERVAL', 0), \
-                self.assertRaises(ReplError):
-            client.queue('tools/call', {'resultType': 'task',
-                                        'taskId': 't1',
-                                        'status': 'working'})
-            client.queue('tasks/get',
-                         {'status': 'working',
-                          'run': {'mode': 'run', 'playbooks': ['site'],
-                                  'taskIndex': 1}},
-                         {'status': 'cancelled',
-                          'error': {'message': 'cancelled'}})
+        repl_obj.run_display = 'shell'
+        client.queue('tools/call', {'resultType': 'task',
+                                    'taskId': 't1', 'status': 'working'})
+        client.queue('tasks/get',
+                     {'status': 'working',
+                      'statusMessage': 'TASK [a]',
+                      'run': {'mode': 'run', 'playbooks': ['site'],
+                              'taskIndex': 1}},
+                     {'status': 'cancelled',
+                      'error': {'message': 'cancelled'}})
+        with mock.patch('debops.mcp.repl.POLL_INTERVAL', 0):
             repl_obj.execute('run site')
-        self.assertIn(' cancelled', err.getvalue())
-        self.assertNotIn(' FAILED', err.getvalue())
+        self.assertNotIn('cancelled', err.getvalue())
+        self.assertTrue(repl_obj.had_error)
 
     def test_the_wait_retries_a_dropped_busy_connection(self):
         # A run holds the daemon busy; a timed-out poll drops the
@@ -2107,47 +2109,175 @@ class ShellTestCase(unittest.TestCase):
     def test_build_shell_sets_the_live_flags(self):
         self.shell._build_shell(self.session)
         self.assertTrue(self.session.gate_input)
-        self.assertEqual(self.session.run_display, 'dots')
+        self.assertEqual(self.session.run_display, 'shell')
         self.assertIn('aborts a run', self.session.busy_note)
 
     def test_enter_submits_to_the_worker(self):
-        prompt_session = self.shell._build_shell(self.session)
-        accept = prompt_session.default_buffer.accept_handler
-        buffer = mock.Mock()
-        buffer.text = 'status'
+        self.shell._build_shell(self.session)
+        buffer = self.session._input_buffer
         with mock.patch.object(self.session, 'submit') as submit:
-            accept(buffer)
+            buffer.text = 'status'
+            buffer.validate_and_handle()
         submit.assert_called_once_with('status')
-        buffer.append_to_history.assert_called_once_with()
-        buffer.reset.assert_called_once_with()
+        self.assertEqual(buffer.text, '')
+        # ... and the command is in the history
+        self.assertEqual(buffer.history.get_strings(), ['status'])
 
     def test_the_gate_answer_skips_the_history(self):
         # A passphrase typed at the gate never enters the history
-        prompt_session = self.shell._build_shell(self.session)
-        accept = prompt_session.default_buffer.accept_handler
-        buffer = mock.Mock()
+        self.shell._build_shell(self.session)
+        buffer = self.session._input_buffer
+        self.session._gate = {'secret': True,
+                              'answered': threading.Event(),
+                              'value': None}
         buffer.text = 'supersecret'
-        self.session._gate = {'secret': True}
         with mock.patch.object(self.session, 'submit') as submit:
-            accept(buffer)
+            buffer.validate_and_handle()
         submit.assert_called_once_with('supersecret')
-        buffer.append_to_history.assert_not_called()
+        self.assertEqual(buffer.history.get_strings(), [])
 
-    def test_the_status_line_carries_the_run(self):
-        self.session.run_display = 'dots'
+    def test_the_status_line_tallies_the_run(self):
+        # The verb, the current playbook and the tally — the task
+        # and play names shift too fast to read, so they stay out
+        self.session.run_display = 'shell'
         self.session.active_run = {
                 'run': {'mode': 'run', 'playbooks': ['site'],
                         'taskIndex': 3, 'taskCount': 50,
+                        'taskCounts': [50],
                         'currentTask': 'TASK [nginx : Install]'},
                 'started': time.monotonic(), 'task_id': 't1'}
         left, right = self.session.status_line()
-        self.assertIn('Running site', right)
+        self.assertIn('running site', right)
         self.assertIn('3/50', right)
-        self.assertIn('nginx : Install', right)
+        self.assertNotIn('nginx', right)
         # ... and not at rest
         self.session.active_run = None
         _left, right = self.session.status_line()
         self.assertNotIn('running', right)
+
+    def test_the_status_line_picks_the_current_playbook(self):
+        # Several playbooks in one command: the one running
+        self.session.run_display = 'shell'
+        self.session.active_run = {
+                'run': {'mode': 'check',
+                        'playbooks': ['service/core', 'service/ferm'],
+                        'taskIndex': 21, 'taskCount': 50,
+                        'taskCounts': [20, 30]},
+                'started': time.monotonic(), 'task_id': 't1'}
+        _left, right = self.session.status_line()
+        self.assertIn('checking service/ferm', right)
+        self.assertNotIn('service/core ·', right)
+        self.assertIn('21/50', right)
+
+    def test_the_status_line_shows_a_foreign_run(self):
+        self.session.run_display = 'shell'
+        self.session._foreign_run = {
+                'mode': 'run', 'playbooks': ['site'],
+                'tasksDone': 4, 'tasksTotal': 12,
+                'currentPlaybook': 'site'}
+        _left, right = self.session.status_line()
+        self.assertIn('running site', right)
+        self.assertIn('4/12', right)
+
+    def test_the_poller_reads_the_project_status(self):
+        watcher = FakeClient()
+        watcher.queue('tools/call', {
+                'resultType': 'complete', 'isError': False,
+                'structuredContent': {
+                    'runInFlight': True, 'mode': 'run',
+                    'playbooks': ['site'], 'tasksDone': 4,
+                    'tasksTotal': 12, 'currentPlaybook': 'site'}},
+                {'resultType': 'complete', 'isError': False,
+                 'structuredContent': {'runInFlight': False}})
+        session = self.session
+        session.run_display = 'shell'
+        invalidations = []
+        session._invalidate = lambda: invalidations.append(1)
+        session._poll_foreign_run_once(watcher)
+        self.assertIsNotNone(session._foreign_run)
+        self.assertIn('running site', session.status_line()[1])
+        session._poll_foreign_run_once(watcher)
+        self.assertIsNone(session._foreign_run)
+        self.assertNotIn('running', session.status_line()[1])
+        self.assertEqual(len(invalidations), 2)
+
+    def test_the_poller_clears_on_a_dead_daemon(self):
+        watcher = FakeClient()
+        session = self.session
+        session._foreign_run = {'mode': 'run'}
+        watcher.request = mock.Mock(side_effect=ConnectionError('x'))
+        session._poll_foreign_run_once(watcher)
+        self.assertIsNone(session._foreign_run)
+
+    def test_the_poller_stands_down_during_our_own_run(self):
+        watcher = FakeClient()
+        session = self.session
+        session.active_run = {'run': {'mode': 'run'},
+                              'started': time.monotonic(),
+                              'task_id': 't1'}
+        session._poll_foreign_run_once(watcher)
+        self.assertEqual(watcher.calls, [])
+
+    def test_ctrl_c_aborts_the_run_and_arms_the_exit(self):
+        bindings = self.shell._shell_bindings(self.session)
+        binding = [b for b in bindings.bindings if b.keys == ('c-c',)][0]
+        side = mock.Mock()
+        self.session.client.clone = mock.Mock(return_value=side)
+        self.session.active_run = {
+                'run': {'mode': 'run', 'playbooks': ['site']},
+                'started': time.monotonic(), 'task_id': 't1'}
+        event = mock.MagicMock()
+        binding.handler(event)
+        side.request.assert_called_once_with('tasks/cancel',
+                                             {'taskId': 't1'})
+        # The abort arms a short window; the second one within it
+        # stops the client
+        self.assertGreater(self.session._abort_armed_until,
+                           time.monotonic())
+        event.app.exit.assert_not_called()
+        binding.handler(event)
+        event.app.exit.assert_called_once()
+        self.assertIsInstance(event.app.exit.call_args[1]['exception'],
+                              EOFError)
+
+    def test_the_abort_window_expires(self):
+        # An expired window is not armed: a later Ctrl-C at the idle
+        # prompt just clears the line
+        bindings = self.shell._shell_bindings(self.session)
+        binding = [b for b in bindings.bindings if b.keys == ('c-c',)][0]
+        self.session._abort_armed_until = time.monotonic() - 1
+        event = mock.MagicMock()
+        binding.handler(event)
+        event.app.exit.assert_not_called()
+        event.app.current_buffer.reset.assert_called_once_with()
+
+    def test_ctrl_d_exits_on_an_empty_line(self):
+        self.shell._build_shell(self.session)
+        bindings = self.shell._shell_bindings(self.session)
+        binding = [b for b in bindings.bindings if b.keys == ('c-d',)][0]
+        event = mock.MagicMock()
+        # The empty line leaves...
+        self.assertTrue(binding.filter())
+        binding.handler(event)
+        event.app.exit.assert_called_once()
+        self.assertIsInstance(event.app.exit.call_args[1]['exception'],
+                              EOFError)
+        # ... and with text the line keeps it for delete-char
+        self.session._input_buffer.text = 'sta'
+        self.assertFalse(binding.filter())
+
+    def test_the_input_row_hides_during_a_run(self):
+        app = self.shell._build_shell(self.session)
+        # The input row's container: the first child of the panes
+        container = app.layout.container.content.children[0]
+        self.assertTrue(container.filter())
+        self.session.active_run = {
+                'run': {'mode': 'run', 'playbooks': ['site']},
+                'started': time.monotonic(), 'task_id': 't1'}
+        self.assertFalse(container.filter())
+        # ... and back for a question pending mid-run
+        self.session._gate = {'secret': False}
+        self.assertTrue(container.filter())
 
     def test_ctrl_c_cancels_the_active_run(self):
         bindings = self.shell._shell_bindings(self.session)
@@ -2161,7 +2291,9 @@ class ShellTestCase(unittest.TestCase):
         side.request.assert_called_once_with('tasks/cancel',
                                              {'taskId': 't1'})
         side.close.assert_called_once_with()
-        self.assertIn('cancelled', self.err.getvalue())
+        self.assertIn('aborting the run', self.err.getvalue())
+        self.assertGreater(self.session._abort_armed_until,
+                           time.monotonic())
 
     def test_ctrl_c_drops_a_busy_commands_connection(self):
         bindings = self.shell._shell_bindings(self.session)
@@ -2173,10 +2305,10 @@ class ShellTestCase(unittest.TestCase):
 
     def test_a_bare_enter_line_feeds(self):
         # The shell habit: Enter on an empty line scrolls the prompt
-        prompt_session = self.shell._build_shell(self.session)
-        accept = prompt_session.default_buffer.accept_handler
+        self.shell._build_shell(self.session)
         buffer = mock.Mock()
         buffer.text = ''
+        accept = self.session._input_buffer.accept_handler
         with mock.patch.object(self.session, 'submit') as submit:
             accept(buffer)
         submit.assert_not_called()

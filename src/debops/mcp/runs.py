@@ -195,6 +195,20 @@ def task_count(log_path):
         return None
 
 
+def current_span(counts, done):
+    """The index of the tally span holding the running task: the
+    playbook whose task range contains the position 'done'. None
+    without spans."""
+    if not counts:
+        return None
+    upto = 0
+    for index, count in enumerate(counts):
+        upto += count
+        if done <= upto or index == len(counts) - 1:
+            return index
+    return None
+
+
 def active_log(project):
     """The log of the in-flight execution, if one is writing it: the
     newest whose sidecar lacks the completion marker. Pair it with

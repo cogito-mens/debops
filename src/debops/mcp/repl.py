@@ -28,7 +28,7 @@ import traceback
 from . import server as _server
 from .client import (UnixClient, default_socket_path,
                      socket_pid_path)
-from .runs import path_key
+from .runs import current_span, path_key
 from .trust import TRUST_PATH
 
 logger = logging.getLogger('debops')
@@ -427,6 +427,19 @@ def _run_title(run):
                                    playbooks)
 
 
+def _current_playbook(playbooks, done, counts):
+    """The playbook of the running task: its tally span. None without
+    the spans; the only playbook answers for itself."""
+    if not playbooks:
+        return None
+    if counts is None or len(counts) != len(playbooks):
+        return playbooks[0] if len(playbooks) == 1 else None
+    span = current_span(counts, done or 0)
+    if span is None:
+        return None
+    return playbooks[span]
+
+
 def _foreground_run(command, shell):
     """Run the command with the terminal handed over, the way the
     line editors do '!cmd': the child in its own foreground process
@@ -694,8 +707,8 @@ class Repl(object):
         self._server_tools = None
         self._tools_visible = False
         # The run progress rendering of the front end: 'tail' prints
-        # the moving log tail (the repl), 'dots' grows the one dotted
-        # line (the shell), 'lines' floats the two status lines (the
+        # the moving log tail (the repl), 'shell' adds the status
+        # line segment (the shell), 'lines' floats the two status lines (the
         # console, driven by active_run)
         self.run_display = 'tail'
         # The run currently tracked: {'run': the task's bookkeeping,
@@ -710,6 +723,12 @@ class Repl(object):
         # A standalone 'log --follow' tail, for the front ends whose
         # Ctrl-C binding ends it
         self._follow_client = None
+        # A run started elsewhere, from the status poller of a front
+        # end with a status line (the shell)
+        self._foreign_run = None
+        # The first Ctrl-C of a run abort arms a short window; the
+        # second one within it stops the client
+        self._abort_armed_until = 0.0
         # The lines the run's tail printed (the skip-render decision)
         self._tail_lines = 0
         # The colorizer of the active tail; and the print futures of
@@ -804,22 +823,44 @@ class Repl(object):
         if not right and getattr(self.client, 'bearer', None) is not None:
             right = 'trusted'
         left = '{}{}{}'.format(name, view, place)
-        if self.run_display == 'dots' and self.active_run is not None:
-            # The shell's status line carries the run: the verb and
-            # the targets, the tally progress, the current task
-            run = self.active_run['run']
-            segments = ['{} {}'.format(_run_verb(run.get('mode')),
-                                       ', '.join(run.get('playbooks')
-                                                 or ['?']))]
-            index, total = run.get('taskIndex'), run.get('taskCount')
-            if index is not None and total is not None:
-                segments.append('{}/{}'.format(index, total))
-            task = run.get('currentTask')
-            if task:
-                segments.append(task)
-            run_text = ' · '.join(segments)
-            right = (run_text + ' | ' + right) if right else run_text
+        if self.run_display == 'shell':
+            run_segment = None
+            if self.active_run is not None:
+                # Our own run reports through its task polls
+                run = self.active_run['run']
+                run_segment = self._run_segment(
+                        run.get('mode'), run.get('playbooks'),
+                        run.get('taskIndex'), run.get('taskCount'),
+                        run.get('taskCounts'))
+            elif self._foreign_run is not None:
+                # A run started elsewhere (the queue, an agent,
+                # another client), from the status poller
+                foreign = self._foreign_run
+                run_segment = self._run_segment(
+                        foreign.get('mode'), foreign.get('playbooks'),
+                        foreign.get('tasksDone'),
+                        foreign.get('tasksTotal'),
+                        foreign.get('taskCounts'),
+                        current=foreign.get('currentPlaybook'))
+            if run_segment:
+                right = (run_segment + ' | ' + right) \
+                        if right else run_segment
         return left, right
+
+    def _run_segment(self, mode, playbooks, done, total, counts=None,
+                     current=None):
+        """The run on the status line: the verb and the current
+        playbook, then the tally — the stable-width parts (the task
+        and play names shift too fast to read)."""
+        verb = _run_verb(mode).lower()
+        if current is None:
+            current = _current_playbook(playbooks, done, counts)
+        if current is None and playbooks and len(playbooks) > 1:
+            current = '{} playbooks'.format(len(playbooks))
+        parts = ['{} {}'.format(verb, current)] if current else [verb]
+        if done is not None and total:
+            parts.append('{}/{}'.format(done, total))
+        return ' · '.join(parts)
 
     # -- the wire -------------------------------------------------
 
@@ -902,6 +943,39 @@ class Repl(object):
             return self._wait_task(result)
         return result
 
+    def _poll_foreign_run_once(self, watcher):
+        """One status read of the poller: the foreign run lands in
+        the session state (or clears). Skipped while our own run
+        reports through its task polls."""
+        if self.active_run is not None:
+            return
+        try:
+            result = watcher.request(
+                    'tools/call', {'name': 'project.status',
+                                   'arguments': {}})
+            structured = (result.get('result', {})
+                          .get('structuredContent') or {})
+            if (isinstance(structured, dict)
+                    and structured.get('runInFlight') is True):
+                self._foreign_run = structured
+            else:
+                self._foreign_run = None
+        except (ReplError, ConnectionError, EOFError, OSError):
+            # A dead daemon clears the display; the next tick retries
+            self._foreign_run = None
+        self._invalidate()
+
+    def _poll_foreign_runs(self, watcher, stop):
+        """Keep the status line honest about runs started elsewhere
+        (the queue, an agent, another client): read the project
+        status on a cadence — slow when idle, quicker while one is
+        in flight, and each poll is an audit-log line, so the idle
+        cadence stays slow."""
+        while not stop.is_set():
+            self._poll_foreign_run_once(watcher)
+            cadence = 2 if self._foreign_run is not None else 5
+            stop.wait(cadence)
+
     def _track_run(self, task):
         """Follow the run bookkeeping of an execution task; the front
         ends render their progress from it. Returns the run dict when
@@ -914,12 +988,12 @@ class Repl(object):
             active = self.active_run = {'run': run,
                                         'started': time.monotonic(),
                                         'task_id': task.get('taskId')}
-            if self.run_display in ('tail', 'dots'):
+            if self.run_display in ('tail', 'shell'):
                 self._run_prelude(run)
                 self._start_log_tail(run)
         else:
             active['run'] = run
-        if self.run_display in ('dots', 'lines'):
+        if self.run_display in ('shell', 'lines'):
             # The live chrome (the shell's toolbar, the console's
             # status lines) reads the session state
             self._invalidate()
@@ -1088,21 +1162,14 @@ class Repl(object):
         self._tail_thread = None
         self._run_colorizer = None
 
-    def _finish_run(self, outcome):
-        """Close the progress rendering of a run. The log tail drains
-        first, so the sendoff lands in order; the shell's dotted
-        marker line prints whole; the console's status lines fold
-        away. A tailed run needs nothing more: the sendoff banner is
-        in the log itself."""
+    def _finish_run(self):
+        """Close the progress rendering of a run: the tail drains,
+        the chrome clears. The verdict is in the log itself (the
+        recap, and on failure the sendoff banner) — nothing more
+        prints."""
         self._stop_log_tail()
-        active = self.active_run
-        if self.run_display == 'dots' and active is not None:
-            run = active['run']
-            count = run.get('taskIndex') or 0
-            print('{} {} {}'.format(_run_title(run), '.' * count,
-                                    outcome), file=self._err)
         self.active_run = None
-        if self.run_display == 'lines':
+        if self.run_display in ('shell', 'lines'):
             self._invalidate()
 
     def _wait_task(self, task):
@@ -1124,7 +1191,7 @@ class Repl(object):
                 self._flush_output_lines(force=True)
                 message = task.get('statusMessage')
                 if (message and message != last_message
-                        and self.run_display in ('tail', 'dots')
+                        and self.run_display in ('tail', 'shell')
                         and self._tail_client is None):
                     print(message, file=self._err)
                     last_message = message
@@ -1144,8 +1211,7 @@ class Repl(object):
                               or self._tail_lines > 0)
                     # A failed run answers as an error result; the
                     # verdict follows it
-                    self._finish_run('FAILED' if result.get('isError')
-                                     else 'OK')
+                    self._finish_run()
                     if result.get('isError'):
                         if tailed:
                             # The failure scrolled by in the tail and
@@ -1154,7 +1220,7 @@ class Repl(object):
                             self.had_error = True
                             return {'content': [], 'isError': False}
                         return result
-                    if tailed and self.run_display in ('tail', 'dots'):
+                    if tailed and self.run_display in ('tail', 'shell'):
                         # The run was shown live; nothing closes it
                         # out — the sendoff banner is in the log
                         return {'content': [], 'isError': False}
@@ -1162,10 +1228,9 @@ class Repl(object):
                 if status in ('failed', 'cancelled'):
                     tailed = (last_message is not None
                               or self._tail_lines > 0)
-                    self._finish_run('FAILED' if status == 'failed'
-                                     else 'cancelled')
+                    self._finish_run()
                     error = task.get('error') or {}
-                    if tailed and self.run_display in ('tail', 'dots'):
+                    if tailed and self.run_display in ('tail', 'shell'):
                         # The failure scrolled by live; the exit
                         # status still marks the session
                         self.had_error = True
@@ -1177,7 +1242,7 @@ class Repl(object):
                 self._request('tasks/cancel', {'taskId': task_id})
             except ReplError:
                 pass
-            self._finish_run('interrupted')
+            self._finish_run()
             raise ReplError('cancelled (interrupted)')
 
     # -- the renderer -------------------------------------------------
@@ -1201,8 +1266,11 @@ class Repl(object):
         print(text, file=self._err)
 
     def _invalidate(self):
-        """The repaint hook of a live chrome (the console overrides
-        it); the line readers have nothing to repaint."""
+        """The repaint hook of a live chrome; the line readers have
+        no app and nothing to repaint."""
+        app = self._app
+        if app is not None:
+            app.invalidate()
 
     def _echo(self, text):
         """A line of the session transcript; the console writes it to

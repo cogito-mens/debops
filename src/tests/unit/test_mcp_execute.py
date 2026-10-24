@@ -1248,10 +1248,12 @@ class TallyTestCase(unittest.TestCase):
 """
 
     def test_the_tally_counts_tasks_and_hosts_per_play(self):
-        tasks, hosts = execute._tally_from_lists(self.LIST_TASKS,
-                                                 self.LIST_HOSTS)
+        tasks, hosts, per_playbook = execute._tally_from_lists(
+                self.LIST_TASKS, self.LIST_HOSTS)
         self.assertEqual(tasks, [2])
         self.assertEqual(hosts, [2])
+        # The spans group the plays per playbook, in order
+        self.assertEqual(per_playbook, [2])
 
     def test_the_estimate_is_base_plus_task_host_price(self):
         # 5 s base, 2 s per task per host: 2 tasks x 2 hosts -> 13
@@ -1277,6 +1279,7 @@ class TallyTestCase(unittest.TestCase):
                 side_effect=[probe, probe_hosts]) as run_mock:
             tally = execute._probe_tally(runner, project)
         self.assertEqual(tally, {'taskCount': 2, 'hostCount': 2,
+                                 'taskCounts': [2],
                                  'estimateSeconds': 13})
         # The runner's own command carried the list flags
         calls = [call[0][0][-1] for call in
