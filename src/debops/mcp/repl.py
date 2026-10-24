@@ -1329,11 +1329,21 @@ class Repl(object):
             active = self.active_run = {'run': run,
                                         'started': time.monotonic(),
                                         'task_id': task.get('taskId')}
-            if self.run_display in ('tail', 'shell'):
-                self._run_prelude(run)
-                self._start_log_tail(run)
         else:
             active['run'] = run
+        if self.run_display in ('tail', 'shell'):
+            # The bookkeeping arrives in stages: the 'preparing'
+            # phase names the mode and the playbooks first, the
+            # execution id and the resolved paths land with the
+            # run's own start. The prelude and the tail wait for
+            # their parts; the tail's replay covers the gap either
+            # way
+            if not active.get('preluded') and run.get('playbookPaths'):
+                self._run_prelude(run)
+                active['preluded'] = True
+            if not active.get('tailed'):
+                if self._start_log_tail(run):
+                    active['tailed'] = True
         if self.run_display in ('shell', 'lines'):
             # The live chrome (the shell's toolbar, the console's
             # status lines) reads the session state
@@ -1435,12 +1445,12 @@ class Repl(object):
         execution_id = run.get('executionId')
         if (execution_id is None or self._tail_client is not None
                 or self.client.legacy):
-            return
+            return False
         try:
             watcher = self.client.clone()
         except (AttributeError, ConnectionError, OSError):
             # No side connection — the status digests carry the run
-            return
+            return False
         self._tail_client = watcher
         self._tail_lines = 0
         self._run_colorizer = (AnsibleColorizer(self.theme
@@ -1452,6 +1462,7 @@ class Repl(object):
                                   daemon=True)
         self._tail_thread = thread
         thread.start()
+        return True
 
     def _tail_loop(self, watcher, execution_id):
         """Print the run's log lines as they stream; the server ends

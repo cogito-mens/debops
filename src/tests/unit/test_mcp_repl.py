@@ -789,6 +789,33 @@ class TaskFlowTestCase(unittest.TestCase):
         self.assertTrue(state['dropped'])
         self.assertFalse(repl_obj.had_error)
 
+    def test_the_tail_starts_when_the_run_info_lands(self):
+        # The 'preparing' publish carries no execution id; the
+        # prelude and the tail start when the run's own bookkeeping
+        # arrives, and the tail's replay covers the gap
+        client = FakeClient()
+        client.tail = FakeTailConnection(['ok: [localhost]'])
+        repl_obj, out, _err = make_repl(client)
+        self._run_task_script(repl_obj, [
+                {'status': 'working',
+                 'run': {'mode': 'run', 'playbooks': ['site'],
+                         'phase': 'preparing'}},
+                {'status': 'working',
+                 'run': {'mode': 'run', 'playbooks': ['site'],
+                         'executionId': 7, 'taskIndex': 1,
+                         'playbookPaths': ['ansible/playbooks'
+                                           '/site.yml']}},
+                {'status': 'completed',
+                 'result': {'isError': False,
+                            'structuredContent': {'exitCode': 0},
+                            'content': []}}])
+        self.assertEqual(client.tail.subscriptions, [{'runLog': 7}])
+        text = out.getvalue()
+        self.assertIn('Executing Ansible playbooks:', text)
+        self.assertIn('ok: [localhost]', text)
+        self.assertLess(text.index('Executing Ansible playbooks:'),
+                        text.index('ok: [localhost]'))
+
     def test_the_run_tails_its_log(self):
         # The run's own output streams on the answer channel, the
         # status digest is superseded, the marker closes it out
