@@ -427,6 +427,35 @@ def _run_title(run):
                                    playbooks)
 
 
+def _foreground_run(command, shell):
+    """Run the command with the terminal handed over, the way the
+    line editors do '!cmd': the child in its own foreground process
+    group, so its job control (Ctrl-C, Ctrl-Z) is its own."""
+    fd = sys.stdin.fileno()
+    if not os.isatty(fd):
+        completed = subprocess.run([shell, '-c', command],
+                                   capture_output=True, text=True)
+        if completed.stdout:
+            print(completed.stdout, end='')
+        if completed.stderr:
+            print(completed.stderr, end='', file=sys.stderr)
+        return completed.returncode
+    child = subprocess.Popen([shell, '-c', command],
+                             start_new_session=True)
+    saved = os.tcgetpgrp(fd)
+    try:
+        os.tcsetpgrp(fd, child.pid)
+    except OSError:
+        pass
+    try:
+        return child.wait()
+    finally:
+        try:
+            os.tcsetpgrp(fd, saved)
+        except OSError:
+            pass
+
+
 # -- the ansible output coloring ------------------------------------
 
 # The line classes of the ansible output, mapped to the ANSI codes
@@ -655,6 +684,10 @@ class Repl(object):
         # their connections
         self.busy_note = ('a command is running; Ctrl-C drops its '
                           'connection\n')
+        # The shell echoes its local ('!') commands inside the
+        # handoff, so the child's output cannot beat the echo to the
+        # screen; the console's transcript needs no such dance
+        self._inline_local_echo = False
         # The server's tool surface ({name: summary}), fetched lazily
         # for the help and the completion; the 'tools' verb governs
         # their visibility in both
@@ -683,6 +716,11 @@ class Repl(object):
         # the app-driven front ends, drained before the marker
         self._run_colorizer = None
         self._pending_prints = []
+        # The coalescing queue of the run's output (the flicker
+        # control of the app front ends)
+        self._pending_lines = []
+        self._print_lock = threading.Lock()
+        self._last_flush = 0.0
         # The output color theme of the session (the line-class to
         # ANSI table of ansible's own defaults); None follows the
         # terminal capability
@@ -924,16 +962,43 @@ class Repl(object):
 
     def _print_output_line(self, line):
         """One line of the run's own output; colored on a terminal.
-        A live prompt application takes its own printer: the plain
-        write sanitizes the escape bytes away, so the ANSI text goes
-        through the ANSI reader — our codes become real attributes
-        while the content keeps the sanitization."""
+        A live prompt application needs its own printer (its plain
+        write sanitizes the escape bytes away — the ANSI reader
+        re-reads ours into real attributes), and the bursts coalesce:
+        one erase/redraw of the chrome per window instead of one per
+        line, so fast output does not flicker."""
         colorizer = self._run_colorizer
         if colorizer is not None:
             line = colorizer.colorize(line)
         app = self._app
         if app is None or not app.is_running:
             print(line, file=self._out)
+            return
+        with self._print_lock:
+            self._pending_lines.append(line)
+        self._flush_output_lines()
+
+    def _flush_output_lines(self, force=False):
+        """Print the queued run-output lines as one block. The queue
+        drains when the oldest line has waited out the coalescing
+        window, when the poll loop ticks, and when the tail ends."""
+        with self._print_lock:
+            if not self._pending_lines:
+                return
+            now = time.monotonic()
+            if not force and now - self._last_flush < 0.1:
+                return
+            self._last_flush = now
+            lines = self._pending_lines
+            self._pending_lines = []
+        self._print_output_text(''.join(line + '\n' for line in lines))
+
+    def _print_output_text(self, text):
+        """A block of the run's output through the live app's
+        printer."""
+        app = self._app
+        if app is None or not app.is_running:
+            print(text, end='', file=self._out)
             return
         import asyncio
         from prompt_toolkit.application.run_in_terminal import (
@@ -942,7 +1007,7 @@ class Repl(object):
 
         async def _print():
             async with in_terminal():
-                app.print_text(ANSI(line + '\n'))
+                app.print_text(ANSI(text))
 
         future = asyncio.run_coroutine_threadsafe(_print(), app.loop)
         self._pending_prints.append(future)
@@ -1003,6 +1068,14 @@ class Repl(object):
             if watcher is not None:
                 watcher.close()
             thread.join(timeout=3)
+        # The lines still queued for the coalescing window print
+        # before the marker
+        with self._print_lock:
+            leftover = self._pending_lines
+            self._pending_lines = []
+        if leftover:
+            self._print_output_text(
+                    ''.join(line + '\n' for line in leftover))
         # The app-driven prints of the tail queued on its loop; let
         # them land before the marker
         for future in self._pending_prints:
@@ -1047,6 +1120,8 @@ class Repl(object):
                     # The run holds the daemon busy; the wait survives
                     continue
                 self._track_run(task)
+                # The coalesced output of the run flushes on the tick
+                self._flush_output_lines(force=True)
                 message = task.get('statusMessage')
                 if (message and message != last_message
                         and self.run_display in ('tail', 'dots')
@@ -1208,7 +1283,9 @@ class Repl(object):
         alive and repaints as the answer lands. An unexpected error
         lands in the transcript — a traceback on the raw terminal
         would corrupt the display and cost the session its worker."""
-        self._echo('{} {}\n'.format(self._prompt_marker(), line))
+        if not (self._inline_local_echo
+                and line.lstrip().startswith('!')):
+            self._echo('{} {}\n'.format(self._prompt_marker(), line))
         try:
             done = _execute_line(self, line)
         except KeyboardInterrupt:
@@ -1627,6 +1704,59 @@ class Repl(object):
                   os.environ.get('EDITOR') or 'vi')
         return subprocess.call(shlex.split(editor) + [path])
 
+    # -- the local shell (the '!' escape) ----------------------------
+
+    def _run_local(self, command):
+        """Run the command in the client-local shell: the '!'
+        escape. The daemon never sees the line; the confinement of
+        the account forbids it entirely (the editor's rule).
+
+        The command runs in the client's own working directory — the
+        REPL's virtual cwd is a server-side view."""
+        if self.confined:
+            raise ReplError('a confined session has no local shell')
+        if not command:
+            raise ReplError('usage: !<command>')
+        shell = os.environ.get('SHELL') or '/bin/sh'
+        if not self.interactive:
+            # No terminal to hand over: the pipes print back
+            completed = subprocess.run([shell, '-c', command],
+                                       capture_output=True, text=True)
+            if completed.stdout:
+                print(completed.stdout, end='', file=self._out)
+            if completed.stderr:
+                print(completed.stderr, end='', file=self._err)
+            if completed.returncode != 0:
+                self._note('!{} — exit {}'.format(command,
+                                                  completed.returncode))
+            return
+        app = self._app
+        if app is None or not app.is_running:
+            # The plain reader: the terminal is already free
+            rc = _foreground_run(command, shell)
+        else:
+            rc = self._run_local_in_app(app, command, shell)
+        if rc != 0:
+            self._note('!{} — exit {}'.format(command, rc))
+
+    def _run_local_in_app(self, app, command, shell):
+        """The handoff with the chrome suspended: the child owns the
+        screen until it exits, then the interface redraws."""
+        import asyncio
+        from prompt_toolkit.application.run_in_terminal import (
+                in_terminal)
+
+        async def _run():
+            async with in_terminal():
+                if self._inline_local_echo:
+                    from prompt_toolkit.formatted_text import ANSI
+                    app.print_text(ANSI('{} !{}\n'.format(
+                            self._prompt_marker(), command)))
+                return _foreground_run(command, shell)
+
+        return asyncio.run_coroutine_threadsafe(
+                _run(), app.loop).result()
+
     def _passphrase(self):
         """The trust passphrase: the file when the account reads it,
         a prompt when it exists but is unreadable (the cross-account
@@ -1998,6 +2128,11 @@ class Repl(object):
 
     def execute(self, line):
         """Run one command line; the result prints on the channels."""
+        stripped = line.strip()
+        if stripped.startswith('!'):
+            # A client-local command; the daemon never sees it
+            self._run_local(stripped[1:].strip())
+            return
         try:
             tokens = shlex.split(line)
         except ValueError as errmsg:
@@ -2010,11 +2145,19 @@ class Repl(object):
         if verb == 'help':
             self._print_help()
             return
+        if verb == 'debops' and args and (
+                args[0] in self.verbs() or args[0] in ('help', 'exit')
+                or args[0].startswith('tool/')):
+            # Thirteen years of habit die hard: the prefix goes
+            verb, args = args[0], args[1:]
         if verb.startswith('tool/'):
             result = self._tool_hatch(verb[5:], args)
         else:
             handler = self.verbs().get(verb)
             if handler is None:
+                if verb == 'debops':
+                    raise ReplError('the REPL is already debops; '
+                                    'drop the prefix')
                 raise ReplError("unknown verb: {!r} ('help' lists them)"
                                 .format(verb))
             result = handler(args)

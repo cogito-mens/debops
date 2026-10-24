@@ -866,6 +866,58 @@ class TaskFlowTestCase(unittest.TestCase):
                                           'playbooks': ['a', 'b']}),
                          'Debugging playbook a, b')
 
+    def test_the_bang_runs_a_local_command(self):
+        # The '!' escape: the client-local shell answers, the daemon
+        # never hears about it
+        session, out, _err = make_repl(FakeClient())
+        session.execute('!printf hello-local')
+        self.assertEqual(out.getvalue(), 'hello-local')
+        self.assertEqual(session.client.calls, [])
+
+    def test_the_bang_needs_a_command(self):
+        session, _out, _err = make_repl(FakeClient())
+        with self.assertRaises(ReplError):
+            session.execute('!')
+
+    def test_the_bang_refuses_in_a_confined_session(self):
+        # The confinement of the account: no local escapes, the
+        # editor's rule
+        session, _out, _err = make_repl(FakeClient())
+        session.confined = True
+        with self.assertRaises(ReplError) as context:
+            session.execute('!ls')
+        self.assertIn('no local shell', str(context.exception))
+
+    def test_the_bang_notes_a_nonzero_exit(self):
+        session, _out, err = make_repl(FakeClient())
+        session.execute('!false')
+        self.assertIn('exit 1', err.getvalue())
+
+    def test_the_debops_prefix_strips_before_a_known_verb(self):
+        client = FakeClient()
+        client.queue('tools/call', {
+                'resultType': 'complete', 'isError': False,
+                'content': [{'type': 'text', 'text': 'Project: x'}]})
+        session, out, _err = make_repl(client)
+        session.execute('debops status')
+        self.assertEqual(client.calls[0][1]['name'], 'project.status')
+        self.assertIn('Project: x', out.getvalue())
+
+    def test_the_debops_prefix_strips_before_a_tool_hatch(self):
+        client = FakeClient()
+        client.queue('tools/call', {
+                'resultType': 'complete', 'isError': False,
+                'content': [{'type': 'text', 'text': 'ok'}]})
+        session, out, _err = make_repl(client)
+        session.execute('debops tool/project.status')
+        self.assertEqual(client.calls[0][1]['name'], 'project.status')
+
+    def test_an_unknown_verb_after_the_prefix_keeps_it(self):
+        session, _out, _err = make_repl(FakeClient())
+        with self.assertRaises(ReplError) as context:
+            session.execute('debops stats')
+        self.assertIn('drop the prefix', str(context.exception))
+
 
 class ColorizerTestCase(unittest.TestCase):
     """The ansible output, colored the way ansible colors
@@ -2118,6 +2170,47 @@ class ShellTestCase(unittest.TestCase):
         binding.handler(mock.MagicMock())
         self.assertTrue(self.session.client.closed)
         self.assertIn('lost its connection', self.err.getvalue())
+
+    def test_a_bare_enter_line_feeds(self):
+        # The shell habit: Enter on an empty line scrolls the prompt
+        prompt_session = self.shell._build_shell(self.session)
+        accept = prompt_session.default_buffer.accept_handler
+        buffer = mock.Mock()
+        buffer.text = ''
+        with mock.patch.object(self.session, 'submit') as submit:
+            accept(buffer)
+        submit.assert_not_called()
+        self.assertEqual(self.out.getvalue(), 'debops>\n')
+
+    def test_the_output_coalesces_per_window(self):
+        # A burst of output lines repaints the chrome once per
+        # window, not once per line
+        self.session._app = mock.Mock()
+        self.session._app.is_running = True
+        with mock.patch.object(self.session,
+                               '_print_output_text') as printer:
+            for index in range(10):
+                self.session._print_output_line('line {}'.format(
+                        index))
+            # The first line flushed; the rest coalesced
+            self.assertEqual(printer.call_count, 1)
+            self.assertEqual(len(self.session._pending_lines), 9)
+            self.session._flush_output_lines(force=True)
+            self.assertEqual(printer.call_count, 2)
+            block = printer.call_args_list[1][0][0]
+            self.assertEqual(block, ''.join(
+                    'line {}\n'.format(index) for index in range(1, 10)))
+
+    def test_the_app_print_rides_the_loop(self):
+        self.session._app = mock.Mock()
+        self.session._app.is_running = True
+        with mock.patch('asyncio.run_coroutine_threadsafe') as sched:
+            self.session._print_output_text('text\n')
+        self.assertEqual(sched.call_count, 1)
+        # The print is queued for the drain at the run's end; the
+        # unscheduled coroutine of the mock goes back unawaited
+        sched.call_args[0][0].close()
+        self.assertEqual(len(self.session._pending_prints), 1)
 
     def test_completion_columns_are_column_major(self):
         self.assertEqual(

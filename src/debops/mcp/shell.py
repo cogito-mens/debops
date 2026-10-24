@@ -93,6 +93,9 @@ def _build_shell(session):
     session.run_display = 'dots'
     session.busy_note = ('a command is running; Ctrl-C aborts a run, '
                          'drops the rest\n')
+    # The local commands echo inside the handoff (ordered against
+    # their output), not through the worker's transcript echo
+    session._inline_local_echo = True
     bindings = _shell_bindings(session)
 
     password = PasswordProcessor()
@@ -123,6 +126,12 @@ def _build_shell(session):
         if session._gate is None and line.strip():
             buffer.append_to_history()
         buffer.reset()
+        if session._gate is None and not line.strip() \
+                and not session._busy:
+            # A bare Enter line-feeds like a normal shell: the
+            # prompt scrolls
+            print(session._prompt_marker(), file=session._out)
+            return
         session.submit(line)
 
     prompt_session.default_buffer.accept_handler = accept
