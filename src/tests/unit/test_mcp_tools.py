@@ -2570,17 +2570,20 @@ class DocumentationModeTestCase(unittest.TestCase):
         })
 
     def test_only_the_documentation_tools(self):
+        from debops.mcp.tools import DOCS_STUB_TOOLS
         response = self.server.handle({
                 'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list',
                 'params': {'_meta': REQUEST_META, }})
         names = [tool['name'] for tool in response['result']['tools']]
         self.assertEqual(sorted(names),
-                         ['ansible.doc', 'collection.playbooks',
-                          'collection.roles', 'playbook.info',
-                          'playbook.list', 'role.argspec',
-                          'role.defaults', 'role.files', 'role.handlers',
-                          'role.info', 'role.tasks', 'role.templates',
-                          'role.vars'])
+                         sorted(['ansible.doc', 'collection.playbooks',
+                                 'collection.roles', 'playbook.info',
+                                 'playbook.list', 'role.argspec',
+                                 'role.defaults', 'role.files',
+                                 'role.handlers', 'role.info',
+                                 'role.tasks', 'role.templates',
+                                 'role.vars']
+                                + list(DOCS_STUB_TOOLS)))
 
     def test_descriptions_never_nudge_at_execution(self):
         # The mode has no run/check tools; the playbook tools must not
@@ -2618,30 +2621,71 @@ class DocumentationModeTestCase(unittest.TestCase):
         self.assertIn('service/testrole', text)
         self.assertNotIn('Project playbooks', text)
 
-    def test_project_tools_are_not_registered(self):
+    def test_project_tools_are_stubbed(self):
+        # The project-bound names stay visible; the answer names the
+        # mode instead of falling to a fuzzy wrong-tool suggestion
         response = self.call_tool('project.read', {'path': 'ansible.cfg'})
-        self.assertIn('error', response)
-        self.assertIn('unknown tool: project.read',
-                      response['error']['data']['details'])
+        self.assertTrue(response['result']['isError'])
+        self.assertIn('needs a project directory',
+                      response['result']['content'][0]['text'])
 
-    def test_execution_tools_are_not_registered(self):
+    def test_execution_tools_are_stubbed(self):
         # The execution family is project-bound: there are no runs to
         # inspect without a project
         for name in ('check', 'run', 'execution.list',
                      'execution.output'):
             response = self.call_tool(name, {})
-            self.assertIn('error', response, name)
-            self.assertIn('unknown tool: ' + name,
-                          response['error']['data']['details'])
+            self.assertTrue(response['result']['isError'], name)
+            self.assertIn('needs a project directory',
+                          response['result']['content'][0]['text'])
 
-    def test_aliases_dangle_without_the_canonical_tool(self):
-        # The alias table is registered, but the documentation mode has
-        # no 'run' to resolve to
+    def test_queue_tools_are_stubbed(self):
+        # Only a project daemon can run the execution queue
+        response = self.call_tool('queue.list')
+        self.assertTrue(response['result']['isError'])
+        self.assertIn('needs a project directory',
+                      response['result']['content'][0]['text'])
+
+    def test_alias_resolves_to_the_stub(self):
+        # The alias table resolves against the stubbed 'run'
         self.assertEqual(self.server.aliases.get('playbook.run'), 'run')
         response = self.call_tool('playbook.run', {})
-        self.assertIn('error', response)
-        self.assertIn('unknown tool: playbook.run',
-                      response['error']['data']['details'])
+        self.assertTrue(response['result']['isError'])
+        self.assertIn('needs a project directory',
+                      response['result']['content'][0]['text'])
+
+    def test_the_stub_descriptions_carry_the_mode(self):
+        response = self.server.handle({
+                'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list',
+                'params': {'_meta': REQUEST_META, }})
+        tools = {tool['name']: tool
+                 for tool in response['result']['tools']}
+        self.assertIn('read-only documentation',
+                      tools['project.status']['description'])
+
+    def test_the_stub_set_covers_the_project_surface(self):
+        # The drift guard: a new project-bound tool must join
+        # DOCS_STUB_TOOLS, or the documentation mode silently omits it
+        from debops.mcp.tools import (DOCS_STUB_TOOLS,
+                                      register_project_tools)
+        project_dir = os.path.join(self.tmpdir, 'project')
+        os.makedirs(os.path.join(project_dir, 'ansible', 'inventory'))
+        project = type('Project', (), {
+            'path': project_dir, 'name': 'project',
+            'project_type': 'legacy', 'view': 'system',
+            'auto_commit': staticmethod(lambda *a, **k: None),
+            'config': type('Config', (), {'raw': {},
+                                          '_env_vars': {}})(),
+        })()
+        project_server = McpServer(project=project,
+                                   policy=McpPolicy.for_documentation())
+        register_project_tools(
+                project_server, roles_path=self.roles_path,
+                playbooks_path=self.playbooks_path,
+                collection_index_provider=lambda: {})
+        docs_real = set(self.server.tools) - DOCS_STUB_TOOLS
+        project_only = set(project_server.tools) - docs_real
+        self.assertLessEqual(project_only, DOCS_STUB_TOOLS)
 
 
 class OutputFormatTestCase(unittest.TestCase):

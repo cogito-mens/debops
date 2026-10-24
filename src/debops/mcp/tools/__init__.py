@@ -498,9 +498,9 @@ def _documentation_entries(server, policy, project, roles_path,
         roles_paths.append(roles_path)
     roles_paths.extend(extra_roles_paths)
     if project is None:
-        # The documentation mode has no execution tools; the
-        # descriptions must not nudge towards them — a named but
-        # missing tool makes agents retry-loop over it
+        # The documentation mode refuses the execution tools (they
+        # are registered as stubs which answer with the mode); the
+        # descriptions must not nudge towards them anyway
         list_description = (
                 'List the playbook targets of the bundled DebOps '
                 'collection, grouped by section; the playbooks of the '
@@ -1623,6 +1623,50 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
     _apply_aliases(server)
 
 
+def _documentation_stub_entry(name):
+    """A project-bound tool's documentation-mode entry: the name stays
+    visible, and the handler answers with the mode.
+
+    A missing tool makes agents retry-loop over a name they saw
+    referenced (or worse, follow the fuzzy suggestion to the wrong
+    tool); a present-but-refused one teaches in one read — the same
+    policy as the execution stubs of a project server.
+    """
+    description = ('Needs a DebOps project directory; this server is '
+                   'read-only documentation.')
+
+    def stub(arguments, context=None):
+        return _error_result('the "{}" tool needs a project directory; '
+                             'this server is read-only documentation'
+                             .format(name))
+
+    return (name, description,
+            {'type': 'object', 'additionalProperties': False}, stub,
+            False, True, False)
+
+
+# The tools a project daemon registers but a documentation server does
+# not: the project set of the default policy, plus the execution queue
+# (which only a project daemon can have). The documentation mode stubs
+# them, so the names teach the mode instead of falling to the fuzzy
+# unknown-tool suggestions. The tool-list pins catch the drift when
+# the project surface grows
+DOCS_STUB_TOOLS = frozenset((
+    'ansible.facts', 'ansible.ping', 'check', 'collection.remove',
+    'collection.require', 'collection.sync', 'config.get',
+    'environment.list', 'environment.set', 'environment.unset',
+    'execution.list', 'execution.output', 'execution.purge',
+    'file.delete', 'file.move', 'file.write',
+    'inventory.query', 'inventory.spec', 'keyring.fetch',
+    'project.files', 'project.list', 'project.mkdir', 'project.pull',
+    'project.push', 'project.read', 'project.status', 'run',
+    'secret.paths', 'view.create', 'view.list', 'view.switch',
+    'batch.create', 'batch.remove', 'batch.prune', 'batch.pending',
+    'batch.info', 'queue.list', 'queue.clear', 'queue.start',
+    'queue.stop', 'job.add', 'job.prune', 'job.pop',
+))
+
+
 def register_documentation_tools(server, roles_path=COLLECTION_ROLES,
                                  playbooks_path=COLLECTION_PLAYBOOKS,
                                  collection_index_provider=None):
@@ -1643,5 +1687,11 @@ def register_documentation_tools(server, roles_path=COLLECTION_ROLES,
                                      playbooks_path,
                                      collection_index_provider,
                                      extra_roles_paths=extra_roles)
+    # The project-bound names stay visible as stubs: their answer
+    # names the mode instead of sending the caller to a fuzzy
+    # wrong-tool suggestion
+    entries.extend(_documentation_stub_entry(name)
+                   for name in sorted(DOCS_STUB_TOOLS)
+                   if name not in server.tools)
     _register_entries(server.tools, entries, policy)
     _apply_aliases(server)

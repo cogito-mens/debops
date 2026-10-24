@@ -12,6 +12,7 @@ framing a user (or an MCP client) sees.
 from debops.mcp.client import socket_pid_path
 from debops.mcp.server import McpServer
 from debops.mcp.skills import SkillLibrary
+from debops.mcp.tools import DOCS_STUB_TOOLS
 from debops.mcp.transport import UnixSocketTransport
 import json
 import os
@@ -201,12 +202,14 @@ def test_serve_outside_a_project_serves_documentation(
     assert result.returncode == 0
     (response,) = read_json_lines(result.stdout)
     names = sorted(tool["name"] for tool in response["result"]["tools"])
-    assert names == ["ansible.doc", "collection.playbooks",
-                     "collection.roles",
-                     "playbook.info", "playbook.list",
-                     "role.argspec", "role.defaults", "role.files",
-                     "role.handlers", "role.info", "role.tasks",
-                     "role.templates", "role.vars"]
+    assert names == sorted(
+            ["ansible.doc", "collection.playbooks",
+             "collection.roles",
+             "playbook.info", "playbook.list",
+             "role.argspec", "role.defaults", "role.files",
+             "role.handlers", "role.info", "role.tasks",
+             "role.templates", "role.vars"]
+            + list(DOCS_STUB_TOOLS))
 
 
 def test_serve_explicit_nonproject_dir_fails(run_debops, mcp_env,
@@ -238,8 +241,22 @@ def test_serve_docs_flag_inside_a_project(run_debops, mcp_env,
     assert result.returncode == 0
     (response,) = read_json_lines(result.stdout)
     names = [tool["name"] for tool in response["result"]["tools"]]
-    assert "project.read" not in names
     assert "role.info" in names
+    # The project tools stay visible as stubs whose answer names the
+    # mode
+    assert "project.read" in names
+    stub_call = json.dumps({
+        "jsonrpc": "2.0", "id": 2,
+        "method": "tools/call",
+        "params": {"_meta": REQUEST_META, "name": "project.read",
+                   "arguments": {"path": "ansible.cfg"}},
+    }) + "\n"
+    result = run_debops("mcp", "serve", "--docs", cwd=str(project_dir),
+                        env=mcp_env, input_text=stub_call)
+    (response,) = read_json_lines(result.stdout)
+    assert response["result"]["isError"] is True
+    assert "needs a project directory" in \
+        response["result"]["content"][0]["text"]
 
 
 def test_serve_docs_rejects_view(run_debops, mcp_env, project_dir):
