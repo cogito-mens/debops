@@ -20,7 +20,7 @@ import threading
 import time
 
 from .repl import (Repl, ReplError, _banner, _format_duration,
-                   _run_remaining, _run_verb, run_interactive_plain)
+                   _run_remaining, _run_verb_of, run_interactive_plain)
 
 # The scrollback keeps this many lines; the activity pane this many
 _SCROLLBACK_LINES = 5000
@@ -99,7 +99,7 @@ class ConsoleRepl(Repl):
         if remaining is not None:
             segments.append('Left: ~' + _format_duration(remaining))
         title = '{} playbook: {} ({})'.format(
-                _run_verb(run.get('mode')),
+                _run_verb_of(run),
                 ', '.join(run.get('playbooks') or ['?']),
                 ' │ '.join(segments))
         task = run.get('currentTask') or ''

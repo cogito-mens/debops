@@ -1060,7 +1060,8 @@ class ProgressTestCase(unittest.TestCase):
         self.policy = McpPolicy(self.project)
 
     def run_with_context(self, context, output=PROGRESS_OUTPUT,
-                         runner_playbooks=None):
+                         runner_playbooks=None, arguments=None,
+                         policy=None, check=True):
         from debops.mcp.tools.execute import _execute_playbook
         with mock.patch(
                 'debops.mcp.tools.execute.AnsiblePlaybookRunner') \
@@ -1075,9 +1076,11 @@ class ProgressTestCase(unittest.TestCase):
             if runner_playbooks is not None:
                 runner.return_value._found_playbooks = runner_playbooks
             popen.side_effect = make_popen(output=output)
-            return _execute_playbook(self.project, self.policy,
-                                     {'playbook': 'site'}, context,
-                                     check=True)
+            return _execute_playbook(self.project,
+                                     policy if policy is not None
+                                     else self.policy,
+                                     arguments or {'playbook': 'site'},
+                                     context, check=check)
 
     def test_progress_reported_with_a_token(self):
         sent = []
@@ -1186,6 +1189,50 @@ class ProgressTestCase(unittest.TestCase):
         self.assertEqual(
                 captured['env']['ANSIBLE_DISPLAY_SKIPPED_HOSTS'],
                 'true')
+
+    def test_the_run_announces_preparing_during_the_probe(self):
+        # The tracker reads the 'preparing' phase while the tally
+        # probe works; the run's own bookkeeping clears it
+        from debops.mcp.tasks import Task
+        task = Task(60000)
+        context = ToolContext(1, threading.Event(), task=task)
+        seen = []
+
+        def probe_spy(*args, **kwargs):
+            seen.append(dict(task.run_info or {}))
+            return make_resolve_result()
+
+        from debops.mcp.tools.execute import _execute_playbook
+        with mock.patch(
+                'debops.mcp.tools.execute.AnsiblePlaybookRunner'), \
+                mock.patch('debops.mcp.tools.execute.AnsibleInventory'), \
+                mock.patch('debops.mcp.tools.execute.run_hooks',
+                           return_value=True), \
+                mock.patch('debops.mcp.tools.execute.subprocess.run',
+                           side_effect=probe_spy), \
+                mock.patch(
+                'debops.mcp.tools.execute.subprocess.Popen') as popen:
+            popen.side_effect = make_popen(output=PROGRESS_OUTPUT)
+            _execute_playbook(self.project, self.policy,
+                              {'playbook': 'site'}, context, check=True)
+        self.assertTrue(seen)
+        self.assertEqual(seen[0].get('phase'), 'preparing')
+        self.assertEqual(seen[0].get('mode'), 'check')
+        self.assertEqual(seen[0].get('playbooks'), ['site'])
+        # ... and the run's own bookkeeping cleared the phase
+        self.assertIn('phase', task.run_info)
+        self.assertIsNone(task.run_info['phase'])
+
+    def test_a_debug_run_reports_the_debug_mode(self):
+        from debops.mcp.tasks import Task
+        task = Task(60000)
+        context = ToolContext(1, threading.Event(), task=task)
+        project = FakeProject(self.tmpdir, raw_config={
+                'project': {'mcp': {'execute_debug': True}}})
+        self.run_with_context(
+                context, policy=McpPolicy(project), check=False,
+                arguments={'playbook': 'site', 'debug': True})
+        self.assertEqual(task.run_info['mode'], 'debug')
 
     def test_the_run_bookkeeping_carries_the_resolved_paths(self):
         # The prelude of the plain CLI is rebuilt client-side from

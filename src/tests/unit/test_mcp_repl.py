@@ -999,13 +999,20 @@ class TaskFlowTestCase(unittest.TestCase):
         self.assertEqual(repl._format_duration(245), '4:05')
         self.assertEqual(repl._format_duration(3725), '1:02:05')
 
-    def test_the_run_title(self):
-        self.assertEqual(repl._run_title({'mode': 'check',
-                                          'playbooks': ['site']}),
-                         'Checking playbook site')
-        self.assertEqual(repl._run_title({'mode': 'debug',
-                                          'playbooks': ['a', 'b']}),
-                         'Debugging playbook a, b')
+    def test_the_run_verb_of_a_run_dict(self):
+        # The phase speaks while the run prepares; the mode's verb
+        # once it runs
+        self.assertEqual(repl._run_verb_of({'phase': 'preparing',
+                                            'mode': 'check'}),
+                         'preparing')
+        self.assertEqual(repl._run_verb_of({'mode': 'check'}),
+                         'Checking')
+        self.assertEqual(repl._run_verb_of({'mode': 'run'}), 'Running')
+        self.assertEqual(repl._run_verb_of({'mode': 'debug'}),
+                         'Debugging')
+        # A run which cannot say its mode yet is preparing (a
+        # foreign run inside the daemon's probe window)
+        self.assertEqual(repl._run_verb_of({}), 'Preparing')
 
     def test_the_bang_runs_a_local_command(self):
         # The '!' escape: the client-local shell answers, the daemon
@@ -2364,6 +2371,27 @@ class ShellTestCase(unittest.TestCase):
         _left, right = self.session.status_line()
         self.assertIn('running site', right)
         self.assertIn('4/12', right)
+
+    def test_the_status_line_shows_the_preparing_phase(self):
+        # The run's own bookkeeping announces the phase while the
+        # daemon works the gates and the tally probe
+        self.session.run_display = 'shell'
+        self.session.active_run = {
+                'run': {'mode': 'check', 'playbooks': ['site'],
+                        'phase': 'preparing'},
+                'started': time.monotonic(), 'task_id': 't1'}
+        _left, right = self.session.status_line()
+        self.assertIn('preparing site', right)
+        self.assertNotIn('checking', right)
+
+    def test_a_modeless_foreign_run_reads_as_preparing(self):
+        # A run inside the daemon's probe window cannot say its
+        # mode yet; it is preparing, not 'running'
+        self.session.run_display = 'shell'
+        self.session._foreign_run = {'runInFlight': True}
+        _left, right = self.session.status_line()
+        self.assertIn('preparing', right)
+        self.assertNotIn('running', right)
 
     def test_the_poller_reads_the_project_status(self):
         watcher = FakeClient()

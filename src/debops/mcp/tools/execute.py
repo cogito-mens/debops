@@ -787,7 +787,10 @@ class _RunProgress(object):
         task = self._context.task
         if task is None:
             return
-        info = {'mode': mode, 'playbooks': list(targets)}
+        info = {'mode': mode, 'playbooks': list(targets),
+                # The preparation phase ends with the run's own
+                # bookkeeping
+                'phase': None}
         if execution_id is not None:
             info['executionId'] = execution_id
         if playbook_paths:
@@ -968,14 +971,14 @@ def _make_runner(project, arguments, check, policy):
 
 def _execute_playbook(project, policy, arguments, context, check,
                       enabled_check=None, on_disabled=None):
-    mode = 'check' if check else 'run'
+    debug = bool(arguments.get('debug'))
+    mode = 'check' if check else ('debug' if debug else 'run')
 
     try:
         targets = _playbook_targets(arguments)
     except ValueError as errmsg:
         return error_result(str(errmsg))
 
-    debug = bool(arguments.get('debug'))
     if debug and not policy.execute_debug:
         return error_result('debugging is disabled by the project '
                             'policy (project.mcp.execute_debug): a '
@@ -1018,6 +1021,13 @@ def _execute_playbook(project, policy, arguments, context, check,
             gated = _check_local_confirmation(local, context, policy)
             if gated is not None:
                 return gated
+
+        # The run announces itself while the tally probe works:
+        # the front ends show the 'preparing' phase until the run's
+        # own bookkeeping lands
+        if context.task is not None:
+            context.task.update_run(mode=mode, playbooks=list(targets),
+                                    phase='preparing')
 
         # The tally fronts the run: the live progress and the
         # estimate ride the metadata sidecar (project.status shows

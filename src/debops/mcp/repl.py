@@ -666,11 +666,13 @@ def _run_verb(mode):
             'debug': 'Debugging'}.get(mode, 'Running')
 
 
-def _run_title(run):
-    """'Running playbook site' — the verb and the targets of a run."""
-    playbooks = ', '.join(run.get('playbooks') or ['?'])
-    return '{} playbook {}'.format(_run_verb(run.get('mode')),
-                                   playbooks)
+def _run_verb_of(run):
+    """The display verb of a run dict: its phase while it prepares
+    (the gates, the tally probe), its mode's verb once it runs."""
+    if run.get('phase'):
+        return run['phase']
+    mode = run.get('mode')
+    return _run_verb(mode) if mode else 'Preparing'
 
 
 def _current_playbook(playbooks, done, counts):
@@ -1072,7 +1074,7 @@ class Repl(object):
                 # Our own run reports through its task polls
                 run = self.active_run['run']
                 run_segment = self._run_segment(
-                        run.get('mode'), run.get('playbooks'),
+                        _run_verb_of(run).lower(), run.get('playbooks'),
                         run.get('taskIndex'), run.get('taskCount'),
                         run.get('taskCounts'),
                         elapsed=time.monotonic()
@@ -1083,7 +1085,8 @@ class Repl(object):
                 # another client), from the status poller
                 foreign = self._foreign_run
                 run_segment = self._run_segment(
-                        foreign.get('mode'), foreign.get('playbooks'),
+                        _run_verb_of(foreign).lower(),
+                        foreign.get('playbooks'),
                         foreign.get('tasksDone'),
                         foreign.get('tasksTotal'),
                         foreign.get('taskCounts'),
@@ -1095,14 +1098,13 @@ class Repl(object):
                         if right else run_segment
         return left, right
 
-    def _run_segment(self, mode, playbooks, done, total, counts=None,
+    def _run_segment(self, verb, playbooks, done, total, counts=None,
                      current=None, elapsed=None, estimate=None):
         """The run on the status line: the verb and the current
         playbook, then the tally and the clock — the stable-width
         parts (the task and play names shift too fast to read). The
         time-to-completion is the client's own extrapolation,
         recalculated at every render."""
-        verb = _run_verb(mode).lower()
         if current is None:
             current = _current_playbook(playbooks, done, counts)
         if current is None and playbooks and len(playbooks) > 1:
