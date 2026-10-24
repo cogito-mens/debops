@@ -342,8 +342,8 @@ class UnixSocketTransport(object):
         self._last_activity = time.monotonic()
         try:
             pid, uid, gid = get_peer_credentials(connection)
-            logger.notice('Client connected: pid=%s uid=%s gid=%s',
-                          pid, uid, gid)
+            logger.info('Client connected: pid=%s uid=%s gid=%s',
+                        pid, uid, gid)
             reader = connection.makefile('rb')
             writer = connection.makefile('wb')
             write_lock = threading.Lock()
@@ -368,7 +368,7 @@ class UnixSocketTransport(object):
                               dead),
                         daemon=True)
                 thread.start()
-            logger.notice('Client disconnected: pid=%s', pid)
+            logger.info('Client disconnected: pid=%s', pid)
         except OSError as errmsg:
             logger.debug('Connection ended with an error: %s', errmsg)
         finally:
