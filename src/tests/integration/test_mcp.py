@@ -3602,7 +3602,7 @@ def test_the_queue_review_flow_over_the_front_end(
                 "mcp", "repl", "--socket", socket_path,
                 cwd=str(project_dir), env=env,
                 input_text=("batch create review-me\n"
-                            "job add review-me custom mode=check\n"
+                            "job add review-me check custom\n"
                             "batch pending review-me\n"
                             "queue start\n"
                             "queue\n"))
