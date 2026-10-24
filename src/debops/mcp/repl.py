@@ -459,11 +459,20 @@ _RESULT_LINE = re.compile(
         r'^(ok|changed|fatal|failed|unreachable|skipping)\b')
 _RETRY_LINE = re.compile(r'^FAILED - RETRYING: ')
 _HEADER_LINE = re.compile(
-        r'^(PLAY \[|TASK \[|PLAY RECAP|PLAYBOOK RECAP|CHECK MODE)')
+        r'^(PLAY \[|TASK \[|PLAY RECAP|PLAYBOOK RECAP|CHECK MODE'
+        r'|DRY RUN)')
 _RECAP_LINE = re.compile(r'^\S+\s+: ok=\d+')
 _WARNING_LINE = re.compile(r'^\[(WARNING|DEPRECATION WARNING|ERROR)\]')
 _DIFF_OPEN = re.compile(r'^(--- |\+\+\+ |@@ )')
-_RECAP_COUNT = re.compile(r'\b(changed|unreachable|failed)=(\d+)')
+_RECAP_COUNT = re.compile(
+        r'\b(ok|changed|unreachable|failed|skipped|rescued|ignored)'
+        r'=(\d+)')
+# The face of a recap field, by ansible's own [colors] defaults
+_RECAP_FACE = {'ok': 'ok', 'changed': 'changed',
+               'unreachable': 'unreachable', 'failed': 'failed',
+               'skipped': 'skipped', 'rescued': 'ok',
+               'ignored': 'warning'}
+_BANNER_STARS = re.compile(r'^(.*?)( \*+)$')
 
 
 def classify_ansible_line(line):
@@ -500,14 +509,19 @@ class AnsibleColorizer(object):
 
     A multi-line block keeps its color until the next recognized
     line class: the continuation of a deprecation warning reads as
-    one block, like ansible's own."""
+    one block, like ansible's own.
+
+    With 'width' (a callable), the banner lines are re-padded to the
+    client's terminal at print time — the log keeps the width the
+    run recorded, the live run pretends the local one."""
 
     # The classes whose blocks span several lines
     _STICKY = frozenset(('warning', 'deprecation', 'error', 'failed',
                          'unreachable'))
 
-    def __init__(self, theme=ANSI_THEME):
+    def __init__(self, theme=ANSI_THEME, width=None):
         self.theme = theme
+        self._width = width
         self._in_diff = False
         self._sticky = None
 
@@ -539,18 +553,50 @@ class AnsibleColorizer(object):
                 return self._wrap(self._sticky, line)
             return line
         self._sticky = cls if cls in self._STICKY else None
+        if cls == 'header':
+            return self._repad(self._wrap(cls, line))
         if cls == 'recap':
-            # The counts color by value, a nonzero one takes its face
-            def _count(match):
-                if int(match.group(2)) == 0:
-                    return match.group(0)
-                word = match.group(1)
-                face = ('changed' if word == 'changed' else
-                        'unreachable' if word == 'unreachable'
-                        else 'failed')
-                return self._wrap(face, match.group(0))
-            return _RECAP_COUNT.sub(_count, line)
+            return self._color_recap(line)
         return self._wrap(cls, line)
+
+    def _repad(self, line):
+        """The banner padded to the client's terminal width; the log
+        keeps the run's own width. Ansible pads with '*' to the
+        terminal's columns."""
+        if self._width is None:
+            return line
+        width = self._width()
+        if not width:
+            return line
+        match = _BANNER_STARS.match(line)
+        if match is None:
+            return line
+        text = match.group(1)
+        return text + ' ' + '*' * max(0, width - len(text) - 1)
+
+    def _color_recap(self, line):
+        """The recap line, by ansible's own rules: every count takes
+        its face when nonzero, and the host takes its outcome's
+        face."""
+        counts = dict((match.group(1), int(match.group(2)))
+                      for match in _RECAP_COUNT.finditer(line))
+
+        def _count(match):
+            if int(match.group(2)) == 0:
+                return match.group(0)
+            return self._wrap(_RECAP_FACE[match.group(1)],
+                              match.group(0))
+
+        prefix = ''
+        host_match = re.match(r'^(\S+)(\s+: )', line)
+        if host_match is not None:
+            face = ('failed' if (counts.get('failed', 0)
+                                 or counts.get('unreachable', 0))
+                    else 'changed' if counts.get('changed', 0)
+                    else 'ok')
+            prefix = self._wrap(face, host_match.group(1))
+            line = line[len(host_match.group(1)):]
+        return prefix + _RECAP_COUNT.sub(_count, line)
 
 
 class Repl(object):
@@ -862,6 +908,20 @@ class Repl(object):
                 and hasattr(self._out, 'isatty')
                 and self._out.isatty())
 
+    def _output_columns(self):
+        """The terminal width of the output channel, when it is one;
+        the live app's size first, the channel's own otherwise."""
+        app = self._app
+        if app is not None and app.is_running:
+            try:
+                return app.output.get_size().columns
+            except Exception:
+                pass
+        try:
+            return os.get_terminal_size(self._out.fileno()).columns
+        except (OSError, ValueError, AttributeError):
+            return None
+
     def _print_output_line(self, line):
         """One line of the run's own output; colored on a terminal.
         A live prompt application takes its own printer: the plain
@@ -904,7 +964,8 @@ class Repl(object):
         self._tail_client = watcher
         self._tail_lines = 0
         self._run_colorizer = (AnsibleColorizer(self.theme
-                                                or ANSI_THEME)
+                                                or ANSI_THEME,
+                                                width=self._output_columns)
                                if self._color_output() else None)
         thread = threading.Thread(target=self._tail_loop,
                                   args=(watcher, execution_id),
@@ -954,11 +1015,12 @@ class Repl(object):
         self._tail_thread = None
         self._run_colorizer = None
 
-    def _finish_run(self, outcome, result=None, tailed=False):
+    def _finish_run(self, outcome):
         """Close the progress rendering of a run. The log tail drains
-        before the marker prints; the shell's dotted line lands whole
-        as the scrollback marker; the tailed repl gets the rule and
-        the verdict; the console's status lines fold away."""
+        first, so the sendoff lands in order; the shell's dotted
+        marker line prints whole; the console's status lines fold
+        away. A tailed run needs nothing more: the sendoff banner is
+        in the log itself."""
         self._stop_log_tail()
         active = self.active_run
         if self.run_display == 'dots' and active is not None:
@@ -966,14 +1028,6 @@ class Repl(object):
             count = run.get('taskIndex') or 0
             print('{} {} {}'.format(_run_title(run), '.' * count,
                                     outcome), file=self._err)
-        elif self.run_display == 'tail' and outcome == 'OK' and tailed:
-            code = None
-            if result is not None:
-                code = (result.get('structuredContent') or {}
-                        ).get('exitCode')
-            print('-' * 72, file=self._err)
-            print('finished (exit {})'.format(
-                    code if code is not None else '?'), file=self._err)
         self.active_run = None
         if self.run_display == 'lines':
             self._invalidate()
@@ -1013,18 +1067,34 @@ class Repl(object):
                     result = task.get('result') or {}
                     tailed = (last_message is not None
                               or self._tail_lines > 0)
-                    self._finish_run('OK', result, tailed)
+                    # A failed run answers as an error result; the
+                    # verdict follows it
+                    self._finish_run('FAILED' if result.get('isError')
+                                     else 'OK')
                     if result.get('isError'):
+                        if tailed:
+                            # The failure scrolled by in the tail and
+                            # the sendoff banner names the code; no
+                            # excerpt re-dump
+                            self.had_error = True
+                            return {'content': [], 'isError': False}
                         return result
                     if tailed and self.run_display in ('tail', 'dots'):
-                        # The run was shown live; the marker closed
-                        # it out — the log stays in its file
+                        # The run was shown live; nothing closes it
+                        # out — the sendoff banner is in the log
                         return {'content': [], 'isError': False}
                     return result
                 if status in ('failed', 'cancelled'):
+                    tailed = (last_message is not None
+                              or self._tail_lines > 0)
                     self._finish_run('FAILED' if status == 'failed'
                                      else 'cancelled')
                     error = task.get('error') or {}
+                    if tailed and self.run_display in ('tail', 'dots'):
+                        # The failure scrolled by live; the exit
+                        # status still marks the session
+                        self.had_error = True
+                        return {'content': [], 'isError': True}
                     raise ReplError(error.get('message',
                                               'the execution failed'))
         except KeyboardInterrupt:

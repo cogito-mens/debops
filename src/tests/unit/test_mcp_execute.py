@@ -1211,7 +1211,9 @@ class DetachedCommandTestCase(unittest.TestCase):
         self.assertEqual(lines[1], 'rc=$?')
         # A failing finalize must not mask the exit code of the run
         self.assertIn('debops project lock /srv/project ||', lines[2])
-        self.assertIn('exit code $rc', lines[3])
+        # The sendoff mirrors the plain CLI: it speaks only on failure
+        self.assertIn('if [ $rc -ne 0 ]', lines[3])
+        self.assertIn('Ansible finished with return code $rc', lines[3])
         self.assertEqual(lines[4], 'exit $rc')
 
     def test_finalize_targets_the_project_and_its_view(self):

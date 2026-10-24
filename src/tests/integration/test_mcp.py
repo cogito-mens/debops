@@ -1159,7 +1159,7 @@ def test_detached_run_survives_the_death_of_the_server(
         deadline = time.monotonic() + 90
         while time.monotonic() < deadline:
             text = log.read_text()
-            if "debops-mcp: the execution finished" in text:
+            if "debops-mcp: Ansible finished" in text:
                 break
             time.sleep(0.2)
         else:
@@ -1267,7 +1267,7 @@ def test_an_orphaned_run_keeps_the_project_locked(
 
             # The orphan finishes; the lock releases with its finalize
             deadline = time.monotonic() + 90
-            while "debops-mcp: the execution finished" \
+            while "debops-mcp: Ansible finished" \
                     not in log.read_text():
                 assert time.monotonic() < deadline, \
                     "the orphaned run never finalized"
@@ -1392,11 +1392,12 @@ def test_execution_log_holds_exactly_one_execution(
         def count(prefix):
             return sum(1 for line in lines if line.startswith(prefix))
 
-        # Two invocations, one recap each, one completion marker
+        # Two invocations, one recap each; a successful run adds no
+        # sendoff of ours (the plain CLI's habit)
         assert count("PLAY RECAP ") == 2
         assert count("PLAY [") == 2
         assert count("TASK [") == 2
-        assert count("debops-mcp: the execution finished") == 1
+        assert count("debops-mcp: Ansible finished") == 0
         # No section appears twice
         assert content.count("hello from first") == 1
         assert content.count("hello from second") == 1
@@ -3784,13 +3785,11 @@ def test_repl_runs_a_check_through_the_daemon(run_debops, mcp_env,
                 input="check custom\nexit\n", capture_output=True,
                 text=True, timeout=120)
         assert result.returncode == 0
-        # The run was tailed live (the status lines on stderr); the
-        # verdict marker closes it and the finished log is not
-        # re-rendered
-        assert "finished (exit 0)" in result.stderr
-        logs = list(tmp_path.glob("xdg-cache/debops/mcp/runs/*/*.log"))
-        assert logs
-        assert "hello from the repl" in logs[0].read_text()
+        # The run's own output streamed on stdout; a successful
+        # run adds no sendoff of ours (the plain CLI's habit)
+        assert "hello from the repl" in result.stdout
+        assert "PLAY RECAP" in result.stdout
+        assert "Ansible finished" not in result.stdout
     finally:
         server.terminate()
         server.wait(timeout=10)
@@ -3984,9 +3983,9 @@ def test_repl_elevate_skips_the_gate(run_debops, mcp_env, project_dir,
                 capture_output=True, text=True, timeout=120)
         assert elevated.returncode == 0
         assert "elevated" in elevated.stderr
-        # The tailed run is not re-rendered; the verdict marker
-        # closes it out
-        assert "finished (exit 0)" in elevated.stderr
+        # The run streamed live on stdout; nothing is re-rendered
+        assert "hello from the repl" in elevated.stdout
+        assert "finished (exit" not in elevated.stderr
     finally:
         server.terminate()
         server.wait(timeout=10)

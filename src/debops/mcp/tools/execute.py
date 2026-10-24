@@ -465,8 +465,11 @@ def _detached_command(command, timeout, finalize=None):
         # 'project lock' while the run itself still holds the lock
         lines.append('DEBOPS_MCP_FINALIZE=1 {} || echo "debops-mcp: '
                      'the finalize failed"'.format(_shell_command(finalize)))
-        lines.append('echo "debops-mcp: the execution finished with '
-                     'exit code $rc"')
+        # The sendoff mirrors the plain CLI's wording, and like the
+        # plain CLI it only speaks on failure — a successful run
+        # ends at its recap
+        lines.append('if [ $rc -ne 0 ]; then echo "debops-mcp: '
+                     'Ansible finished with return code $rc"; fi')
         lines.append('exit $rc')
     else:
         lines.append('exit $?')

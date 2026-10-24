@@ -44,7 +44,7 @@ PLAY RECAP *********************************************************************
 web1 : ok=2 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0
 web2 : ok=1 changed=0 unreachable=0 failed=1 skipped=0 rescued=0 ignored=0
 
-debops-mcp: the execution finished with exit code 2
+debops-mcp: Ansible finished with return code 2
 '''
 
 
@@ -193,7 +193,7 @@ class ExecutionsTestCase(unittest.TestCase):
         self.assertFalse(result['isError'])
         text = self.text(result)
         self.assertIn('— tail', text)
-        self.assertIn('exit code 2', text)
+        self.assertIn('return code 2', text)
         self.assertIn('PLAY RECAP', text)
 
     def test_changed_lists_the_tasks_and_their_hosts(self):
@@ -274,8 +274,8 @@ class ExecutionsTestCase(unittest.TestCase):
         result = tool_execution_list(self.project, self.policy, {})
         (entry,) = result['structuredContent']
         self.assertEqual(entry['lastLine'],
-                         'debops-mcp: the execution finished with '
-                         'exit code 2')
+                         'debops-mcp: Ansible finished with '
+                         'return code 2')
         self.assertIn(entry['lastLine'], self.text(result))
 
     def test_list_last_line_of_a_running_execution(self):

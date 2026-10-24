@@ -56,7 +56,7 @@ _FAILED_LINE = re.compile(r'^fatal: .*FAILED')
 _UNREACHABLE_LINE = re.compile(r'^fatal: .*UNREACHABLE')
 _RECAP_HEADER = re.compile(r'^PLAY RECAP \*+')
 _MARKER = re.compile(
-        r'^debops-mcp: the execution finished with exit code (\d+)$',
+        r'^debops-mcp: Ansible finished with return code (\d+)$',
         re.M)
 
 

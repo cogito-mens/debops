@@ -501,10 +501,9 @@ class TaskFlowTestCase(unittest.TestCase):
         with mock.patch('debops.mcp.repl.POLL_INTERVAL', 0):
             repl_obj.execute('check site')
         # The status tail moved to the error channel; the answer is
-        # not re-rendered — the run was shown live, the marker
-        # closes it out
+        # not re-rendered — the run was shown live and needs no
+        # sendoff of its own (the banner is in the log)
         self.assertIn('PLAY [one]', err.getvalue())
-        self.assertIn('finished (exit 0)', err.getvalue())
         self.assertNotIn('recap', out.getvalue())
 
     def test_the_confirmation_inside_a_task(self):
@@ -567,8 +566,6 @@ class TaskFlowTestCase(unittest.TestCase):
                                          'text': 'recap'}]}}],
                 command='check site')
         self.assertIn('TASK [one]', err.getvalue())
-        self.assertIn('-' * 72, err.getvalue())
-        self.assertIn('finished (exit 0)', err.getvalue())
         self.assertNotIn('recap', out.getvalue())
 
     def test_an_untailed_run_still_renders_its_result(self):
@@ -696,7 +693,6 @@ class TaskFlowTestCase(unittest.TestCase):
         self.assertIn('ok: [localhost]', out.getvalue())
         self.assertIn('changed: [localhost]', out.getvalue())
         self.assertNotIn('TASK [one]', err.getvalue())
-        self.assertIn('finished (exit 0)', err.getvalue())
         self.assertNotIn('recap', out.getvalue())
         self.assertTrue(client.tail.closed)
         self.assertEqual(client.tail.subscriptions, [{'runLog': 7}])
@@ -807,6 +803,35 @@ class TaskFlowTestCase(unittest.TestCase):
         with self.assertRaises(ReplError) as context:
             session.execute('log 7 -f')
         self.assertIn('2025-era', str(context.exception))
+
+    def test_a_tailed_failure_prints_no_excerpt(self):
+        # The failure scrolled by in the tail and the sendoff banner
+        # named the code; nothing re-dumps, the session still fails
+        client = FakeClient()
+        client.tail = FakeTailConnection(['fatal: [web1]: FAILED!'])
+        repl_obj, out, _err = make_repl(client)
+        self._run_task_script(repl_obj, [
+                {'status': 'working',
+                 'run': {'mode': 'run', 'playbooks': ['site'],
+                         'executionId': 7, 'taskIndex': 1}},
+                {'status': 'completed',
+                 'result': {'isError': True,
+                            'content': [{'type': 'text',
+                                         'text': 'the excerpt'}]}}])
+        self.assertIn('fatal: [web1]', out.getvalue())
+        self.assertNotIn('the excerpt', out.getvalue())
+        self.assertTrue(repl_obj.had_error)
+
+    def test_an_untailed_failure_keeps_the_excerpt(self):
+        client = FakeClient()
+        repl_obj, _out, err = make_repl(client)
+        self._run_task_script(repl_obj, [
+                {'status': 'completed',
+                 'result': {'isError': True,
+                            'content': [{'type': 'text',
+                                         'text': 'the excerpt'}]}}])
+        self.assertIn('error: the excerpt', err.getvalue())
+        self.assertTrue(repl_obj.had_error)
 
     def test_the_console_tracks_the_run_without_printing(self):
         # The status lines read the session; nothing prints per poll
@@ -953,6 +978,53 @@ class ColorizerTestCase(unittest.TestCase):
         colorize = repl.AnsibleColorizer()
         self.assertEqual(colorize.colorize('just some output'),
                          'just some output')
+
+    def test_the_recap_colors_every_nonzero_field_and_the_host(self):
+        # ansible's own rules: ok green, changed yellow, unreachable
+        # bright red, failed red, skipped cyan, rescued green,
+        # ignored bright purple; the host takes its outcome's face
+        colorize = repl.AnsibleColorizer()
+        line = ('web1 : ok=2 changed=1 unreachable=0 failed=0 '
+                'skipped=3 rescued=1 ignored=2')
+        text = colorize.colorize(line)
+        self.assertIn('\x1b[0;33mweb1\x1b[0m', text)  # changed host
+        self.assertIn('ok=2', text)
+        self.assertIn('\x1b[0;33mchanged=1\x1b[0m', text)
+        self.assertIn('unreachable=0', text)
+        self.assertIn('failed=0', text)
+        self.assertIn('\x1b[0;36mskipped=3\x1b[0m', text)
+        self.assertIn('\x1b[0;32mrescued=1\x1b[0m', text)
+        self.assertIn('\x1b[1;35mignored=2\x1b[0m', text)
+
+    def test_the_recap_host_turns_red_on_a_failure(self):
+        colorize = repl.AnsibleColorizer()
+        text = colorize.colorize(
+                'web1 : ok=2 changed=0 unreachable=0 failed=1')
+        self.assertIn('\x1b[0;31mweb1\x1b[0m', text)
+        self.assertIn('\x1b[0;31mfailed=1\x1b[0m', text)
+        self.assertIn('ok=2', text)
+
+    def test_the_banners_repad_to_the_clients_width(self):
+        # The run's log keeps its recorded width; the live display
+        # pretends the local terminal's
+        banner = 'TASK [core : Save local facts] ' + '*' * 20
+        colorize = repl.AnsibleColorizer(width=lambda: 40)
+        text = colorize.colorize(banner)
+        self.assertEqual(len(text), 40)
+        self.assertTrue(text.startswith('TASK [core : Save local '
+                                        'facts] '))
+        self.assertTrue(text.endswith('*'))
+        # No width, no repad — the recorded line passes through
+        plain = repl.AnsibleColorizer()
+        self.assertEqual(plain.colorize(banner), banner)
+        # The star run is dropped when the text alone overflows
+        # (ansible's own format keeps the separator space)
+        narrow = repl.AnsibleColorizer(width=lambda: 10)
+        self.assertEqual(narrow.colorize(banner),
+                         'TASK [core : Save local facts] ')
+        # Only the banner shapes repad; a plain line keeps its stars
+        self.assertEqual(colorize.colorize('a note ***'),
+                         'a note ***')
 
 
 class InteractiveLoopTestCase(unittest.TestCase):
