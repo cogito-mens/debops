@@ -726,9 +726,6 @@ class Repl(object):
         # A run started elsewhere, from the status poller of a front
         # end with a status line (the shell)
         self._foreign_run = None
-        # The first Ctrl-C of a run abort arms a short window; the
-        # second one within it stops the client
-        self._abort_armed_until = 0.0
         # The lines the run's tail printed (the skip-render decision)
         self._tail_lines = 0
         # The colorizer of the active tail; and the print futures of
@@ -976,6 +973,33 @@ class Repl(object):
             cadence = 2 if self._foreign_run is not None else 5
             stop.wait(cadence)
 
+    def _cancel_active_run(self):
+        """Cancel the run this client started: the signal rides a
+        fresh side connection — the main one may be mid-request (a
+        Ctrl-C can land inside a poll). A human's run stops when the
+        human stops it. Returns True when a run was cancelled."""
+        active = self.active_run
+        if active is None:
+            return False
+        task_id = active.get('task_id')
+        if task_id is None:
+            return False
+        try:
+            # The fresh connection: the interrupted main one can be
+            # mid-answer, and its buffer is not a clean channel
+            side = self.client.clone()
+            side.request('tasks/cancel', {'taskId': task_id})
+            side.close()
+        except (AttributeError, ConnectionError, EOFError, OSError,
+                ReplError):
+            # The side connection failed; the main one still answers
+            try:
+                self._request('tasks/cancel', {'taskId': task_id})
+            except ReplError:
+                pass
+        self._note('cancelling the run')
+        return True
+
     def _track_run(self, task):
         """Follow the run bookkeeping of an execution task; the front
         ends render their progress from it. Returns the run dict when
@@ -1177,6 +1201,10 @@ class Repl(object):
         front end's 'run_display'. A dropped connection retries — the
         human's run keeps its watcher. Ctrl-C cancels the task."""
         task_id = task.get('taskId')
+        if self.run_display == 'shell':
+            # The daemon's answer to the request is the task handle
+            # arriving; say so before the prompt goes quiet
+            self._note('debops-mcp: request received, processing...')
         last_message = None
         try:
             while True:
@@ -1238,10 +1266,7 @@ class Repl(object):
                     raise ReplError(error.get('message',
                                               'the execution failed'))
         except KeyboardInterrupt:
-            try:
-                self._request('tasks/cancel', {'taskId': task_id})
-            except ReplError:
-                pass
+            self._cancel_active_run()
             self._finish_run()
             raise ReplError('cancelled (interrupted)')
 
@@ -2426,6 +2451,8 @@ HELP = {
     'help': 'this text',
     'tools': 'show/hide the server tools in the help and the '
              'completion (call one as tool/<name>)',
+    '!<command>': 'run it in the client-local shell (the daemon '
+                  'never sees it)',
     'exit': 'leave the interpreter (Ctrl-D works too)',
 }
 

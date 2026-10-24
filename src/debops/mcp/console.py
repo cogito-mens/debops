@@ -342,6 +342,11 @@ def _build_app(session):
     def _ctrl_c(event):
         if session._gate is not None:
             session._gate_decline()
+        elif session.active_run is not None:
+            # The signal passes along to the daemon, like in the
+            # other front ends: the run stops, the console keeps
+            # running
+            session._cancel_active_run()
         elif session._follow_client is not None:
             # A 'log --follow' tail ends; the run is untouched
             session._follow_client.close()

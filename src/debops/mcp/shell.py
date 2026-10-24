@@ -5,13 +5,16 @@
 """The shell front end: the interpreter with a status bar.
 
 Same engine as the plain REPL; the session state (the place, the
-trust, the elevation countdown) lives in a bottom toolbar instead of
-the prompt, and output prints through 'patch_stdout', so it never
-tramples the input line. The prompt application lives for the whole
-session and the commands run on a worker thread: the toolbar stays
-at the bottom during a run and carries the run's progress, and the
-questions are answered on the input line. Without prompt_toolkit the
-shell degrades to the plain reader.
+trust, the elevation countdown, the tally of a run) lives in a
+bottom toolbar instead of the prompt, and output prints through
+'patch_stdout', so it never tramples the input line. The prompt
+application lives for the whole session and the commands run on a
+worker thread: the toolbar stays at the bottom during a run and the
+prompt line goes quiet-but-present above it. The '!' escape runs a
+line in the client-local shell (the daemon never sees it; a TUI
+takes the screen over and returns it). Ctrl-C stops the run; the
+shell keeps running — exit is 'exit'/Ctrl-D. Without prompt_toolkit
+the shell degrades to the plain reader.
 """
 
 import sys
@@ -55,26 +58,10 @@ def _shell_bindings(session):
     def _ctrl_c(event):
         if session._gate is not None:
             session._gate_decline()
-        elif (session.active_run is not None
-                or time.monotonic() < session._abort_armed_until):
-            now = time.monotonic()
-            if now < session._abort_armed_until:
-                # The second one stops the client
-                event.app.exit(exception=EOFError())
-                return
-            # Cancel the run's task on a side connection — the worker
-            # holds the main one
-            task_id = session.active_run.get('task_id')
-            try:
-                side = session.client.clone()
-                side.request('tasks/cancel', {'taskId': task_id})
-                side.close()
-            except Exception:
-                session.client.close()
-            # The window outlives the abort itself by a moment, so
-            # the impatient second Ctrl-C still exits
-            session._abort_armed_until = now + 3
-            session._note('aborting the run (Ctrl-C again exits)')
+        elif session.active_run is not None:
+            # The signal passes along to the daemon: the run stops,
+            # the shell keeps running (exit is exit/Ctrl-D)
+            session._cancel_active_run()
         elif session._follow_client is not None:
             # A 'log --follow' tail ends; the run is untouched
             session._follow_client.close()
@@ -114,7 +101,6 @@ def _build_shell(session):
     from prompt_toolkit.buffer import Buffer
     from prompt_toolkit.filters import Condition
     from prompt_toolkit.layout import (BufferControl,
-                                       ConditionalContainer,
                                        Float, FloatContainer,
                                        FormattedTextControl, HSplit,
                                        Layout, VSplit, Window)
@@ -144,6 +130,9 @@ def _build_shell(session):
         if session._gate is None and line.strip():
             buffer.append_to_history()
         buffer.reset()
+        if session._gate is None and session.active_run is not None:
+            # The prompt is inert while the run holds the shell
+            return
         if session._gate is None and not line.strip() \
                 and not session._busy:
             # A bare Enter line-feeds like a normal shell: the
@@ -157,7 +146,11 @@ def _build_shell(session):
             accept_handler=accept,
             # The history file is shared with the other front ends
             # of this project and view
-            history=session._new_history())
+            history=session._new_history(),
+            # The line is read-only while a run holds the shell
+            # (a question pending mid-run reopens it)
+            read_only=Condition(lambda: session.active_run is not None
+                                and session._gate is None))
     session._input_buffer = input_buffer
     # A view switch moves the recall and the record to the view's
     # own history file
@@ -171,17 +164,20 @@ def _build_shell(session):
                     lambda: (password if session._gate is not None
                              and session._gate['secret'] else None))])
 
-    # The input line is gone while a run is active — the REPL's
-    # blocking feel — and back for a question pending mid-run
-    input_row = ConditionalContainer(
-            VSplit([
-                    Window(FormattedTextControl(
-                            lambda: session._prompt_marker() + ' '),
-                           dont_extend_width=True),
-                    Window(input_control),
-            ], height=1),
-            filter=Condition(lambda: session.active_run is None
-                             or session._gate is not None))
+    # The prompt line stays on the screen but empty while a run
+    # holds the shell — an empty line with the blinking cursor
+    # between the output and the status line reads as a shell; a
+    # question pending mid-run brings the marker and the editing
+    # back
+    def marker():
+        if session.active_run is not None and session._gate is None:
+            return ''
+        return session._prompt_marker() + ' '
+
+    input_row = VSplit([
+            Window(FormattedTextControl(marker), dont_extend_width=True),
+            Window(input_control),
+    ], height=1)
 
     panes = HSplit([
             input_row,

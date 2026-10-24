@@ -516,6 +516,16 @@ def resolve_hosts(env, cwd, command, timeout=30):
     return unique
 
 
+def _child_processes(pid):
+    """The direct children of a process, per /proc; empty when the
+    kernel cannot say (the caller's fallback is the group signal)."""
+    try:
+        with open('/proc/{}/task/{}/children'.format(pid, pid)) as fp:
+            return [int(part) for part in fp.read().split()]
+    except (OSError, ValueError):
+        return []
+
+
 def run_cancellable(command, env, cwd, context, timeout, on_line=None,
                     enabled_check=None, on_disabled=None, input_data=None,
                     log_path=None, pass_fds=None, detached=False):
@@ -628,14 +638,22 @@ def run_cancellable(command, env, cwd, context, timeout, on_line=None,
                 report(line)
 
     def signal_process(sig):
-        """Signal the execution, or its whole group when it is
-        detached.
+        """Signal the execution, sparing the detached wrapper.
 
-        A detached execution leads its own process group, so the signal
-        has to reach the group: the wrapper and the playbook below it
-        must go together.
-        """
+        The wrapper must live to finalize the run (the exit commit,
+        the re-locked secrets) even when its playbook dies early —
+        so the signal goes to the wrapper's own children (the
+        timeout/playbook chain) and only falls back to the group
+        when the children cannot be named."""
         if detached:
+            children = _child_processes(process.pid)
+            if children:
+                for pid in children:
+                    try:
+                        os.kill(pid, sig)
+                    except OSError:
+                        pass
+                return
             try:
                 os.killpg(process.pid, sig)
             except OSError:

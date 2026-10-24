@@ -835,6 +835,31 @@ class TaskFlowTestCase(unittest.TestCase):
         self.assertIn('error: the excerpt', err.getvalue())
         self.assertTrue(repl_obj.had_error)
 
+    def test_the_shell_acknowledges_the_request(self):
+        # The daemon's answer is the task handle arriving; the shell
+        # says so before the prompt goes quiet for the run
+        client = FakeClient()
+        repl_obj, _out, err = make_repl(client)
+        repl_obj.run_display = 'shell'
+        self._run_task_script(repl_obj, [
+                {'status': 'completed',
+                 'result': {'isError': False,
+                            'structuredContent': {'exitCode': 0},
+                            'content': []}}])
+        self.assertIn('request received, processing',
+                      err.getvalue())
+
+    def test_the_repl_does_not_acknowledge(self):
+        # The repl's own flow is answer-shaped already
+        client = FakeClient()
+        repl_obj, _out, err = make_repl(client)
+        self._run_task_script(repl_obj, [
+                {'status': 'completed',
+                 'result': {'isError': False,
+                            'structuredContent': {'exitCode': 0},
+                            'content': []}}])
+        self.assertNotIn('request received', err.getvalue())
+
     def test_the_console_tracks_the_run_without_printing(self):
         # The status lines read the session; nothing prints per poll
         client = FakeClient()
@@ -2218,7 +2243,9 @@ class ShellTestCase(unittest.TestCase):
         session._poll_foreign_run_once(watcher)
         self.assertEqual(watcher.calls, [])
 
-    def test_ctrl_c_aborts_the_run_and_arms_the_exit(self):
+    def test_ctrl_c_aborts_the_run_and_never_exits(self):
+        # The signal passes along to the daemon; the client keeps
+        # running, the second Ctrl-C too — exit is exit/Ctrl-D
         bindings = self.shell._shell_bindings(self.session)
         binding = [b for b in bindings.bindings if b.keys == ('c-c',)][0]
         side = mock.Mock()
@@ -2230,22 +2257,15 @@ class ShellTestCase(unittest.TestCase):
         binding.handler(event)
         side.request.assert_called_once_with('tasks/cancel',
                                              {'taskId': 't1'})
-        # The abort arms a short window; the second one within it
-        # stops the client
-        self.assertGreater(self.session._abort_armed_until,
-                           time.monotonic())
+        self.assertIn('cancelling the run', self.err.getvalue())
         event.app.exit.assert_not_called()
+        # The second one while the abort clears: still no exit
         binding.handler(event)
-        event.app.exit.assert_called_once()
-        self.assertIsInstance(event.app.exit.call_args[1]['exception'],
-                              EOFError)
+        event.app.exit.assert_not_called()
 
-    def test_the_abort_window_expires(self):
-        # An expired window is not armed: a later Ctrl-C at the idle
-        # prompt just clears the line
+    def test_ctrl_c_clears_the_idle_line(self):
         bindings = self.shell._shell_bindings(self.session)
         binding = [b for b in bindings.bindings if b.keys == ('c-c',)][0]
-        self.session._abort_armed_until = time.monotonic() - 1
         event = mock.MagicMock()
         binding.handler(event)
         event.app.exit.assert_not_called()
@@ -2266,18 +2286,25 @@ class ShellTestCase(unittest.TestCase):
         self.session._input_buffer.text = 'sta'
         self.assertFalse(binding.filter())
 
-    def test_the_input_row_hides_during_a_run(self):
+    def test_the_input_row_empties_during_a_run(self):
+        # The prompt line stays on the screen but empty, read-only;
+        # a question pending mid-run brings the marker and the
+        # editing back
         app = self.shell._build_shell(self.session)
-        # The input row's container: the first child of the panes
-        container = app.layout.container.content.children[0]
-        self.assertTrue(container.filter())
+        buffer = self.session._input_buffer
+        row = app.layout.container.content.children[0]
+        marker_of = row.children[0].content.text
+        self.assertTrue(callable(marker_of))
+        self.assertEqual(marker_of(), 'debops> ')
+        self.assertFalse(buffer.read_only())
         self.session.active_run = {
                 'run': {'mode': 'run', 'playbooks': ['site']},
                 'started': time.monotonic(), 'task_id': 't1'}
-        self.assertFalse(container.filter())
-        # ... and back for a question pending mid-run
+        self.assertEqual(marker_of(), '')
+        self.assertTrue(buffer.read_only())
         self.session._gate = {'secret': False}
-        self.assertTrue(container.filter())
+        self.assertEqual(marker_of(), 'debops> ')
+        self.assertFalse(buffer.read_only())
 
     def test_ctrl_c_cancels_the_active_run(self):
         bindings = self.shell._shell_bindings(self.session)
@@ -2291,9 +2318,7 @@ class ShellTestCase(unittest.TestCase):
         side.request.assert_called_once_with('tasks/cancel',
                                              {'taskId': 't1'})
         side.close.assert_called_once_with()
-        self.assertIn('aborting the run', self.err.getvalue())
-        self.assertGreater(self.session._abort_armed_until,
-                           time.monotonic())
+        self.assertIn('cancelling the run', self.err.getvalue())
 
     def test_ctrl_c_drops_a_busy_commands_connection(self):
         bindings = self.shell._shell_bindings(self.session)

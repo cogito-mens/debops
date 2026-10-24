@@ -1178,6 +1178,54 @@ class ProgressTestCase(unittest.TestCase):
 class DetachedCommandTestCase(unittest.TestCase):
     """The wrapper which carries a detached execution."""
 
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-wrap-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+
+    def test_child_processes_reads_proc(self):
+        from debops.mcp.tools.execute import _child_processes
+        child = subprocess.Popen(['sleep', '60'])
+        try:
+            self.assertIn(child.pid, _child_processes(os.getpid()))
+        finally:
+            child.kill()
+            child.wait()
+        self.assertEqual(_child_processes(2 ** 22), [])
+
+    def test_the_cancel_spares_the_wrapper(self):
+        # A run aborted mid-way still finalizes: the signal goes to
+        # the wrapper's child (the playbook), the wrapper lives to
+        # commit and re-lock
+        from debops.mcp.tools.execute import (run_cancellable,
+                                              _detached_command)
+        marker = os.path.join(self.tmpdir, 'finalized')
+        command = _detached_command(
+                ['/bin/sh', '-c', 'sleep 60'], 60,
+                finalize=['/bin/sh', '-c',
+                          'echo done >> {}'.format(marker)])
+        context = ToolContext(1, threading.Event())
+        outcome = {}
+
+        def drive():
+            outcome['result'] = run_cancellable(
+                    command, env=dict(os.environ), cwd=self.tmpdir,
+                    context=context, timeout=60, detached=True)
+
+        thread = threading.Thread(target=drive)
+        thread.start()
+        time.sleep(1)
+        context.cancelled.set()
+        thread.join(timeout=30)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(outcome['result'][2], 'cancelled')
+        # The wrapper survived the signal and finalized the run
+        deadline = time.monotonic() + 10
+        while not os.path.exists(marker):
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.1)
+        with open(marker) as fp:
+            self.assertIn('done', fp.read())
+
     def test_bounds_the_run_with_timeout(self):
         from debops.mcp.tools.execute import _detached_command
         command = _detached_command(['ansible-playbook', 'site.yml'], 3600)
