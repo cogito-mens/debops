@@ -1689,6 +1689,52 @@ class HistoryFormatTestCase(unittest.TestCase):
         self.assertEqual(repl._read_history_strings(self.path),
                          ['status', 'run containers'])
 
+    def test_a_repeat_drops_its_earlier_records(self):
+        # The recall keeps the newest invocation only
+        os.makedirs(os.path.dirname(self.path))
+        repl._append_history_string(self.path, 'status')
+        repl._append_history_string(self.path, 'run containers')
+        repl._append_history_string(self.path, 'ls')
+        repl._dedup_history_file(self.path, 'status')
+        repl._append_history_string(self.path, 'status')
+        self.assertEqual(repl._read_history_strings(self.path),
+                         ['run containers', 'ls', 'status'])
+        # A missing line is a no-op, a missing file too
+        repl._dedup_history_file(self.path, 'never-seen')
+        self.assertEqual(repl._read_history_strings(self.path),
+                         ['run containers', 'ls', 'status'])
+        repl._dedup_history_file(self.path + '.absent', 'status')
+
+    def test_the_readline_recall_dedups(self):
+        try:
+            import readline
+        except ImportError:
+            self.skipTest('readline is not installed')
+        saved = os.path.join(self.tmpdir, 'saved-history')
+        try:
+            readline.read_history_file(saved)
+        except OSError:
+            pass
+        self.addCleanup(readline.clear_history)
+        readline.clear_history()
+        for entry in ('status', 'ls', 'status', 'pwd'):
+            readline.add_history(entry)
+        # The user repeats 'status': input() has just added the
+        # fresh line at the end when the dedup runs
+        readline.add_history('status')
+        repl._dedup_readline(readline, 'status')
+        self.assertEqual(
+                [readline.get_history_item(i)
+                 for i in range(1,
+                                readline.get_current_history_length()
+                                + 1)],
+                ['ls', 'pwd', 'status'])
+        readline.clear_history()
+        try:
+            readline.write_history_file(saved)
+        except OSError:
+            pass
+
     def test_the_plain_format_still_loads(self):
         os.makedirs(os.path.dirname(self.path))
         with open(self.path, 'w') as fp:
@@ -1748,6 +1794,9 @@ class HistoryFormatTestCase(unittest.TestCase):
 
     def test_the_plain_loop_prunes_after_an_append(self):
         fake_readline = mock.MagicMock()
+        # The dedup walks the recall length; the mock says the fresh
+        # line is alone
+        fake_readline.get_current_history_length.return_value = 1
         client = FakeClient()
         session, _out, _err = make_repl(client, interactive=True)
         session.history_max = 2
@@ -1789,8 +1838,65 @@ class HistoryFormatTestCase(unittest.TestCase):
                 repl._read_history_strings(history.filename),
                 ['two', 'three'])
 
+    def test_the_bounded_history_dedups_on_append(self):
+        try:
+            from prompt_toolkit.history import FileHistory
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        session, _out, _err = make_repl(FakeClient())
+        history = session._new_history()
+        for command in ('check site', 'status', 'check site'):
+            history.store_string(command)
+        self.assertEqual(
+                repl._read_history_strings(history.filename),
+                ['status', 'check site'])
+
+    def test_the_plain_loop_dedups_a_repeat(self):
+        fake_readline = mock.MagicMock()
+        fake_readline.get_current_history_length.return_value = 1
+        session, _out, _err = make_repl(FakeClient(),
+                                        interactive=True)
+        path = session.history_file
+        with open(path, 'w') as fp:
+            fp.write('\n# 2026-10-23 10:00:00.000000\n'
+                     '+seed command\n')
+        with mock.patch.dict(sys.modules, {'readline': fake_readline}), \
+                mock.patch('builtins.input',
+                           side_effect=['seed command', EOFError()]):
+            code = repl.run_interactive_plain(session)
+        self.assertEqual(code, 0)
+        # The repeat dropped the seeded record; the file holds the
+        # one fresh invocation
+        self.assertEqual(repl._read_history_strings(path),
+                         ['seed command'])
+
+    def test_ask_keeps_its_answer_out_of_the_recall(self):
+        # input() feeds the readline history whatever it read; a
+        # question's answer drops back out
+        try:
+            import readline
+        except ImportError:
+            self.skipTest('readline is not installed')
+        self.addCleanup(readline.clear_history)
+        readline.clear_history()
+        readline.add_history('status')
+        with mock.patch('builtins.input', return_value='yes'):
+            # ... the auto-add of the answer, as input() does it
+            readline.add_history('yes')
+            self.assertTrue(repl.ask('Confirm?'))
+        self.assertEqual(
+                [readline.get_history_item(i)
+                 for i in range(1,
+                                readline.get_current_history_length()
+                                + 1)],
+                ['status'])
+        readline.clear_history()
+
     def test_the_plain_loop_loads_and_appends(self):
         fake_readline = mock.MagicMock()
+        # The dedup walks the recall length; the mock says the fresh
+        # line is alone
+        fake_readline.get_current_history_length.return_value = 1
         client = FakeClient()
         session, _out, _err = make_repl(client, interactive=True)
         # A documentation session shares the documentation file
@@ -1830,6 +1936,14 @@ class HistoryKeyTestCase(unittest.TestCase):
         from debops.mcp.runs import path_key
         return 'mcp-history-' + path_key(self.project_path,
                                          'project', view)
+
+    def test_a_confined_session_has_its_own_history_file(self):
+        session, _client = self.make_project_session()
+        plain = session.history_file
+        session.confined = True
+        self.assertEqual(session.history_file, plain + '.confined')
+        session.confined = False
+        self.assertEqual(session.history_file, plain)
 
     def test_the_history_is_keyed_per_project_and_view(self):
         session, _client = self.make_project_session()
@@ -1913,6 +2027,9 @@ class HistoryKeyTestCase(unittest.TestCase):
                 fp.write('\n# 2026-10-23 10:00:00.000000\n'
                          '+{}\n'.format(command))
         fake_readline = mock.MagicMock()
+        # The dedup walks the recall length; the mock says the fresh
+        # line is alone
+        fake_readline.get_current_history_length.return_value = 1
         client.queue('tools/call', {'resultType': 'complete',
                                     'isError': False, 'content': [],
                                     '_meta': {'org.debops/view':
@@ -2123,6 +2240,9 @@ class CompletionTestCase(unittest.TestCase):
         client = FakeClient()
         session, _out, _err = make_repl(client)
         fake_readline = mock.MagicMock()
+        # The dedup walks the recall length; the mock says the fresh
+        # line is alone
+        fake_readline.get_current_history_length.return_value = 1
         fake_readline.get_line_buffer.return_value = 'st'
         fake_readline.get_begidx.return_value = 0
         complete = repl._readline_complete(fake_readline, session)
@@ -2139,6 +2259,9 @@ class CompletionTestCase(unittest.TestCase):
                         {'name': 'inventory', 'type': 'dir'},
                         {'name': 'note.txt', 'type': 'file'}]})
         fake_readline = mock.MagicMock()
+        # The dedup walks the recall length; the mock says the fresh
+        # line is alone
+        fake_readline.get_current_history_length.return_value = 1
         fake_readline.get_line_buffer.return_value = 'cd in'
         fake_readline.get_begidx.return_value = 3
         complete = repl._readline_complete(fake_readline, session)
@@ -2149,6 +2272,9 @@ class CompletionTestCase(unittest.TestCase):
     def test_the_plain_loop_wires_the_readline_completion(self):
         tmp_history_home(self)
         fake_readline = mock.MagicMock()
+        # The dedup walks the recall length; the mock says the fresh
+        # line is alone
+        fake_readline.get_current_history_length.return_value = 1
         client = FakeClient()
         session, _out, _err = make_repl(client, interactive=True)
         with mock.patch.dict(sys.modules, {'readline': fake_readline}), \
@@ -2719,6 +2845,9 @@ class ShellTestCase(unittest.TestCase):
     def test_the_confined_plain_loop_ignores_suspend(self):
         tmp_history_home(self)
         fake_readline = mock.MagicMock()
+        # The dedup walks the recall length; the mock says the fresh
+        # line is alone
+        fake_readline.get_current_history_length.return_value = 1
         client = FakeClient()
         session, _out, _err = make_repl(client, interactive=True)
         session.confined = True

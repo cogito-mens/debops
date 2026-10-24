@@ -327,12 +327,23 @@ class TransientError(ReplError):
 
 
 def ask(message, default=False):
-    """A yes/no question; the default answers on Enter and EOF."""
+    """A yes/no question; the default answers on Enter and EOF.
+    The answer is not a command — it never joins the readline
+    recall (a passphrase at a gate would sit on the Up arrow)."""
     suffix = ' [Y/n] ' if default else ' [y/N] '
     try:
         reply = input(message + suffix)
     except (EOFError, KeyboardInterrupt):
         return default
+    try:
+        import readline
+    except ImportError:
+        readline = None
+    if readline is not None:
+        # input() feeds the recall; a question's answer drops back out
+        length = readline.get_current_history_length()
+        if length > 0 and readline.get_history_item(length) == reply:
+            readline.remove_history_item(length - 1)
     reply = reply.strip().lower()
     if not reply:
         return default
@@ -1072,6 +1083,10 @@ class Repl(object):
             name = 'mcp-history-' + path_key(
                     self.project_path, self.project_name,
                     self.view or '')
+        if self.confined:
+            # The confined session keeps its own recall: a testing
+            # run's commands never mix into the operator's history
+            name += '.confined'
         return os.path.join(_history_dir(), name)
 
     def _history_changed(self):
@@ -3174,17 +3189,11 @@ def history_max_entries(config_raw):
     return max(0, value)
 
 
-def _prune_history_file(path, max_entries):
-    """Trim the history file to its newest 'max_entries' records.
-    The retained records keep their bytes — timestamps included — so
-    the format survives: a record is its separator lines (a blank
-    line, a '# timestamp') plus the '+' lines of the entry; a legacy
-    plain line is a record of its own."""
-    try:
-        with open(path, 'rb') as fp:
-            data = fp.read()
-    except OSError:
-        return
+def _history_records(data):
+    """The records of a history file's bytes: each record is its
+    separator lines (a blank line, a '# timestamp') plus the '+'
+    lines of the entry; a legacy plain line is a record of its own.
+    Shared by the pruning and the dedup."""
     records = []
     pending = []
     current = None
@@ -3205,12 +3214,71 @@ def _prune_history_file(path, max_entries):
             current = None
             records.append(pending + [line])
             pending = []
-    if len(records) <= max_entries:
-        return
+    return records
+
+
+def _history_record_entry(record):
+    """The entry text of one parsed record: its '+' lines joined
+    (a legacy plain line is its own record)."""
+    parts = [line[1:] for line in record if line.startswith('+')]
+    if parts:
+        return ''.join(parts)[:-1]
+    for line in record:
+        if not line.startswith('#') and line.strip():
+            return line[:-1] if line.endswith('\n') else line
+    return None
+
+
+def _write_history_records(path, records):
     with open(path, 'wb') as fp:
-        for record in records[len(records) - max_entries:]:
+        for record in records:
             for line in record:
                 fp.write(line.encode('utf-8'))
+
+
+def _prune_history_file(path, max_entries):
+    """Trim the history file to its newest 'max_entries' records.
+    The retained records keep their bytes — timestamps included — so
+    the format survives."""
+    try:
+        with open(path, 'rb') as fp:
+            data = fp.read()
+    except OSError:
+        return
+    records = _history_records(data)
+    if len(records) <= max_entries:
+        return
+    _write_history_records(path, records[len(records) - max_entries:])
+
+
+def _dedup_history_file(path, line):
+    """Drop the earlier records of a line from the history file:
+    the recall keeps the newest invocation only (the runs repeat —
+    the tenth identical 'check site' is the one worth keeping). The
+    record parse is the pruner's own."""
+    try:
+        with open(path, 'rb') as fp:
+            data = fp.read()
+    except OSError:
+        return
+    records = _history_records(data)
+    kept = [record for record in records
+            if _history_record_entry(record) != line]
+    if len(kept) == len(records):
+        return
+    _write_history_records(path, kept)
+
+
+def _dedup_readline(readline, line):
+    """The readline recall drops the earlier copies of the line:
+    the arrows find the newest invocation only. The fresh line sits
+    at the end; the walk never touches it."""
+    index = readline.get_current_history_length() - 1
+    while index >= 1:
+        # get_history_item is 1-based, remove_history_item 0-based
+        if readline.get_history_item(index) == line:
+            readline.remove_history_item(index - 1)
+        index -= 1
 
 
 _BOUNDED_HISTORY_CLASS = None
@@ -3233,6 +3301,9 @@ def _bounded_history_class():
                 self._max_entries = max_entries
 
             def store_string(self, string):
+                # A repeat drops its earlier records first: the
+                # recall keeps the newest invocation only
+                _dedup_history_file(self.filename, string)
                 super().store_string(string)
                 if self._max_entries > 0:
                     _prune_history_file(self.filename,
@@ -3285,7 +3356,9 @@ def run_interactive_plain(repl):
             except EOFError:
                 break
             if readline is not None and line.strip():
+                _dedup_readline(readline, line)
                 try:
+                    _dedup_history_file(repl.history_file, line)
                     _append_history_string(repl.history_file, line)
                     if repl.history_max > 0:
                         _prune_history_file(repl.history_file,
