@@ -7,7 +7,7 @@ Description
 
 The DebOps project is a set of Ansible playbooks, roles, and optional scripts
 which can be used to manage IT infrastructure based on Debian or Ubuntu
-operating systems, from singhle hosts to entire data centers. The project can
+operating systems, from single hosts to entire data centers. The project can
 be used to bootstrap bare metal environment, set up local DNS, DHCP, PXEboot
 services and from there install and configure Debian or Ubuntu hardware and
 virtual machines, as well as LXC and Docker containers.

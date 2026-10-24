@@ -1339,7 +1339,7 @@ def test_execution_log_holds_exactly_one_execution(
         run_debops, mcp_env, project_dir, debops_source_dir):
     """A playbook list runs each playbook as its own invocation; the
     log aggregates their output once each — never duplicated, never
-    re-used by a later run."""
+    reused by a later run."""
     if shutil.which("ansible-playbook") is None:
         pytest.skip("ansible-playbook is not installed")
     disable_confirm_gate(project_dir)

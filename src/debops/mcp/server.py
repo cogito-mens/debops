@@ -669,7 +669,7 @@ class McpServer(object):
         try:
             message = rpc.parse_message(data)
         except rpc.JsonRpcError as errmsg:
-            logger.warning('Rejecting an unparseable message: %s',
+            logger.warning('Rejecting an unparsable message: %s',
                            errmsg.message)
             return errmsg.to_response()
         return self.handle(message, notify, peer_pid=peer_pid, dead=dead)

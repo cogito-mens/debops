@@ -14,3 +14,17 @@ $aline
    ;; EDE: 18 (Prohibited)
         add_header P3P 'CP="ALL DSP COR PSAa PSDa OUR NOR ONL UNI COM NAV"';
   # https://english.ncsc.nl/publications/publications/2019/juni/01/it-security-guidelines-for-transport-layer-security-tls
+
+# Words of the passphrase wordlist (src/debops/_data/mcp/
+# wordlists/); they are intentional, one per line
+brunch
+commend
+habitant
+manger
+preformed
+racoon
+ream
+retying
+revered
+trough
+useable

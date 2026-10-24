@@ -52,7 +52,7 @@ def _parse_facts(output):
 
     Ansible pretty-prints the facts JSON over multiple lines, so the
     payload of a '<host> | SUCCESS =>' line is accumulated until it
-    parses as complete JSON. An unparseable block comes through as the
+    parses as complete JSON. An unparsable block comes through as the
     raw payload text.
     """
     blocks = []

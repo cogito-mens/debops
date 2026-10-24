@@ -5,7 +5,7 @@
 Description
 ===========
 
-DebOps roles can store encrypted secrets (passwords and other confiential data)
+DebOps roles can store encrypted secrets (passwords and other confidential data)
 in a project directory, under :file:`ansible/secret/` subdirectory. For normal
 operation, the secrets need to be unlocked so that Ansible roles and playbooks
 can access and manipulate them. To make this process easier, DebOps provides
