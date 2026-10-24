@@ -770,7 +770,7 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
                              "execution.purge",
                              "file.delete", "file.move", "file.write",
                              "inventory.query",
-                             "inventory.spec", "job.add", "job.pop",
+                             "inventory.spec", "job.add", "job.del",
                              "job.prune", "keyring.fetch",
                              "playbook.info",
                              "playbook.list", "project.files",

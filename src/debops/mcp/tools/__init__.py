@@ -402,7 +402,7 @@ TOOL_ANNOTATIONS = {
     'job.add': {'org.debops/viewNeutral': True},
     'job.prune': {'destructiveHint': True,
                   'org.debops/viewNeutral': True},
-    'job.pop': {'org.debops/viewNeutral': True},
+    'job.del': {'org.debops/viewNeutral': True},
     # Secrets are mounted and unmounted; the project may be committed
     'secret.paths': {'destructiveHint': False, 'idempotentHint': True,
                      'openWorldHint': False},
@@ -1663,7 +1663,7 @@ DOCS_STUB_TOOLS = frozenset((
     'secret.paths', 'view.create', 'view.list', 'view.switch',
     'batch.create', 'batch.remove', 'batch.prune', 'batch.pending',
     'batch.info', 'queue.list', 'queue.clear', 'queue.start',
-    'queue.stop', 'job.add', 'job.prune', 'job.pop',
+    'queue.stop', 'job.add', 'job.prune', 'job.del',
 ))
 
 

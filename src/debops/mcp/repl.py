@@ -765,7 +765,7 @@ class Repl(object):
     def cmd_job(self, args):
         """A queue job: 'job add <batch> [check|run|debug] '
         '<playbook> [...] [the run options]', 'job prune <id>' or
-        'job pop <batch>'.
+        'job del <batch>'.
 
         The mode word comes before the playbook, UNIX-style; the
         -m|--mode option names it explicitly — with the option the
@@ -804,11 +804,11 @@ class Repl(object):
             return self._call_tool('job.add', job_args)
         if len(args) == 2 and args[0] == 'prune':
             return self._call_tool('job.prune', {'id': args[1]})
-        if len(args) == 2 and args[0] == 'pop':
-            return self._call_tool('job.pop', {'batch': args[1]})
+        if len(args) == 2 and args[0] == 'del':
+            return self._call_tool('job.del', {'batch': args[1]})
         raise ReplError('usage: job add <batch> [check|run|debug] '
                         '[-m mode] <playbook> [...] | job prune <id> '
-                        '| job pop <batch>')
+                        '| job del <batch>')
 
     def cmd_run(self, args):
         return self._call_tool('run', execution_arguments(args))
@@ -1520,7 +1520,8 @@ HELP = {
     'job add <batch> [mode] <pb> [...]': 'a new queue job; the mode '
                                          'word before the playbook, '
                                          'or -m|--mode (prune <id>, '
-                                         'pop <batch> remove)',
+                                         'del <batch> removes the '
+                                         'last job)',
     'logs': 'the recorded executions',
     'log <id>': 'the output of an execution',
     'purge <seconds>': 'drop the run logs older than the age',

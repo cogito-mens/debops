@@ -98,17 +98,17 @@ class BatchMechanicsTestCase(unittest.TestCase):
         self.assertEqual(self.queue.batch_info('b')['jobs'][0]['id'],
                          other['id'])
 
-    def test_pop_drops_the_tail(self):
+    def test_del_drops_the_tail(self):
         self.queue.batch_create('a')
         add_job(self.server, 'a')
         last = add_job(self.server, 'a', playbook='other')
-        popped = self.queue.job_pop('a')
-        self.assertEqual(popped['removed'], last['id'])
+        deleted = self.queue.job_del('a')
+        self.assertEqual(deleted['removed'], last['id'])
         self.assertEqual(len(self.queue.batch_info('a')['jobs']), 1)
-        # Popping empties the batch; an empty one refuses
-        self.queue.job_pop('a')
+        # Deleting empties the batch; an empty one refuses
+        self.queue.job_del('a')
         with self.assertRaises(JobQueueError):
-            self.queue.job_pop('a')
+            self.queue.job_del('a')
 
     def test_batch_prune_cascades_the_following(self):
         for name in ('a', 'b', 'c'):
@@ -323,7 +323,7 @@ class RegistrationTestCase(unittest.TestCase):
         names = [entry[0] for entry in entries]
         self.assertEqual(sorted(names), [
                 'batch.create', 'batch.info', 'batch.pending',
-                'batch.prune', 'batch.remove', 'job.add', 'job.pop',
+                'batch.prune', 'batch.remove', 'job.add', 'job.del',
                 'job.prune', 'queue.clear', 'queue.list',
                 'queue.start', 'queue.stop'])
 

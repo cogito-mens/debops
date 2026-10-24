@@ -271,7 +271,7 @@ class VerbTestCase(unittest.TestCase):
         with self.assertRaises(ReplError):
             self.repl.execute('queue bogus')
         with self.assertRaises(ReplError):
-            self.repl.execute('job pop')
+            self.repl.execute('job del')
 
     def test_the_job_add_mode_is_a_positional_word(self):
         # UNIX-style: the mode word before the playbook, run by

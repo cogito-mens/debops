@@ -181,10 +181,10 @@ def tool_job_prune(server, arguments):
 
 
 @_queue_tool
-def tool_job_pop(server, arguments):
+def tool_job_del(server, arguments):
     batch_name = str(arguments.get('batch') or '')
-    popped = _queue(server).job_pop(batch_name)
-    return _answer('removed: {}'.format(popped['removed']), popped)
+    deleted = _queue(server).job_del(batch_name)
+    return _answer('removed: {}'.format(deleted['removed']), deleted)
 
 
 # -- the registration ---------------------------------------------
@@ -287,8 +287,8 @@ def queue_tool_entries(server):
                                 '(batch.info lists them)'}},
           'required': ['id'], 'additionalProperties': False},
          lambda arguments: tool_job_prune(server, arguments)),
-        ('job.pop',
+        ('job.del',
          'Remove the last job of a job batch.',
          dict(_BATCH_SCHEMA),
-         lambda arguments: tool_job_pop(server, arguments)),
+         lambda arguments: tool_job_del(server, arguments)),
     ]

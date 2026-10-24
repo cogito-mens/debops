@@ -222,7 +222,7 @@ class JobQueue(object):
                 entry['state'] = 'cancelled'
             return {'removed': [entry['id'] for entry in dropped]}
 
-    def job_pop(self, batch_name):
+    def job_del(self, batch_name):
         """Remove the batch's last queued job."""
         with self._lock:
             batch = self._find_batch(batch_name)

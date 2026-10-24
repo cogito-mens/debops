@@ -405,7 +405,7 @@ TOOL_CALL_EXAMPLES = {
     'queue.stop': [''],
     'job.add': ['batch=infra playbook=service/nginx mode=check'],
     'job.prune': ['id=job-2'],
-    'job.pop': ['batch=infra'],
+    'job.del': ['batch=infra'],
     'ansible.doc': ['plugin=ansible.builtin.service',
                     'type=lookup plugin=debops.debops.dpkg_divert'],
     'ansible.ping': ['hosts=webservers', 'hosts=all become=true'],
