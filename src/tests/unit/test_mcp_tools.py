@@ -1884,6 +1884,7 @@ class ToolsTestCase(unittest.TestCase):
         self.assertEqual(structured['tasksDone'], 1)
         self.assertEqual(structured['tasksTotal'], 3)
         self.assertIn('elapsedSeconds', structured)
+        self.assertEqual(structured['estimateSeconds'], 11)
         text = self.result_text(response)
         self.assertFalse(response['result']['isError'])
         self.assertIn('Run: in flight', text)

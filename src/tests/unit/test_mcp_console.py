@@ -694,8 +694,10 @@ class ConsoleBuildTestCase(unittest.TestCase):
                         'currentTask': 'TASK [nginx : Install]'},
                 'started': time.monotonic() - 30}
         text = session._run_status_text()
-        self.assertIn('Running playbook: site (Task: 2/50 | '
-                      'Elapsed: 0:30 | Length: ~4m)', text)
+        # The estimate refines itself against the tally: 30 s for
+        # 2 of 50 tasks extrapolates to 12 minutes left
+        self.assertIn('Running playbook: site (Task: 2/50 │ '
+                      'Elapsed: 0:30 │ Left: ~12:00)', text)
         # The header's wrapper unwraps for the second line
         self.assertIn('TASK: nginx : Install', text)
         session.active_run = None
@@ -710,7 +712,7 @@ class ConsoleBuildTestCase(unittest.TestCase):
                 'started': time.monotonic()}
         text = session._run_status_text()
         self.assertNotIn('Task:', text)
-        self.assertNotIn('Length:', text)
+        self.assertNotIn('Left:', text)
         self.assertIn('Checking playbook: site', text)
         self.assertIn('TASK: (starting)', text)
 

@@ -94,6 +94,9 @@ def tool_project_status(project, policy, arguments):
                                                     total))
                 structured['tasksDone'] = min(done, total)
                 structured['tasksTotal'] = total
+            estimate = metadata.get('estimateSeconds')
+            if estimate is not None:
+                structured['estimateSeconds'] = estimate
             started = metadata.get('startedAt')
             if started is not None:
                 try:

@@ -1,0 +1,33 @@
+{# Copyright (C) 2026 Maciej Delmanowski <drybjed@gmail.com>
+ # Copyright (C) 2026 DebOps <https://debops.org/>
+ # SPDX-License-Identifier: GPL-3.0-or-later
+#}
+# Ansible runtime overrides for the MCP server's playbook executor.
+
+# The executor runs 'ansible-playbook' for the 'check'/'run' tools, the
+# tally probes and the host resolution. The tree below mirrors the
+# '[defaults]' section of ansible.cfg: each entry is carried to the
+# child process as the corresponding ANSIBLE_* environment variable
+# ('display_skipped_hosts' becomes ANSIBLE_DISPLAY_SKIPPED_HOSTS), so
+# it wins over the project's ansible.cfg and over the variables from
+# '.debops/mcp/environment' and '.debops/mcp/.env' — the operator's pin
+# here cannot be overridden by an agent.
+#
+# Booleans, numbers, strings and lists (comma-joined) are accepted.
+
+[project.mcp.executor.ansible.defaults]
+
+# Whether a task skipped on every targeted host still prints its
+# banner. The run tally (the 'N/M' progress and the time estimate of
+# the front ends) counts the tasks of 'ansible-playbook --list-tasks',
+# and the banners are what the progress counts — with skipped tasks
+# hidden, a run stalls below its tally (a playbook which skips half of
+# its tasks on a host ends at '10/20'). On by default so the count is
+# truthful; set false for leaner run logs at the price of a tally the
+# run never reaches.
+display_skipped_hosts = true
+
+# Examples of other [defaults] options the executor accepts here:
+#forks = 20
+#timeout = 30
+# gathering = "smart"

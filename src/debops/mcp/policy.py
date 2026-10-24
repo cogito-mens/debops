@@ -171,7 +171,45 @@ class McpPolicy(object):
         policy.view_lock = False
         policy.execute_options = []
         policy.execute_user_override = {}
+        policy.ansible_env = {}
         return policy
+
+    @staticmethod
+    def _ansible_env(mcp_config):
+        """The environment overrides for the executor's Ansible
+        processes, from the 'project.mcp.executor.ansible.defaults'
+        tree: each key is an ansible.cfg '[defaults]' option, carried
+        to the child as the corresponding ANSIBLE_* variable. The
+        built-in default layers under the operator's tree: skipped
+        tasks must print their banners, or the run tally (the 'N/M'
+        progress of the front ends) counts tasks the run never
+        shows. Entries of a type Ansible cannot take are refused with
+        a notice."""
+        merged = {'display_skipped_hosts': True}
+        tree = (mcp_config.get('executor', {}) or {}).get(
+                'ansible', {}) or {}
+        tree = tree.get('defaults', {}) or {}
+        if not isinstance(tree, dict):
+            logger.warning('The project.mcp.executor.ansible.defaults '
+                           'configuration is not a table, ignoring it')
+            tree = {}
+        merged.update(tree)
+        env = {}
+        for key, value in merged.items():
+            name = 'ANSIBLE_' + str(key).upper()
+            if isinstance(value, bool):
+                env[name] = 'true' if value else 'false'
+            elif isinstance(value, (int, float)):
+                env[name] = str(value)
+            elif isinstance(value, str):
+                env[name] = value
+            elif isinstance(value, list):
+                env[name] = ','.join(str(item) for item in value)
+            else:
+                logger.warning('The project.mcp.executor.ansible.'
+                               'defaults entry %r has an unsupported '
+                               'type, ignoring it', key)
+        return env
 
     def __init__(self, project):
         self.project = project
@@ -471,6 +509,8 @@ class McpPolicy(object):
             logger.notice('Playbook debugging enabled by policy '
                           '(project.mcp.execute_debug: task arguments, '
                           'secrets included, reach the model)')
+
+        self.ansible_env = self._ansible_env(mcp_config)
 
         options = mcp_config.get('execute_options')
         if options is None:

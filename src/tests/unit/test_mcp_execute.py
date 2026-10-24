@@ -1146,6 +1146,47 @@ class ProgressTestCase(unittest.TestCase):
         self.assertEqual(task.run_info['currentTask'],
                          'TASK [Say hello]')
 
+    def test_the_facts_banner_does_not_advance_the_index(self):
+        # The implicit fact gathering is not in the tally, so it is
+        # not in the index either; a role task of the same name
+        # carries its prefix and counts
+        from debops.mcp.tasks import Task
+        output = ('PLAY [Test play] **********************************\n'
+                  '\nTASK [Gathering Facts] ************************\n'
+                  'ok: [localhost]\n'
+                  '\nTASK [Say hello] ******************************\n'
+                  'ok: [localhost]\n'
+                  '\nTASK [role : Gathering Facts] *****************\n'
+                  'ok: [localhost]\n'
+                  '\nPLAY RECAP ************************************\n'
+                  'localhost : ok=3 changed=0\n')
+        task = Task(60000)
+        context = ToolContext(1, threading.Event(), task=task)
+        with mock.patch('debops.mcp.tools.execute.STATUS_INTERVAL', 0):
+            self.run_with_context(context, output=output)
+        self.assertEqual(task.run_info['taskIndex'], 2)
+        self.assertEqual(task.run_info['currentTask'],
+                         'TASK [role : Gathering Facts]')
+
+    def test_the_run_carries_the_ansible_overrides(self):
+        # The default policy pins ANSIBLE_DISPLAY_SKIPPED_HOSTS for
+        # the executor: the banners are what the tally counts
+        from debops.mcp.tools import execute as execute_module
+        captured = {}
+        real_run_cancellable = execute_module.run_cancellable
+
+        def capture(command, env=None, **kwargs):
+            captured['env'] = env
+            return real_run_cancellable(command, env=env, **kwargs)
+
+        with mock.patch(
+                'debops.mcp.tools.execute.run_cancellable',
+                side_effect=capture):
+            self.run_with_context(ToolContext(1, threading.Event()))
+        self.assertEqual(
+                captured['env']['ANSIBLE_DISPLAY_SKIPPED_HOSTS'],
+                'true')
+
     def test_the_run_bookkeeping_carries_the_resolved_paths(self):
         # The prelude of the plain CLI is rebuilt client-side from
         # them; the runner's shell quoting comes off
@@ -1322,10 +1363,11 @@ class TallyTestCase(unittest.TestCase):
         probe_hosts = mock.Mock()
         probe_hosts.returncode = 0
         probe_hosts.stdout = self.LIST_HOSTS
+        policy = mock.Mock(ansible_env={})
         with mock.patch(
                 'debops.mcp.tools.execute.subprocess.run',
                 side_effect=[probe, probe_hosts]) as run_mock:
-            tally = execute._probe_tally(runner, project)
+            tally = execute._probe_tally(runner, project, policy)
         self.assertEqual(tally, {'taskCount': 2, 'hostCount': 2,
                                  'taskCounts': [2],
                                  'estimateSeconds': 13})
@@ -1334,16 +1376,34 @@ class TallyTestCase(unittest.TestCase):
                  run_mock.call_args_list]
         self.assertEqual(calls, ['--list-tasks', '--list-hosts'])
 
+    def test_the_probe_carries_the_ansible_overrides(self):
+        runner = mock.MagicMock()
+        runner.command.return_value = ['ansible-playbook', 'x.yml']
+        project = type('Project', (), {
+                'path': '/nonexistent',
+                'config': type('Config', (), {'_env_vars': {}})()})()
+        policy = mock.Mock(ansible_env={
+                'ANSIBLE_DISPLAY_SKIPPED_HOSTS': 'true'})
+        probe = mock.Mock(returncode=0, stdout=self.LIST_TASKS)
+        with mock.patch(
+                'debops.mcp.tools.execute.subprocess.run',
+                return_value=probe) as run_mock:
+            execute._probe_tally(runner, project, policy)
+        env = run_mock.call_args[1]['env']
+        self.assertEqual(env['ANSIBLE_DISPLAY_SKIPPED_HOSTS'], 'true')
+
     def test_a_failed_probe_is_no_gate(self):
         runner = mock.MagicMock()
         runner.command.return_value = ['ansible-playbook', 'x.yml']
         project = type('Project', (), {
                 'path': '/nonexistent',
                 'config': type('Config', (), {'_env_vars': {}})()})()
+        policy = mock.Mock(ansible_env={})
         with mock.patch(
                 'debops.mcp.tools.execute.subprocess.run',
                 side_effect=OSError('missing binary')):
-            self.assertIsNone(execute._probe_tally(runner, project))
+            self.assertIsNone(execute._probe_tally(
+                    runner, project, policy))
 
 
 class DetachedRunTestCase(unittest.TestCase):

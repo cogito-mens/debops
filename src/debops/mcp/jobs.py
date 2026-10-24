@@ -188,7 +188,7 @@ class JobQueue(object):
             raise JobQueueError(str(errmsg))
         runner = _make_runner(project, arguments, mode == 'check',
                               policy)
-        tally = _probe_tally(runner, project)
+        tally = _probe_tally(runner, project, policy)
         if tally is None:
             raise JobQueueError(
                     'the tally probe failed for the job (the '

@@ -144,6 +144,11 @@ def _check_local_confirmation(local, context, policy):
 _PLAY_HEADER = re.compile(r'^PLAY \[.*\]')
 _TASK_HEADER = re.compile(r'^TASK \[.*\]')
 
+# The implicit fact gathering of a play prints a TASK banner which
+# the '--list-tasks' tally does not count; the progress indexes skip
+# it, so the position converges to the tally exactly
+_FACTS_HEADER = re.compile(r'^TASK \[Gathering Facts\]')
+
 # The recap line of a play: 'host : ok=12 changed=0 unreachable=0 ...'.
 # One recap section prints per play; the counters aggregate per host
 _RECAP_FIELDS = ('ok', 'changed', 'unreachable', 'failed', 'skipped',
@@ -805,9 +810,11 @@ class _RunProgress(object):
         now = time.monotonic()
         if _PLAY_HEADER.match(line) or _TASK_HEADER.match(line):
             self._current = line.rstrip()
-            if _TASK_HEADER.match(line):
+            if (_TASK_HEADER.match(line)
+                    and not _FACTS_HEADER.match(line)):
                 # The task count answers the tally's taskCount, so the
-                # play headers do not advance it
+                # play headers and the implicit fact gathering (which
+                # the tally does not list) do not advance it
                 self._task_index += 1
             task = self._context.task
             if task is not None:
@@ -831,6 +838,14 @@ def _tally_from_lists(tasks_text, hosts_text):
 
     The play headers read 'play #N (…)', the task lines carry their
     'TAGS:' marker, the host sections open with 'hosts (N):'.
+
+    Known limitation: the list modes ignore '--limit' for the play
+    selection, so a play whose groups exclude the limited hosts still
+    counts its tasks; reconciling that would take reimplementing the
+    Ansible host-pattern matching. The per-task gap (conditionally
+    skipped tasks) is the one the run environment closes: the executor
+    forces 'display_skipped_hosts', so every listed task prints its
+    banner and the progress converges to the tally.
     """
     tasks_per_play = []
     tasks_per_playbook = []
@@ -866,7 +881,18 @@ def _estimate_seconds(tasks_per_play, hosts_per_play):
     return total
 
 
-def _probe_tally(runner, project, timeout=30):
+def _executor_environ(project, policy):
+    """The environment of the executor's Ansible processes — the run
+    itself, its tally probes and the host resolution: the project
+    MCP environment, then the operator's Ansible overrides from the
+    'project.mcp.executor.ansible.defaults' tree. The operator's pin
+    wins over the agent-settable environment files."""
+    env = mcp_environ(project)
+    env.update(policy.ansible_env)
+    return env
+
+
+def _probe_tally(runner, project, policy, timeout=30):
     """The tally of a planned execution: the task and host counts
     from the runner's own list modes (a local parse; no host is
     contacted).
@@ -881,7 +907,7 @@ def _probe_tally(runner, project, timeout=30):
         try:
             probe = subprocess.run(
                     command + [flag], cwd=project.path,
-                    env=mcp_environ(project),
+                    env=_executor_environ(project, policy),
                     capture_output=True, text=True, timeout=timeout)
         except Exception as errmsg:
             # The tally is the bookkeeping, never a gate: any probe
@@ -1001,7 +1027,7 @@ def _execute_playbook(project, policy, arguments, context, check,
         # the run
         tally = arguments.get('_tally')
         if tally is None:
-            tally = _probe_tally(runner, project)
+            tally = _probe_tally(runner, project, policy)
             if tally is None:
                 logger.notice('The run proceeds without a tally '
                               '(the list probes failed)')
@@ -1028,7 +1054,7 @@ def _execute_playbook(project, policy, arguments, context, check,
         try:
             unlocked = inventory.unlock()
 
-            env = mcp_environ(project)
+            env = _executor_environ(project, policy)
             # The child writes to a file, where stdout would be block
             # buffered; the run log is tailed live, so it must not be
             env['PYTHONUNBUFFERED'] = '1'

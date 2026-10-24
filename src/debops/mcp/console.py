@@ -20,7 +20,7 @@ import threading
 import time
 
 from .repl import (Repl, ReplError, _banner, _format_duration,
-                   _run_verb, run_interactive_plain)
+                   _run_remaining, _run_verb, run_interactive_plain)
 
 # The scrollback keeps this many lines; the activity pane this many
 _SCROLLBACK_LINES = 5000
@@ -90,17 +90,18 @@ class ConsoleRepl(Repl):
         index, total = run.get('taskIndex'), run.get('taskCount')
         if index is not None and total is not None:
             segments.append('Task: {}/{}'.format(index, total))
-        segments.append('Elapsed: ' + _format_duration(
-                time.monotonic() - active['started']))
-        estimate = run.get('estimateSeconds')
-        if estimate is not None:
-            # The estimate is a rough length by nature: whole minutes
-            segments.append('Length: ~{}m'.format(
-                    max(1, int((estimate + 30) // 60))))
+        elapsed = time.monotonic() - active['started']
+        segments.append('Elapsed: ' + _format_duration(elapsed))
+        # The estimate refines itself against the tally as the run
+        # advances; before the first task it is the probe's static one
+        remaining = _run_remaining(elapsed, index, total,
+                                   run.get('estimateSeconds'))
+        if remaining is not None:
+            segments.append('Left: ~' + _format_duration(remaining))
         title = '{} playbook: {} ({})'.format(
                 _run_verb(run.get('mode')),
                 ', '.join(run.get('playbooks') or ['?']),
-                ' | '.join(segments))
+                ' │ '.join(segments))
         task = run.get('currentTask') or ''
         header = re.match(r'^(TASK|PLAY) \[(.*)\]$', task)
         if header is not None:

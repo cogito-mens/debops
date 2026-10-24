@@ -415,6 +415,19 @@ def _format_duration(seconds):
     return '{}:{:02d}'.format(minutes, secs)
 
 
+def _run_remaining(elapsed, done, total, estimate):
+    """The time-to-completion of a run, in seconds: the elapsed time
+    extrapolated over the tally — skipped tasks race through their
+    banners, so the extrapolation shrinks as they count — or the
+    probe's static estimate while the first task has not landed.
+    None when nothing can say."""
+    if done and total:
+        return max(0.0, elapsed * (total - done) / done)
+    if estimate:
+        return max(0.0, estimate - elapsed)
+    return None
+
+
 def _run_verb(mode):
     return {'check': 'Checking', 'run': 'Running',
             'debug': 'Debugging'}.get(mode, 'Running')
@@ -828,7 +841,10 @@ class Repl(object):
                 run_segment = self._run_segment(
                         run.get('mode'), run.get('playbooks'),
                         run.get('taskIndex'), run.get('taskCount'),
-                        run.get('taskCounts'))
+                        run.get('taskCounts'),
+                        elapsed=time.monotonic()
+                        - self.active_run['started'],
+                        estimate=run.get('estimateSeconds'))
             elif self._foreign_run is not None:
                 # A run started elsewhere (the queue, an agent,
                 # another client), from the status poller
@@ -838,17 +854,21 @@ class Repl(object):
                         foreign.get('tasksDone'),
                         foreign.get('tasksTotal'),
                         foreign.get('taskCounts'),
-                        current=foreign.get('currentPlaybook'))
+                        current=foreign.get('currentPlaybook'),
+                        elapsed=foreign.get('elapsedSeconds'),
+                        estimate=foreign.get('estimateSeconds'))
             if run_segment:
-                right = (run_segment + ' | ' + right) \
+                right = (run_segment + ' │ ' + right) \
                         if right else run_segment
         return left, right
 
     def _run_segment(self, mode, playbooks, done, total, counts=None,
-                     current=None):
+                     current=None, elapsed=None, estimate=None):
         """The run on the status line: the verb and the current
-        playbook, then the tally — the stable-width parts (the task
-        and play names shift too fast to read)."""
+        playbook, then the tally and the clock — the stable-width
+        parts (the task and play names shift too fast to read). The
+        time-to-completion is the client's own extrapolation,
+        recalculated at every render."""
         verb = _run_verb(mode).lower()
         if current is None:
             current = _current_playbook(playbooks, done, counts)
@@ -857,7 +877,12 @@ class Repl(object):
         parts = ['{} {}'.format(verb, current)] if current else [verb]
         if done is not None and total:
             parts.append('{}/{}'.format(done, total))
-        return ' · '.join(parts)
+        if elapsed is not None:
+            parts.append(_format_duration(elapsed))
+            remaining = _run_remaining(elapsed, done, total, estimate)
+            if remaining is not None:
+                parts.append('~' + _format_duration(remaining))
+        return ' │ '.join(parts)
 
     # -- the wire -------------------------------------------------
 

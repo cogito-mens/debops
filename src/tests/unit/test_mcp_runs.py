@@ -50,6 +50,22 @@ class RunsTestCase(unittest.TestCase):
         self.assertIsNone(runs.task_count(
                 os.path.join(self.tmpdir, 'absent.log')))
 
+    def test_task_count_skips_the_facts_banner(self):
+        # The implicit fact gathering prints a TASK banner the
+        # '--list-tasks' tally does not count; a role task of the
+        # same name carries its role prefix and counts
+        project = FakeProject(os.path.join(self.tmpdir, 'myproject'))
+        path = runs.log_path(project, 1)
+        with open(path, 'w') as fp:
+            fp.write('PLAY [x] *****\n\n'
+                     'TASK [Gathering Facts] *****\nok\n'
+                     'TASK [one] *****\nok\n'
+                     'TASK [role : Gathering Facts] *****\nok\n')
+        self.assertEqual(runs.task_count(path), 2)
+        # An unreadable log is no answer, not a crash
+        self.assertIsNone(runs.task_count(
+                os.path.join(self.tmpdir, 'absent.log')))
+
     def test_active_log_is_the_newest_unfinished_one(self):
         project = FakeProject(os.path.join(self.tmpdir, 'myproject'))
         for number, finished in ((1, True), (2, False)):

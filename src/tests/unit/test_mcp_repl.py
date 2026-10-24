@@ -2180,6 +2180,53 @@ class ShellTestCase(unittest.TestCase):
         _left, right = self.session.status_line()
         self.assertNotIn('running', right)
 
+    def test_the_run_remaining_extrapolates_from_the_tally(self):
+        # 30 s for 5 of 50 tasks: 4:30 left
+        self.assertEqual(repl._run_remaining(30, 5, 50, 240), 270)
+        # Skipped tasks racing through their banners shrink it fast
+        self.assertEqual(repl._run_remaining(40, 40, 50, 240), 10)
+        # Before the first task lands: the probe's static estimate,
+        # less the elapsed time
+        self.assertEqual(repl._run_remaining(30, 0, 50, 240), 210)
+        self.assertEqual(repl._run_remaining(300, 0, 50, 240), 0)
+        # Nothing to say without any count
+        self.assertIsNone(repl._run_remaining(30, 0, 50, None))
+        self.assertIsNone(repl._run_remaining(30, None, None, None))
+        # An overrun (a dynamic include banners past the tally)
+        # floors at zero
+        self.assertEqual(repl._run_remaining(30, 60, 50, 240), 0)
+
+    def test_the_status_line_clocks_the_run(self):
+        # The elapsed time and the refined estimate ride the tally
+        self.session.run_display = 'shell'
+        with mock.patch.object(repl.time, 'monotonic',
+                               return_value=10030.0):
+            self.session.active_run = {
+                    'run': {'mode': 'run', 'playbooks': ['site'],
+                            'taskIndex': 5, 'taskCount': 50,
+                            'estimateSeconds': 240},
+                    'started': 10000.0, 'task_id': 't1'}
+            _left, right = self.session.status_line()
+        self.assertIn('running site', right)
+        self.assertIn('5/50', right)
+        self.assertIn('0:30', right)
+        # 30 s for 5 of 50 tasks extrapolates to 4:30 left
+        self.assertIn('~4:30', right)
+        self.assertIn(' │ ', right)
+
+    def test_the_status_line_clocks_a_foreign_run(self):
+        self.session.run_display = 'shell'
+        self.session._foreign_run = {
+                'mode': 'run', 'playbooks': ['site'],
+                'tasksDone': 4, 'tasksTotal': 12,
+                'elapsedSeconds': 60, 'estimateSeconds': 180}
+        _left, right = self.session.status_line()
+        self.assertIn('running site', right)
+        self.assertIn('4/12', right)
+        self.assertIn('1:00', right)
+        # 60 s for 4 of 12 tasks: two minutes left
+        self.assertIn('~2:00', right)
+
     def test_the_status_line_picks_the_current_playbook(self):
         # Several playbooks in one command: the one running
         self.session.run_display = 'shell'

@@ -182,6 +182,12 @@ def read_metadata(log_path):
 
 _TASK_MARKER = re.compile(r'^TASK \[', re.M)
 
+# The implicit fact gathering of a play prints a TASK banner which
+# the '--list-tasks' tally does not count; excluding it keeps the
+# position converging to the tally exactly. A role task named
+# 'Gathering Facts' carries its role prefix and is unaffected
+_FACTS_MARKER = re.compile(r'^TASK \[Gathering Facts\]', re.M)
+
 
 def task_count(log_path):
     """The TASK markers of a run log so far: one per task per play —
@@ -190,9 +196,11 @@ def task_count(log_path):
     try:
         with open(log_path, 'r', encoding='utf-8', errors='replace') \
                 as fp:
-            return len(_TASK_MARKER.findall(fp.read()))
+            text = fp.read()
     except OSError:
         return None
+    return (len(_TASK_MARKER.findall(text))
+            - len(_FACTS_MARKER.findall(text)))
 
 
 def current_span(counts, done):

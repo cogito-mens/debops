@@ -151,6 +151,41 @@ class ResourcePolicyTestCase(unittest.TestCase):
                                      raw_config={'project': {'mcp':
                                                              mcp_config}}))
 
+    def test_ansible_env_defaults_to_a_truthful_tally(self):
+        # Skipped tasks must print their banners, or the run tally
+        # counts tasks the run never shows
+        self.assertEqual(self._policy({}).ansible_env,
+                         {'ANSIBLE_DISPLAY_SKIPPED_HOSTS': 'true'})
+
+    def test_ansible_env_mirrors_the_defaults_tree(self):
+        policy = self._policy({'executor': {'ansible': {'defaults': {
+                'display_skipped_hosts': False,
+                'forks': 20,
+                'gathering': 'smart',
+                'timeout': 30.5,
+                'callbacks_enabled': ['a', 'b']}}}})
+        self.assertEqual(policy.ansible_env, {
+                'ANSIBLE_DISPLAY_SKIPPED_HOSTS': 'false',
+                'ANSIBLE_FORKS': '20',
+                'ANSIBLE_GATHERING': 'smart',
+                'ANSIBLE_TIMEOUT': '30.5',
+                'ANSIBLE_CALLBACKS_ENABLED': 'a,b'})
+
+    def test_ansible_env_refuses_an_unsupported_type(self):
+        policy = self._policy({'executor': {'ansible': {'defaults': {
+                'forks': {'nested': 'no'}}}}})
+        self.assertNotIn('ANSIBLE_FORKS', policy.ansible_env)
+        # ... and the built-in default survives the operator's tree
+        self.assertEqual(
+                policy.ansible_env['ANSIBLE_DISPLAY_SKIPPED_HOSTS'],
+                'true')
+
+    def test_ansible_env_tolerates_a_non_table_tree(self):
+        policy = self._policy({'executor': {'ansible': {
+                'defaults': 'oops'}}})
+        self.assertEqual(policy.ansible_env,
+                         {'ANSIBLE_DISPLAY_SKIPPED_HOSTS': 'true'})
+
     def test_min_free_default(self):
         self.assertEqual(self._policy({}).min_free_bytes,
                          64 * 1024 * 1024)
