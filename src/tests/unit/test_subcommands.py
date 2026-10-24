@@ -141,6 +141,14 @@ def test_mcp_configure_bare_connect():
                      "-H", "opencode").args.connect is None
 
 
+def test_mcp_front_ends_take_confined():
+    # The confined UI is testable without account configuration
+    for argv in (("mcp", "repl"), ("mcp", "shell"), ("mcp", "console")):
+        assert parse_cli(*argv).args.confined is False, argv
+        flagged = parse_cli(*argv, "--confined")
+        assert flagged.args.confined is True, argv
+
+
 def test_mcp_repl_no_longer_has_stop():
     # The daemon stop moved to its own command: 'debops mcp stop'
     with pytest.raises(SystemExit):

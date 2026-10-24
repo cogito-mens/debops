@@ -719,6 +719,11 @@ Commands:
                             help='the plain reader, even when '
                                  'prompt_toolkit is available (a '
                                  'friend to slow links)')
+        parser.add_argument('--confined', action='store_true',
+                            help='run the client in the confined mode '
+                                 '(no editor, no local shell escape), '
+                                 'whatever the account configuration '
+                                 'says — for testing the confined UI')
         spawn = parser.add_mutually_exclusive_group()
         spawn.add_argument('--spawn', dest='spawn',
                            action='store_true', default=None,
@@ -779,6 +784,11 @@ Commands:
                             help='the plain reader, even when '
                                  'prompt_toolkit is available (a '
                                  'friend to slow links)')
+        parser.add_argument('--confined', action='store_true',
+                            help='run the client in the confined mode '
+                                 '(no editor, no local shell escape), '
+                                 'whatever the account configuration '
+                                 'says — for testing the confined UI')
         spawn = parser.add_mutually_exclusive_group()
         spawn.add_argument('--spawn', dest='spawn',
                            action='store_true', default=None,
@@ -817,6 +827,11 @@ Commands:
                             help='the plain reader, even when '
                                  'prompt_toolkit is available (a '
                                  'friend to slow links)')
+        parser.add_argument('--confined', action='store_true',
+                            help='run the client in the confined mode '
+                                 '(no editor, no local shell escape), '
+                                 'whatever the account configuration '
+                                 'says — for testing the confined UI')
         spawn = parser.add_mutually_exclusive_group()
         spawn.add_argument('--spawn', dest='spawn',
                            action='store_true', default=None,

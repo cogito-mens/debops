@@ -1128,9 +1128,12 @@ class Interpreter(object):
         # The ambient confinement of the account, captured before a
         # project configuration could merge in and lift it; the
         # history bound too — the history files fill the account's
-        # disk, so the knob is the account's
+        # disk, so the knob is the account's. The '--confined' flag
+        # forces the confined UI for a session (testing it asks for
+        # no account configuration)
         confined = bool(self.config.raw.get('mcp', {}).get(
                 'login', {}).get('confined', False))
+        confined = confined or bool(getattr(args, 'confined', False))
         history_max = repl_mod.history_max_entries(self.config.raw)
         project = None
         if not args.docs:
