@@ -2554,6 +2554,25 @@ class ShellTestCase(unittest.TestCase):
         self.assertFalse(self.session._cancel_run('t-9'))
         self.assertIn('belongs to another client', self.err.getvalue())
 
+    def test_the_prompt_marker(self):
+        # The plain session
+        self.assertEqual(self.session._prompt_marker(), 'debops>')
+        # The elevation shows on it
+        self.session.elevated = True
+        self.assertEqual(self.session._prompt_marker(), 'debops!>')
+        self.session.elevated = False
+        # The confined session wears brackets
+        self.session.confined = True
+        self.assertEqual(self.session._prompt_marker(), '[debops>]')
+        self.session.confined = False
+        # Root gets the shell convention, composed with the rest
+        with mock.patch('os.geteuid', return_value=0):
+            self.assertEqual(self.session._prompt_marker(), 'debops#')
+            self.session.elevated = True
+            self.session.confined = True
+            self.assertEqual(self.session._prompt_marker(),
+                             '[debops!#]')
+
     def test_ctrl_c_clears_the_idle_line(self):
         bindings = self.shell._shell_bindings(self.session)
         binding = [b for b in bindings.bindings if b.keys == ('c-c',)][0]

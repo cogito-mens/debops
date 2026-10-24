@@ -1621,8 +1621,15 @@ class Repl(object):
 
     def _prompt_marker(self):
         """The marker of the input line and the transcript echo; the
-        elevation shows on it."""
-        return 'debops!>' if self.elevated else 'debops>'
+        elevation shows on it. The root shell convention holds ('#'
+        for EUID 0), and the confined session wears brackets."""
+        marker = 'debops'
+        if self.elevated:
+            marker += '!'
+        marker += '#' if os.geteuid() == 0 else '>'
+        if self.confined:
+            marker = '[{}]'.format(marker)
+        return marker
 
     # -- the input gate (questions answered on the input line) -------
     #
