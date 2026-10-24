@@ -265,6 +265,24 @@ class ConfigureTestCase(unittest.TestCase):
         self.assertTrue(any('does not exist' in line
                             for line in lines), lines)
 
+    def test_bare_connect_writes_the_portable_bridge(self):
+        # No path: the bare '--socket' resolves the well-known socket
+        # of the harness' project at connection time
+        status, lines = configure_harness(self.tmpdir, 'opencode',
+                                          name='prod', connect='')
+        self.assertEqual(status, 'created')
+        config = self.read_json(os.path.join('.opencode',
+                                             'opencode.json'))
+        entry = config['mcp']['servers']['prod']
+        self.assertEqual(entry['command'],
+                         ['debops', 'mcp', 'connect', '--socket'])
+        self.assertFalse(any('does not exist' in line
+                             for line in lines), lines)
+
+    def test_bare_connect_still_needs_its_own_name(self):
+        with self.assertRaises(ValueError):
+            configure_harness(self.tmpdir, 'opencode', connect='')
+
     def test_connect_refuses_a_non_socket_path(self):
         existing = self.write('not-a-socket', '')
         with self.assertRaises(ValueError) as context:

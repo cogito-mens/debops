@@ -113,6 +113,32 @@ def test_mcp_connect_parses_its_arguments():
     subcommands = parse_cli("mcp", "connect")
     assert subcommands.args.socket is None
     assert subcommands.args.spawn is None
+    # A bare --socket names the well-known path explicitly
+    assert parse_cli("mcp", "connect", "--socket").args.socket == ""
+
+
+def test_mcp_socket_bare_form_on_the_client_commands():
+    # The serve convention — a bare --socket is the well-known
+    # runtime path — holds on every command which takes one
+    for argv in (("mcp", "repl"), ("mcp", "shell"), ("mcp", "console"),
+                 ("mcp", "stop"), ("mcp", "inspect"),
+                 ("mcp", "connect")):
+        subcommands = parse_cli(*argv, "--socket")
+        assert subcommands.args.socket == "", argv
+        subcommands = parse_cli(*argv)
+        assert subcommands.args.socket is None, argv
+
+
+def test_mcp_configure_bare_connect():
+    subcommands = parse_cli("mcp", "configure", "-H", "opencode",
+                            "--connect", "--name", "shared")
+    assert subcommands.args.connect == ""
+    subcommands = parse_cli("mcp", "configure", "-H", "opencode",
+                            "--connect", "/run/x.sock", "--name",
+                            "shared")
+    assert subcommands.args.connect == "/run/x.sock"
+    assert parse_cli("mcp", "configure",
+                     "-H", "opencode").args.connect is None
 
 
 def test_mcp_repl_no_longer_has_stop():

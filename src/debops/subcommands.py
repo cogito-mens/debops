@@ -700,8 +700,9 @@ Commands:
                             'on stdout)',
                 usage='debops mcp repl [<args>]')
         parser.add_argument('--socket', type=str, metavar='PATH',
-                            help="the daemon's socket (default: the "
-                                 'well-known runtime path)')
+                            nargs='?', const='',
+                            help="the daemon's socket; the well-known "
+                                 'runtime path when PATH is omitted')
         parser.add_argument('--docs', action='store_true',
                             help='talk to a documentation-mode daemon '
                                  '(no project)')
@@ -738,8 +739,9 @@ Commands:
                             'against /proc before any signal',
                 usage='debops mcp stop [<args>]')
         parser.add_argument('--socket', type=str, metavar='PATH',
-                            help="the daemon's socket (default: the "
-                                 'well-known runtime path)')
+                            nargs='?', const='',
+                            help="the daemon's socket; the well-known "
+                                 'runtime path when PATH is omitted')
         parser.add_argument('--docs', action='store_true',
                             help='stop the documentation-mode daemon '
                                  '(no project)')
@@ -758,8 +760,9 @@ Commands:
                             'pipe stays the plain interpreter',
                 usage='debops mcp shell [<args>]')
         parser.add_argument('--socket', type=str, metavar='PATH',
-                            help="the daemon's socket (default: the "
-                                 'well-known runtime path)')
+                            nargs='?', const='',
+                            help="the daemon's socket; the well-known "
+                                 'runtime path when PATH is omitted')
         parser.add_argument('--docs', action='store_true',
                             help='talk to a documentation-mode daemon '
                                  '(no project)')
@@ -795,8 +798,9 @@ Commands:
                             'stays the plain interpreter',
                 usage='debops mcp console [<args>]')
         parser.add_argument('--socket', type=str, metavar='PATH',
-                            help="the daemon's socket (default: the "
-                                 'well-known runtime path)')
+                            nargs='?', const='',
+                            help="the daemon's socket; the well-known "
+                                 'runtime path when PATH is omitted')
         parser.add_argument('--docs', action='store_true',
                             help='talk to a documentation-mode daemon '
                                  '(no project)')
@@ -830,8 +834,9 @@ Commands:
                             '(or to a server on a given socket)',
                 usage='debops mcp connect [<args>] [<key=value>...]')
         parser.add_argument('--socket', type=str, metavar='PATH',
-                            help="the daemon's socket (default: the "
-                                 'well-known runtime path)')
+                            nargs='?', const='',
+                            help="the daemon's socket; the well-known "
+                                 'runtime path when PATH is omitted')
         parser.add_argument('--docs', action='store_true',
                             help='bridge to a documentation-mode '
                                  'daemon (no project)')
@@ -875,8 +880,9 @@ Commands:
                             'the one on a given socket)',
                 usage='debops mcp inspect [<args>]')
         parser.add_argument('--socket', type=str, metavar='PATH',
-                            help="the daemon's socket (default: the "
-                                 'well-known runtime path)')
+                            nargs='?', const='',
+                            help="the daemon's socket; the well-known "
+                                 'runtime path when PATH is omitted')
         parser.add_argument('--docs', action='store_true',
                             help='inspect a documentation-mode daemon '
                                  '(no project)')
@@ -945,10 +951,15 @@ Commands:
                             help="the entry name (default: 'debops'; "
                                  "letters, digits, '-' and '_')")
         parser.add_argument('--connect', type=str, metavar='PATH',
+                            nargs='?', const='',
                             help="bridge the harness to the daemon's "
-                                 'UNIX socket at PATH instead of '
-                                 'launching the server; requires '
-                                 '--name (never the default entry)')
+                                 'UNIX socket instead of launching '
+                                 'the server — PATH, or a portable '
+                                 'bridge to the well-known socket of '
+                                 'the project the harness runs in '
+                                 'when bare (the form to commit to '
+                                 'git); requires --name (never the '
+                                 'default entry)')
         parser.add_argument('--docs', action='store_true',
                             help='the spawned server always runs in '
                                  'the documentation mode, even inside '

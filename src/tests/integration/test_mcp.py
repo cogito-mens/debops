@@ -2477,6 +2477,11 @@ def test_connect_finds_the_projects_daemon(run_debops, mcp_env,
                             env=env)
         assert result.returncode == 0
         assert "Spawning" not in result.stderr
+        # The bare '--socket' form resolves the same well-known path
+        result = run_debops("mcp", "connect", "--socket", "--ping",
+                            cwd=str(project_dir), env=env)
+        assert result.returncode == 0
+        assert "project: " + project_dir.name in result.stdout
     finally:
         run_debops("mcp", "stop", env=env, cwd=str(project_dir))
 
@@ -2751,6 +2756,54 @@ def test_configure_harness(run_debops, mcp_env, project_dir):
     result = run_debops("mcp", "configure", "-H", "opencode",
                         cwd=str(project_dir), env=mcp_env)
     assert "Unchanged" in result.stdout
+
+
+def test_configure_bridge_is_portable(run_debops, mcp_env,
+                                      project_dir, tmp_path):
+    """A bare --connect writes the portable bridge: a bare '--socket'
+    in the entry, resolved against the well-known socket of whatever
+    project the harness runs in — nothing machine-specific to
+    commit."""
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    env = dict(mcp_env, XDG_RUNTIME_DIR=str(runtime))
+    result = run_debops("mcp", "configure", "-H", "opencode",
+                        "--connect", "--name", "shared",
+                        cwd=str(project_dir), env=env)
+    assert result.returncode == 0
+    config_path = project_dir / ".opencode" / "opencode.json"
+    entry = json.loads(config_path.read_text())["mcp"]["servers"][
+            "shared"]
+    command = entry["command"]
+    assert command == ["debops", "mcp", "connect", "--socket"]
+    # Nothing absolute, nothing of this machine's runtime layout
+    assert not any(str(tmp_path) in part for part in command)
+
+
+def test_configure_bare_connect_at_the_user_level(run_debops, mcp_env,
+                                                  tmp_path):
+    """The portable bridge needs no project: the account-level entry
+    bridges to whatever project the harness runs in."""
+    result = run_debops("mcp", "configure", "-H", "opencode",
+                        "--connect", "--name", "shared", "--user",
+                        cwd=str(tmp_path), env=mcp_env)
+    assert result.returncode == 0
+    config_path = tmp_path / "config" / "opencode" / "opencode.json"
+    entry = json.loads(config_path.read_text())["mcp"]["servers"][
+            "shared"]
+    assert entry["command"] == ["debops", "mcp", "connect", "--socket"]
+
+
+def test_stop_with_an_explicit_socket_needs_no_project(
+        run_debops, mcp_env, tmp_path):
+    """An explicit socket stops by name; the project probe does not
+    stand in the way."""
+    result = run_debops("mcp", "stop", "--socket",
+                        str(tmp_path / "nosuch.sock"),
+                        cwd=str(tmp_path), env=mcp_env)
+    assert result.returncode == 1
+    assert "Error:" in result.stderr
+    assert "project directory" not in result.stderr
 
 
 def test_configure_harness_refuses_a_non_project(run_debops, mcp_env,

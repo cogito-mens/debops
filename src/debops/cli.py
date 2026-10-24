@@ -1274,21 +1274,7 @@ class Interpreter(object):
     def do_mcp_stop(self, args):
         self._mcp_refuse_if_disabled()
         from .mcp import repl as repl_mod
-        project = None
-        if not args.docs:
-            # ProjectDir chdirs into the directory it probes, even
-            # when it then fails; capture the invocation directory
-            # first
-            invoked_in = os.getcwd()
-            try:
-                project = ProjectDir(path=args.project_dir,
-                                     config=self.config)
-            except (IsADirectoryError, NotADirectoryError) as errmsg:
-                os.chdir(invoked_in)
-                print('Error:', errmsg, file=sys.stderr)
-                sys.exit(1)
-        socket_path = (os.path.abspath(os.path.expanduser(args.socket))
-                       if args.socket else default_socket_path(project))
+        socket_path, _project = self._mcp_daemon_socket(args)
         try:
             repl_mod.stop_daemon(socket_path, kill=args.kill)
         except repl_mod.ReplError as errmsg:

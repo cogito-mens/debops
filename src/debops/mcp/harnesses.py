@@ -12,7 +12,8 @@ keyed by name, so a rerun updates in place instead of duplicating.
 
 An entry either launches the server per invocation ('debops mcp
 serve', the default) or bridges the harness to a running daemon
-('--connect' writes 'debops mcp connect --socket <path>'). Connect entries
+('--connect' writes 'debops mcp connect --socket <path>', or the
+portable bare '--socket' when no path is given). Connect entries
 are per-instance and always named: the default entry must never be
 repurposed into a bridge — outside a project it launches the
 documentation mode, which a stray socket would silently replace.
@@ -80,7 +81,12 @@ def _serve_argv(verbosity=0, log=None, legacy=False, docs=False,
 
 
 def _connect_argv(path):
-    """The argv of an entry which bridges to a running daemon."""
+    """The argv of an entry which bridges to a daemon's socket:
+    the path given, or a bare '--socket' — the well-known socket
+    of the project the harness runs in, resolved at connection
+    time, which keeps the entry portable across machines."""
+    if not path:
+        return ['debops', 'mcp', 'connect', '--socket']
     return ['debops', 'mcp', 'connect', '--socket', path]
 
 
@@ -538,7 +544,9 @@ def configure_harness(project_path, harness_name, filename=None,
             notes.append('note: no writable configuration file is '
                          'known for this harness')
         print_only = True
-    if connect is not None:
+    if connect:
+        # The bare form is runtime-resolved; there is no path
+        # to check
         _check_connect_path(connect, notes)
         if verbosity or log is not None:
             notes.append("note: the bridge is a dumb relay; the "
