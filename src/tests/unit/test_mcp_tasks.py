@@ -170,6 +170,20 @@ class TaskTestCase(unittest.TestCase):
         response = self.task_call('tasks/cancel', {'taskId': 'nosuch'})
         self.assertEqual(response['error']['code'], -32602)
 
+    def test_the_run_info_rides_the_task_description(self):
+        # The polling clients render their run progress from it
+        from debops.mcp.tasks import Task
+        task = Task(ttl_ms=1000)
+        self.assertNotIn('run', task.describe())
+        task.update_run(mode='run', playbooks=['site'], taskCount=3)
+        task.update_run(taskIndex=1, currentTask='TASK [one]')
+        description = task.describe()
+        self.assertEqual(description['run']['mode'], 'run')
+        self.assertEqual(description['run']['playbooks'], ['site'])
+        self.assertEqual(description['run']['taskIndex'], 1)
+        self.assertEqual(description['run']['currentTask'],
+                         'TASK [one]')
+
     def test_task_for_a_tool_without_context(self):
         # A task-eligible tool which takes no context must still run
         self.server.register_tool('plain', 'A plain tool',

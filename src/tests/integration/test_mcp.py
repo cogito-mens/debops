@@ -1808,6 +1808,15 @@ def test_check_via_tasks_extension(run_debops, mcp_env, project_dir,
         assert task["status"] == "completed"
         assert "hello from a task" in \
             task["result"]["content"][0]["text"]
+        # The run bookkeeping rides the task: the front ends render
+        # their progress from it
+        run = task["run"]
+        assert run["mode"] == "check"
+        assert run["playbooks"] == ["custom"]
+        assert run["taskCount"] == 1
+        assert run["hostCount"] == 1
+        assert run["taskIndex"] == 1
+        assert "Say hello" in run["currentTask"]
     finally:
         server.terminate()
         server.wait(timeout=10)

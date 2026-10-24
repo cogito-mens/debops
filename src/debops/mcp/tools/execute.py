@@ -724,6 +724,64 @@ def _task_status(header, tail):
     return '\n'.join(parts)
 
 
+class _RunProgress(object):
+    """The progress bookkeeping of one run: the task counter and the
+    current header, reported to the task (the polling clients render
+    their progress from it) and to the notification channel, each at
+    its own cadence."""
+
+    def __init__(self, context):
+        self._context = context
+        self._task_index = 0
+        self._current = None
+        self._last_progress = 0.0
+        self._last_status = 0.0
+        self._notifications = itertools.count(1)
+
+    @staticmethod
+    def _header_text(line):
+        """The play/task header without its asterisk padding."""
+        return re.sub(r'\s+\*+\s*$', '', line.rstrip())
+
+    def begin(self, mode, targets, tally):
+        """The run details at the start of the run: the mode, the
+        playbooks and the tally, for the client's tracking. A run
+        without a probe carries no counts."""
+        task = self._context.task
+        if task is None:
+            return
+        info = {'mode': mode, 'playbooks': list(targets)}
+        if tally is not None:
+            info.update({'taskCount': tally['taskCount'],
+                         'hostCount': tally['hostCount'],
+                         'estimateSeconds': tally['estimateSeconds']})
+        task.update_run(**info)
+
+    def on_line(self, line, tail):
+        """One output line of the run: the task index and the current
+        header for the polling clients, the throttled notification
+        and the status message."""
+        now = time.monotonic()
+        if _PLAY_HEADER.match(line) or _TASK_HEADER.match(line):
+            self._current = line.rstrip()
+            if _TASK_HEADER.match(line):
+                # The task count answers the tally's taskCount, so the
+                # play headers do not advance it
+                self._task_index += 1
+            task = self._context.task
+            if task is not None:
+                task.update_run(taskIndex=self._task_index,
+                                currentTask=self._header_text(line))
+            if now - self._last_progress >= PROGRESS_INTERVAL:
+                self._last_progress = now
+                self._context.progress(line.rstrip(),
+                                       progress=next(self._notifications))
+        task = self._context.task
+        if task is not None and now - self._last_status >= STATUS_INTERVAL:
+            self._last_status = now
+            task.set_status_message(_task_status(self._current, tail))
+
+
 def _tally_from_lists(tasks_text, hosts_text):
     """The (per-play task counts, per-play host counts) of the
     ansible-playbook --list-tasks and --list-hosts outputs.
@@ -977,31 +1035,15 @@ def _execute_playbook(project, policy, arguments, context, check,
                 logger.notice('The execution matches no hosts '
                               '[execution %s]', execution_id)
 
-            # Play and task headers become progress notifications
-            progress_counter = itertools.count(1)
-            last_progress = [0.0]
-            # The tail of the run log; a polling client sees it in the
-            # task status, where the progress notifications do not reach
+            # Play and task headers become progress: the task index
+            # and the current header for the polling clients, the
+            # throttled notifications, the log tail in the status
             tail = collections.deque(maxlen=runs.TAIL_LINES)
-            last_status = [0.0]
-            progress_line = [None]
+            run_progress = _RunProgress(context)
 
             def on_line(line):
                 tail.append(line)
-                now = time.monotonic()
-                if (_PLAY_HEADER.match(line)
-                        or _TASK_HEADER.match(line)):
-                    if now - last_progress[0] >= PROGRESS_INTERVAL:
-                        last_progress[0] = now
-                        progress_line[0] = line.rstrip()
-                        context.progress(
-                                line.rstrip(),
-                                progress=next(progress_counter))
-                if (context.task is not None
-                        and now - last_status[0] >= STATUS_INTERVAL):
-                    last_status[0] = now
-                    context.task.set_status_message(
-                            _task_status(progress_line[0], tail))
+                run_progress.on_line(line, tail)
 
             started = time.monotonic()
             # The sidecar lets a later session list and address the
@@ -1033,6 +1075,9 @@ def _execute_playbook(project, policy, arguments, context, check,
             command = _detached_command(
                     command, policy.execute_timeout,
                     _finalize_command(project))
+            # The run's details reach the client's tracker before the
+            # first output line can
+            run_progress.begin(mode, targets, tally)
             output, returncode, status = run_cancellable(
                     command, env=env, cwd=project.path, context=context,
                     timeout=policy.execute_timeout, on_line=on_line,

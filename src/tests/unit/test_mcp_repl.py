@@ -506,6 +506,108 @@ class TaskFlowTestCase(unittest.TestCase):
             repl_obj.execute('run site')
         self.assertIn('boom', str(context.exception))
 
+    def _run_task_script(self, repl_obj, polls, command='run site'):
+        """Drive a task-backed execution through the queued polls."""
+        client = repl_obj.client
+        client.queue('tools/call', {'resultType': 'task',
+                                    'taskId': 't1', 'status': 'working'})
+        client.queue('tasks/get', *polls)
+        with mock.patch('debops.mcp.repl.POLL_INTERVAL', 0):
+            repl_obj.execute(command)
+
+    def test_the_run_progress_separates_from_the_log(self):
+        # The repl's tail: the moving status lines, a rule, the answer
+        client = FakeClient()
+        repl_obj, out, err = make_repl(client)
+        self._run_task_script(repl_obj, [
+                {'status': 'working',
+                 'statusMessage': 'TASK [one]',
+                 'run': {'mode': 'check', 'playbooks': ['site'],
+                         'taskIndex': 1, 'currentTask': 'TASK [one]'}},
+                {'status': 'completed',
+                 'result': {'isError': False,
+                            'content': [{'type': 'text',
+                                         'text': 'recap'}]}}],
+                command='check site')
+        self.assertIn('TASK [one]', err.getvalue())
+        self.assertIn('-' * 72, err.getvalue())
+        self.assertIn('recap', out.getvalue())
+
+    def test_the_shell_grows_the_dotted_line(self):
+        # A dot per task advance, the verdict at the end; the moving
+        # status lines stay out of the scrollback
+        client = FakeClient()
+        repl_obj, out, err = make_repl(client)
+        repl_obj.run_display = 'dots'
+        self._run_task_script(repl_obj, [
+                {'status': 'working',
+                 'run': {'mode': 'run', 'playbooks': ['site'],
+                         'taskIndex': 1, 'currentTask': 'TASK [a]'}},
+                {'status': 'working',
+                 'run': {'mode': 'run', 'playbooks': ['site'],
+                         'taskIndex': 3, 'currentTask': 'TASK [c]'}},
+                {'status': 'completed',
+                 'result': {'isError': False,
+                            'content': [{'type': 'text',
+                                         'text': 'recap'}]}}])
+        text = err.getvalue()
+        self.assertIn('Running playbook site ... OK', text)
+        self.assertNotIn('TASK [a]', text)
+        self.assertIn('recap', out.getvalue())
+        self.assertIsNone(repl_obj.active_run)
+
+    def test_the_dots_mark_the_failure(self):
+        client = FakeClient()
+        repl_obj, _out, err = make_repl(client)
+        repl_obj.run_display = 'dots'
+        with mock.patch('debops.mcp.repl.POLL_INTERVAL', 0), \
+                self.assertRaises(ReplError):
+            client.queue('tools/call', {'resultType': 'task',
+                                        'taskId': 't1',
+                                        'status': 'working'})
+            client.queue('tasks/get',
+                         {'status': 'working',
+                          'run': {'mode': 'run', 'playbooks': ['site'],
+                                  'taskIndex': 1}},
+                         {'status': 'failed',
+                          'error': {'message': 'boom'}})
+            repl_obj.execute('run site')
+        self.assertIn(' FAILED', err.getvalue())
+        self.assertIsNone(repl_obj.active_run)
+
+    def test_the_console_tracks_the_run_without_printing(self):
+        # The status lines read the session; nothing prints per poll
+        client = FakeClient()
+        repl_obj, _out, err = make_repl(client)
+        repl_obj.run_display = 'lines'
+        invalidations = []
+        repl_obj._invalidate = lambda: invalidations.append(1)
+        self._run_task_script(repl_obj, [
+                {'status': 'working',
+                 'run': {'mode': 'run', 'playbooks': ['site'],
+                         'taskIndex': 1, 'currentTask': 'TASK [a]'}},
+                {'status': 'completed',
+                 'result': {'isError': False,
+                            'content': [{'type': 'text',
+                                         'text': 'recap'}]}}])
+        self.assertNotIn('TASK [a]', err.getvalue())
+        # The chrome repainted during the run and on its fold
+        self.assertTrue(len(invalidations) >= 2)
+        self.assertIsNone(repl_obj.active_run)
+
+    def test_the_duration_format(self):
+        self.assertEqual(repl._format_duration(30), '0:30')
+        self.assertEqual(repl._format_duration(245), '4:05')
+        self.assertEqual(repl._format_duration(3725), '1:02:05')
+
+    def test_the_run_title(self):
+        self.assertEqual(repl._run_title({'mode': 'check',
+                                          'playbooks': ['site']}),
+                         'Checking playbook site')
+        self.assertEqual(repl._run_title({'mode': 'debug',
+                                          'playbooks': ['a', 'b']}),
+                         'Debugging playbook a, b')
+
 
 class InteractiveLoopTestCase(unittest.TestCase):
 

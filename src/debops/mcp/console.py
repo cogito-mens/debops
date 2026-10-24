@@ -15,11 +15,13 @@ declines. Without prompt_toolkit the console degrades to the plain
 reader.
 """
 
+import re
 import threading
+import time
 import traceback
 
 from .repl import (Repl, ReplError, _banner, _execute_line,
-                   run_interactive_plain)
+                   _format_duration, _run_verb, run_interactive_plain)
 
 # The scrollback keeps this many lines; the activity pane this many
 _SCROLLBACK_LINES = 5000
@@ -65,6 +67,9 @@ class ConsoleRepl(Repl):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.pane = 'off'
+        # The run progress floats above the prompt as the two
+        # status lines
+        self.run_display = 'lines'
         self._tree_lines = []
         self._gate = None
         self._app = None
@@ -79,6 +84,36 @@ class ConsoleRepl(Repl):
         app = self._app
         if app is not None:
             app.invalidate()
+
+    def _run_status_text(self):
+        """The two status lines of the active run, floated above the
+        prompt: the title with the counters, then the current task."""
+        active = self.active_run
+        if active is None:
+            return ''
+        run = active['run']
+        segments = []
+        index, total = run.get('taskIndex'), run.get('taskCount')
+        if index is not None and total is not None:
+            segments.append('Task: {}/{}'.format(index, total))
+        segments.append('Elapsed: ' + _format_duration(
+                time.monotonic() - active['started']))
+        estimate = run.get('estimateSeconds')
+        if estimate is not None:
+            # The estimate is a rough length by nature: whole minutes
+            segments.append('Length: ~{}m'.format(
+                    max(1, int((estimate + 30) // 60))))
+        title = '{} playbook: {} ({})'.format(
+                _run_verb(run.get('mode')),
+                ', '.join(run.get('playbooks') or ['?']),
+                ' | '.join(segments))
+        task = run.get('currentTask') or ''
+        header = re.match(r'^(TASK|PLAY) \[(.*)\]$', task)
+        if header is not None:
+            # The header unwrapped: 'TASK [name]' shows as
+            # 'TASK: name'
+            task = '{}: {}'.format(header.group(1), header.group(2))
+        return title + '\n' + (task or 'TASK: (starting)')
 
     def _watch_line(self, line):
         buffer = self._activity_buffer
@@ -474,6 +509,14 @@ def _build_app(session):
                             filter=Condition(
                                     lambda: session.pane != 'off')),
             ]),
+            # The run's status lines float above the prompt while a
+            # run is active
+            ConditionalContainer(
+                    Window(FormattedTextControl(
+                            lambda: session._run_status_text()),
+                           height=2, style='class:run'),
+                    filter=Condition(
+                            lambda: session.active_run is not None)),
             VSplit([
                     Window(FormattedTextControl(
                             lambda: session._prompt_marker() + ' '),
@@ -492,7 +535,8 @@ def _build_app(session):
     return Application(
             layout=layout, key_bindings=bindings, full_screen=True,
             style=Style.from_dict({'status': 'reverse',
-                                   'pane': 'bg:#444444'}))
+                                   'pane': 'bg:#444444',
+                                   'run': 'bg:#005f00'}))
 
 
 def run_console(session):

@@ -1124,6 +1124,23 @@ class ProgressTestCase(unittest.TestCase):
         self.assertIn('--- log tail ---', task.status_message)
         self.assertIn('ok: [localhost]', task.status_message)
 
+    def test_the_task_carries_the_run_bookkeeping(self):
+        # The polling front ends render their progress from it: the
+        # mode and the playbooks at the start, the advancing task
+        # index and the current task during the run. The tally probe
+        # is stubbed away here, so the counts stay out
+        from debops.mcp.tasks import Task
+        task = Task(60000)
+        context = ToolContext(1, threading.Event(), task=task)
+        with mock.patch('debops.mcp.tools.execute.STATUS_INTERVAL', 0):
+            self.run_with_context(context)
+        self.assertEqual(task.run_info['mode'], 'check')
+        self.assertEqual(task.run_info['playbooks'], ['site'])
+        self.assertNotIn('taskCount', task.run_info)
+        self.assertEqual(task.run_info['taskIndex'], 1)
+        self.assertEqual(task.run_info['currentTask'],
+                         'TASK [Say hello]')
+
 
 class DetachedCommandTestCase(unittest.TestCase):
     """The wrapper which carries a detached execution."""

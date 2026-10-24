@@ -52,6 +52,11 @@ class Task(object):
         self.cancel_event = threading.Event()
         self.result = None
         self.error = None
+        # The run bookkeeping of an execution task: the mode, the
+        # playbooks and the tally at the start, the advancing task
+        # index and the current task name during the run; the front
+        # ends render their progress from it
+        self.run_info = None
         # Outstanding input requests (key -> request) and the answers
         # (key -> response); each key gets an event the asking thread
         # waits on
@@ -79,6 +84,8 @@ class Task(object):
             }
             if self.status_message:
                 description['statusMessage'] = self.status_message
+            if self.run_info is not None:
+                description['run'] = dict(self.run_info)
             if self.status == 'input_required':
                 description['inputRequests'] = dict(self._pending)
             elif self.status == 'completed':
@@ -98,6 +105,16 @@ class Task(object):
             self.status_message = message
             self.last_updated_at = _now()
         self._changed()
+
+    def update_run(self, **fields):
+        """Update the run bookkeeping; the polling clients pick it up
+        with the next answer. The change notification stays with the
+        status cadence — a run header stream is too chatty for one."""
+        with self._lock:
+            if self.run_info is None:
+                self.run_info = {}
+            self.run_info.update(fields)
+            self.last_updated_at = _now()
 
     def ask(self, key, request):
         """Block the task on an input request until the client answers.

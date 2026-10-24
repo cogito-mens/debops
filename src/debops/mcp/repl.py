@@ -398,6 +398,28 @@ def _collapse(path):
                     + [parts[-1]]) + '/'
 
 
+def _format_duration(seconds):
+    """A duration as the humans write it: 0:30, 4:05, 1:12:00."""
+    seconds = max(0, int(seconds))
+    hours, rest = divmod(seconds, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return '{}:{:02d}:{:02d}'.format(hours, minutes, secs)
+    return '{}:{:02d}'.format(minutes, secs)
+
+
+def _run_verb(mode):
+    return {'check': 'Checking', 'run': 'Running',
+            'debug': 'Debugging'}.get(mode, 'Running')
+
+
+def _run_title(run):
+    """'Running playbook site' — the verb and the targets of a run."""
+    playbooks = ', '.join(run.get('playbooks') or ['?'])
+    return '{} playbook {}'.format(_run_verb(run.get('mode')),
+                                   playbooks)
+
+
 class Repl(object):
     """One interpreter session against a daemon."""
 
@@ -448,6 +470,17 @@ class Repl(object):
         # their visibility in both
         self._server_tools = None
         self._tools_visible = False
+        # The run progress rendering of the front end: 'tail' prints
+        # the moving log tail (the repl), 'dots' grows the one dotted
+        # line (the shell), 'lines' floats the two status lines (the
+        # console, driven by active_run)
+        self.run_display = 'tail'
+        # The run currently tracked: {'run': the task's bookkeeping,
+        # 'started': the monotonic first sighting}; None at rest
+        self.active_run = None
+        # The dots printed for the active run so far (the shell's
+        # growing line); None when no dotted line is open
+        self._run_dots = None
 
     @property
     def prompt(self):
@@ -605,17 +638,59 @@ class Repl(object):
             return self._wait_task(result)
         return result
 
+    def _track_run(self, task):
+        """Follow the run bookkeeping of an execution task; the front
+        ends render their progress from it. Returns the run dict when
+        one is tracked."""
+        run = task.get('run')
+        if run is None:
+            return None
+        active = self.active_run
+        if active is None:
+            active = self.active_run = {'run': run,
+                                        'started': time.monotonic()}
+        else:
+            active['run'] = run
+        if self.run_display == 'dots':
+            if self._run_dots is None:
+                self._run_dots = 0
+                # During a run no prompt app holds the terminal: the
+                # flushed partial line grows in place
+                print(_run_title(run) + ' ', end='', file=self._err,
+                      flush=True)
+            index = run.get('taskIndex') or 0
+            while self._run_dots < index:
+                print('.', end='', file=self._err, flush=True)
+                self._run_dots += 1
+        elif self.run_display == 'lines':
+            # The console's status lines read the session state
+            self._invalidate()
+        return run
+
+    def _finish_run(self, outcome):
+        """Close the progress rendering of a run: the shell's dotted
+        line gets its verdict, the console's status lines fold away."""
+        if self.run_display == 'dots' and self._run_dots is not None:
+            print(' ' + outcome, file=self._err, flush=True)
+        self._run_dots = None
+        if self.active_run is not None:
+            self.active_run = None
+            if self.run_display == 'lines':
+                self._invalidate()
+
     def _wait_task(self, task):
-        """Poll a task to its end, printing the status tail as it
-        moves; Ctrl-C cancels the task."""
+        """Poll a task to its end; the run progress renders per the
+        front end's 'run_display'. Ctrl-C cancels the task."""
         task_id = task.get('taskId')
         last_message = None
         try:
             while True:
                 time.sleep(POLL_INTERVAL)
                 task = self._request('tasks/get', {'taskId': task_id})
+                self._track_run(task)
                 message = task.get('statusMessage')
-                if message and message != last_message:
+                if (message and message != last_message
+                        and self.run_display == 'tail'):
                     print(message, file=self._err)
                     last_message = message
                 status = task.get('status')
@@ -629,8 +704,14 @@ class Repl(object):
                                    {'confirmation': answers}})
                     continue
                 if status == 'completed':
+                    self._finish_run('OK')
+                    if last_message is not None:
+                        # The moving tail and the finished log read
+                        # better apart
+                        print('-' * 72, file=self._err)
                     return task.get('result') or {}
                 if status in ('failed', 'cancelled'):
+                    self._finish_run('FAILED')
                     error = task.get('error') or {}
                     raise ReplError(error.get('message',
                                               'the execution failed'))
@@ -639,6 +720,7 @@ class Repl(object):
                 self._request('tasks/cancel', {'taskId': task_id})
             except ReplError:
                 pass
+            self._finish_run('interrupted')
             raise ReplError('cancelled (interrupted)')
 
     # -- the renderer -------------------------------------------------
@@ -660,6 +742,10 @@ class Repl(object):
         """A status line on the error channel; the presentation hook
         for the interfaces with a status bar of their own."""
         print(text, file=self._err)
+
+    def _invalidate(self):
+        """The repaint hook of a live chrome (the console overrides
+        it); the line readers have nothing to repaint."""
 
     # -- the server tool surface (the 'tool/<name>' hatch) -----------
 

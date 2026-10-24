@@ -58,6 +58,8 @@ def run_shell(session):
     # The shell streams the watch in the background: a reader thread
     # on its own connection, the lines printed above the prompt
     session.background_watch = True
+    # The run progress is the one dotted line
+    session.run_display = 'dots'
     with patch_stdout():
         # The session's channels were captured at construction time;
         # re-bind them so the prints inside the loop reach the proxy

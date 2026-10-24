@@ -680,6 +680,59 @@ class ConsoleBuildTestCase(unittest.TestCase):
         self._key_binding(app, 'c-end')(event)
         self.assertEqual(buffer.document.cursor_position, 12)
 
+    def test_the_run_status_lines(self):
+        # The two floating lines of an active run: the title with the
+        # counters, then the current task; hidden at rest
+        from debops.mcp import console
+        session, _client = make_session()
+        console._build_app(session)
+        self.assertEqual(session._run_status_text(), '')
+        session.active_run = {
+                'run': {'mode': 'run', 'playbooks': ['site'],
+                        'taskIndex': 2, 'taskCount': 50,
+                        'estimateSeconds': 240,
+                        'currentTask': 'TASK [nginx : Install]'},
+                'started': time.monotonic() - 30}
+        text = session._run_status_text()
+        self.assertIn('Running playbook: site (Task: 2/50 | '
+                      'Elapsed: 0:30 | Length: ~4m)', text)
+        # The header's wrapper unwraps for the second line
+        self.assertIn('TASK: nginx : Install', text)
+        session.active_run = None
+        self.assertEqual(session._run_status_text(), '')
+
+    def test_the_run_status_lines_degrade_without_a_tally(self):
+        from debops.mcp import console
+        session, _client = make_session()
+        console._build_app(session)
+        session.active_run = {
+                'run': {'mode': 'check', 'playbooks': ['site']},
+                'started': time.monotonic()}
+        text = session._run_status_text()
+        self.assertNotIn('Task:', text)
+        self.assertNotIn('Length:', text)
+        self.assertIn('Checking playbook: site', text)
+        self.assertIn('TASK: (starting)', text)
+
+    def test_the_run_status_lines_render_above_the_prompt(self):
+        from debops.mcp import console
+        session, _client = make_session()
+        app = self.build_sized_app(session, rows=24, cols=60)
+        session.active_run = {
+                'run': {'mode': 'run', 'playbooks': ['site'],
+                        'taskIndex': 2, 'taskCount': 50,
+                        'currentTask': 'TASK [nginx]'},
+                'started': time.monotonic() - 5}
+        lines, _positions = self.render_app(app, rows=24, cols=60)
+        self.assertTrue(any('Running playbook: site' in line
+                            for line in lines), lines)
+        self.assertTrue(any('TASK: nginx' in line
+                            for line in lines), lines)
+        session.active_run = None
+        lines, _positions = self.render_app(app, rows=24, cols=60)
+        self.assertFalse(any('Running playbook' in line
+                             for line in lines), lines)
+
     def test_run_dispatches_the_console_session(self):
         client = mock.MagicMock()
         with mock.patch('debops.mcp.console.run_console',
