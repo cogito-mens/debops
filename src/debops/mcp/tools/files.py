@@ -14,6 +14,7 @@ directory; the deny list applies either way. Inventory queries run
 """
 
 import fnmatch
+import hashlib
 import logging
 import os
 import re
@@ -37,6 +38,71 @@ WRITE_SIZE_LIMIT = 1024 * 1024
 # Inventory output larger than this is truncated; the full '--list' dump
 # of a big environment can be enormous
 INVENTORY_OUTPUT_LIMIT = 64 * 1024
+
+
+def _content_digest(text):
+    """The content digest of a project.read answer: the sha256 of the
+    served text, prefixed with the algorithm. file.write, file.delete
+    and file.move accept it as the precondition of the change — the
+    file must not have changed since the read."""
+    return 'sha256:' + hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def _parse_digest(value):
+    """The digest argument of a write entry, or the problem with it."""
+    if value is None:
+        return None, None
+    if not isinstance(value, str) or not value.startswith('sha256:'):
+        return None, ('the "digest" argument is the sha256:… string '
+                      'of a project.read answer')
+    return value, None
+
+
+def _digest_missing(display):
+    return ('the file does not exist: {} — the digest preconditions '
+            'an existing file'.format(display))
+
+
+def _digest_mismatch(display):
+    return ('the file changed since the read (digest mismatch): '
+            '{} — re-read it with project.read, re-apply the change '
+            'on the fresh content and retry with the new digest'
+            .format(display))
+
+
+def _digest_matches(content, expected):
+    """Whether the file's raw text matches the digest of a
+    project.read answer (the read serves the text
+    newline-terminated)."""
+    if content and not content.endswith('\n'):
+        content += '\n'
+    return _content_digest(content) == expected
+
+
+def _read_for_digest(path, display):
+    """The file's text for the digest check, or the refusal text."""
+    if not os.path.isfile(path):
+        return None, _digest_missing(display)
+    try:
+        with open(path, 'rb') as fp:
+            return fp.read().decode('utf-8'), None
+    except UnicodeDecodeError:
+        return None, ('the file changed since the read: {} is no '
+                      'longer UTF-8 text'.format(display))
+    except OSError as errmsg:
+        return None, str(errmsg)
+
+
+def _digest_check(path, expected, display):
+    """The digest precondition of a change, checked under the write
+    lock: None when the file matches, the refusal text otherwise."""
+    current, problem = _read_for_digest(path, display)
+    if problem is not None:
+        return problem
+    if not _digest_matches(current, expected):
+        return _digest_mismatch(display)
+    return None
+
 
 # An inventory listing is capped against pathological cases
 LIST_ENTRY_LIMIT = 500
@@ -133,7 +199,8 @@ def tool_project_read(project, policy, arguments):
         content += '\n'
     return text_result('# {}\n\n```\n{}```'.format(relative, content),
                        structured={'path': relative,
-                                   'content': content})
+                                   'content': content,
+                                   'digest': _content_digest(content)})
 
 
 def tool_project_list(project, policy, arguments):
@@ -440,6 +507,9 @@ def tool_file_write(project, policy, arguments, server=None,
         mode = _parse_write_mode(arguments)
     except ValueError as errmsg:
         return error_result(str(errmsg))
+    digest, problem = _parse_digest(arguments.get('digest'))
+    if problem is not None:
+        return error_result(problem)
 
     # Writes are recoverable and attributable only with git
     refused = require_git_tracked(project)
@@ -476,12 +546,12 @@ def tool_file_write(project, policy, arguments, server=None,
         _announce_mcp_content_change(server, content_relative)
     return _write_committed(project, policy, path, view_relative,
                             content, mode, 'file.write ' + view_relative,
-                            after=announce)
+                            after=announce, expected_digest=digest)
 
 
 def _validate_write_entry(project, policy, entry, elevated=False):
-    """Validate one write entry; ((path, display, content, mode), None)
-    or (None, error text)."""
+    """Validate one write entry; ((path, display, content, mode,
+    digest), None) or (None, error text)."""
     if not isinstance(entry, dict):
         return None, 'each entry needs "path" and "content"'
     relative = str(entry.get('path') or '').rstrip('/')
@@ -496,6 +566,9 @@ def _validate_write_entry(project, policy, entry, elevated=False):
         mode = _parse_write_mode(entry)
     except ValueError as errmsg:
         return None, str(errmsg)
+    digest, problem = _parse_digest(entry.get('digest'))
+    if problem is not None:
+        return None, problem + ': ' + relative
     try:
         path, view_relative = _authorized_write_path(project, policy,
                                                      relative,
@@ -515,7 +588,7 @@ def _validate_write_entry(project, policy, entry, elevated=False):
             and content_relative.count('/') == 3):
         # A custom script tool is only discovered when it is executable
         mode = 0o755
-    return (path, view_relative, content, mode), None
+    return (path, view_relative, content, mode, digest), None
 
 
 def _write_file(path, display, content, mode):
@@ -569,9 +642,17 @@ def _write_batch(project, policy, files, server, elevated=False):
     paths = [entry[0] for entry in validated]
     note = 'file.write ' + ', '.join(entry[1] for entry in validated)
     with exclusive_project(project, policy, note=note, paths=paths):
+        # The preconditions hold for the whole batch or the batch
+        # dies before the first write
+        for path, view_relative, _content, _mode, digest in validated:
+            if digest is None:
+                continue
+            problem = _digest_check(path, digest, view_relative)
+            if problem is not None:
+                return error_result(problem)
         outcomes = []
-        for index, (path, view_relative, content, mode) in enumerate(
-                validated):
+        for index, (path, view_relative, content, mode, _digest) in \
+                enumerate(validated):
             outcome, problem = _write_file(path, view_relative, content,
                                            mode)
             if problem is not None:
@@ -625,14 +706,15 @@ def _atomic_write(path, content, mode, old_mode):
 
 
 def _write_committed(project, policy, path, display, content, mode,
-                     note, after=None):
+                     note, after=None, expected_digest=None):
     """Write content to an authorized path atomically and commit it.
 
     Returns the tool result. The caller authorizes the path; this
     handles the file mechanics: the unchanged short-circuit, the mode
     handling (preserved on overwrite, 0644 for new files), the atomic
     rename, and the commit with MCP provenance. 'after' runs once the
-    change is committed.
+    change is committed. 'expected_digest' preconditions the write on
+    the file not having changed since the caller's project.read.
     """
     size = len(content.encode('utf-8'))
     with exclusive_project(project, policy, note=note, paths=[path]):
@@ -648,6 +730,12 @@ def _write_committed(project, policy, path, display, content, mode,
                     return error_result('not a UTF-8 text file: '
                                         + display)
             old_mode = stat.S_IMODE(os.stat(path).st_mode)
+
+        if expected_digest is not None:
+            if old_content is None:
+                return error_result(_digest_missing(display))
+            if not _digest_matches(old_content, expected_digest):
+                return error_result(_digest_mismatch(display))
 
         if old_content == content:
             if mode is None or mode == old_mode:
@@ -706,6 +794,9 @@ def tool_file_delete(project, policy, arguments, server=None,
     # A leading slash anchors at the project root; keep it
     relative = str(arguments.get('path') or '').rstrip('/')
     elevated = bool(getattr(context, 'elevated', False))
+    digest, problem = _parse_digest(arguments.get('digest'))
+    if problem is not None:
+        return error_result(problem)
 
     # Deletions are recoverable and attributable only with git
     refused = require_git_tracked(project)
@@ -731,6 +822,10 @@ def tool_file_delete(project, policy, arguments, server=None,
             return error_result('file not found: ' + view_relative)
         if not os.path.isfile(path):
             return error_result('not a regular file: ' + view_relative)
+        if digest is not None:
+            problem = _digest_check(path, digest, view_relative)
+            if problem is not None:
+                return error_result(problem)
         try:
             os.unlink(path)
         except OSError as errmsg:
@@ -797,6 +892,9 @@ def tool_file_move(project, policy, arguments, server=None,
     if not target_relative:
         return error_result('the "target" argument is required')
     elevated = bool(getattr(context, 'elevated', False))
+    digest, problem = _parse_digest(arguments.get('digest'))
+    if problem is not None:
+        return error_result(problem)
 
     # Renames are recoverable and attributable only with git
     refused = require_git_tracked(project)
@@ -820,6 +918,12 @@ def tool_file_move(project, policy, arguments, server=None,
             return error_result('file not found: ' + source_display)
         if os.path.lexists(target):
             return error_result('the target exists: ' + target_display)
+        if digest is not None:
+            # The digest preconditions the source: the content the
+            # caller read is the content being moved
+            problem = _digest_check(source, digest, source_display)
+            if problem is not None:
+                return error_result(problem)
         try:
             os.makedirs(os.path.dirname(target), exist_ok=True)
             os.rename(source, target)

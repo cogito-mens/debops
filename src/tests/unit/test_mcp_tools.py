@@ -394,6 +394,166 @@ class ViewWriteTestCase(unittest.TestCase):
         response = self.write('playbooks/deploy.yml')
         self.assertIn('unchanged:', self.result_text(response))
 
+    # -- the digest precondition --------------------------------------
+
+    def digest_of(self, view_relative):
+        """The digest project.read serves for the file, taken
+        through the tools as the callers do."""
+        from debops.mcp.tools.files import tool_project_read
+        result = tool_project_read(self.project, self.policy,
+                                   {'path': 'ansible/'
+                                    + view_relative})
+        return result['structuredContent']['digest']
+
+    def disturb(self, view_relative, content='disturbed\n'):
+        """An out-of-band change: someone else wrote the file."""
+        with open(os.path.join(self.view_root, view_relative),
+                  'w') as fp:
+            fp.write(content)
+
+    def test_read_carries_the_digest(self):
+        from debops.mcp.tools.files import _content_digest
+        self.write('playbooks/deploy.yml', content='---\n[]\n')
+        digest = self.digest_of('playbooks/deploy.yml')
+        self.assertEqual(digest, _content_digest('---\n[]\n'))
+
+    def test_write_with_the_matching_digest(self):
+        self.write('playbooks/deploy.yml')
+        digest = self.digest_of('playbooks/deploy.yml')
+        from debops.mcp.tools.files import tool_file_write
+        response = tool_file_write(
+                self.project, self.policy,
+                {'path': 'playbooks/deploy.yml', 'content': '---\n- x\n',
+                 'digest': digest})
+        self.assertIn('overwritten:', self.result_text(response))
+        self.assertEqual(self.written('playbooks/deploy.yml'),
+                         '---\n- x\n')
+
+    def test_write_refuses_a_stale_digest(self):
+        # The file moved between the read and the write: the write is
+        # refused, the hint names the three-way recovery, and the
+        # newer content survives
+        self.write('playbooks/deploy.yml')
+        digest = self.digest_of('playbooks/deploy.yml')
+        self.disturb('playbooks/deploy.yml')
+        from debops.mcp.tools.files import tool_file_write
+        response = tool_file_write(
+                self.project, self.policy,
+                {'path': 'playbooks/deploy.yml', 'content': 'mine\n',
+                 'digest': digest})
+        self.assertTrue(response['isError'])
+        text = self.result_text(response)
+        self.assertIn('digest mismatch', text)
+        self.assertIn('project.read', text)
+        self.assertEqual(self.written('playbooks/deploy.yml'),
+                         'disturbed\n')
+        self.assertEqual(len(self.commits), 1)
+
+    def test_a_stale_digest_refuses_even_a_noop_write(self):
+        # Strict: the precondition is about the file, not the bytes —
+        # someone else already wrote exactly this content, the digest
+        # is still stale
+        self.write('playbooks/deploy.yml')
+        digest = self.digest_of('playbooks/deploy.yml')
+        self.disturb('playbooks/deploy.yml')
+        from debops.mcp.tools.files import tool_file_write
+        response = tool_file_write(
+                self.project, self.policy,
+                {'path': 'playbooks/deploy.yml', 'content': 'disturbed\n',
+                 'digest': digest})
+        self.assertTrue(response['isError'])
+        self.assertIn('digest mismatch', self.result_text(response))
+
+    def test_write_without_a_digest_stays_unconditional(self):
+        self.write('playbooks/deploy.yml')
+        self.disturb('playbooks/deploy.yml')
+        response = self.write('playbooks/deploy.yml', content='mine\n')
+        self.assertIn('overwritten:', self.result_text(response))
+
+    def test_write_digest_on_a_missing_file_refuses(self):
+        from debops.mcp.tools.files import tool_file_write
+        response = tool_file_write(
+                self.project, self.policy,
+                {'path': 'playbooks/new.yml', 'content': 'x\n',
+                 'digest': 'sha256:' + '0' * 64})
+        self.assertTrue(response['isError'])
+        self.assertIn('does not exist', self.result_text(response))
+
+    def test_the_digest_must_be_a_sha256_string(self):
+        from debops.mcp.tools.files import tool_file_write
+        response = tool_file_write(
+                self.project, self.policy,
+                {'path': 'playbooks/deploy.yml', 'content': 'x\n',
+                 'digest': 'bogus'})
+        self.assertTrue(response['isError'])
+        self.assertIn('sha256:', self.result_text(response))
+
+    def test_batch_digest_mismatch_voids_the_batch(self):
+        # All-or-nothing: the stale entry kills the batch before any
+        # write, nothing is committed
+        self.write('resources/b.txt', content='b\n')
+        stale = self.digest_of('resources/b.txt')
+        self.disturb('resources/b.txt')
+        response = self.write_batch([
+                {'path': 'resources/a.txt', 'content': 'a\n'},
+                {'path': 'resources/b.txt', 'content': 'mine\n',
+                 'digest': stale},
+        ])
+        self.assertTrue(response['isError'])
+        self.assertIn('digest mismatch', self.result_text(response))
+        self.assertFalse(os.path.exists(
+                os.path.join(self.view_root, 'resources', 'a.txt')))
+        self.assertEqual(self.written('resources/b.txt'), 'disturbed\n')
+        self.assertEqual(len(self.commits), 1)
+
+    def test_delete_with_the_matching_digest(self):
+        self.write('playbooks/deploy.yml')
+        digest = self.digest_of('playbooks/deploy.yml')
+        response = self.delete('playbooks/deploy.yml', digest=digest)
+        self.assertIn('deleted:', self.result_text(response))
+        self.assertFalse(os.path.exists(
+                os.path.join(self.view_root, 'playbooks',
+                             'deploy.yml')))
+
+    def test_delete_refuses_a_stale_digest(self):
+        self.write('playbooks/deploy.yml')
+        digest = self.digest_of('playbooks/deploy.yml')
+        self.disturb('playbooks/deploy.yml')
+        response = self.delete('playbooks/deploy.yml', digest=digest)
+        self.assertTrue(response['isError'])
+        self.assertIn('digest mismatch', self.result_text(response))
+        self.assertEqual(self.written('playbooks/deploy.yml'),
+                         'disturbed\n')
+
+    def test_move_with_the_matching_digest(self):
+        self.write('playbooks/deploy.yml')
+        digest = self.digest_of('playbooks/deploy.yml')
+        response = self.move('playbooks/deploy.yml',
+                             'playbooks/renamed.yml', digest=digest)
+        self.assertIn('moved:', self.result_text(response))
+        self.assertEqual(self.written('playbooks/renamed.yml'), 'x\n')
+
+    def test_move_refuses_a_stale_digest(self):
+        self.write('playbooks/deploy.yml')
+        digest = self.digest_of('playbooks/deploy.yml')
+        self.disturb('playbooks/deploy.yml')
+        response = self.move('playbooks/deploy.yml',
+                             'playbooks/renamed.yml', digest=digest)
+        self.assertTrue(response['isError'])
+        self.assertIn('digest mismatch', self.result_text(response))
+        self.assertEqual(self.written('playbooks/deploy.yml'),
+                         'disturbed\n')
+
+    def test_move_target_existence_is_checked_first(self):
+        # The overwrite guard is independent of the digest
+        self.write('playbooks/deploy.yml')
+        self.write('playbooks/other.yml')
+        digest = self.digest_of('playbooks/deploy.yml')
+        response = self.move('playbooks/deploy.yml',
+                             'playbooks/other.yml', digest=digest)
+        self.assertTrue(response['isError'])
+        self.assertIn('the target exists', self.result_text(response))
+
     def test_mode_change_on_identical_content(self):
         self.write('resources/hello.sh', content='#!/bin/sh\n')
         response = self.write('resources/hello.sh',
@@ -525,10 +685,13 @@ class ViewWriteTestCase(unittest.TestCase):
 
     # -- file.delete ---------------------------------------------------
 
-    def delete(self, path, context=None):
+    def delete(self, path, context=None, digest=None):
         from debops.mcp.tools.files import tool_file_delete
+        arguments = {'path': path}
+        if digest is not None:
+            arguments['digest'] = digest
         return tool_file_delete(self.project, self.policy,
-                                {'path': path}, context=context)
+                                arguments, context=context)
 
     def test_delete(self):
         self.write('playbooks/deploy.yml', content='---\n')
@@ -699,11 +862,13 @@ class ViewWriteTestCase(unittest.TestCase):
 
     # -- file.move -------------------------------------------------------
 
-    def move(self, source, target, context=None):
+    def move(self, source, target, context=None, digest=None):
         from debops.mcp.tools.files import tool_file_move
+        arguments = {'source': source, 'target': target}
+        if digest is not None:
+            arguments['digest'] = digest
         return tool_file_move(self.project, self.policy,
-                              {'source': source, 'target': target},
-                              context=context)
+                              arguments, context=context)
 
     def test_move(self):
         self.write('playbooks/deploy.yml', content='---\n')

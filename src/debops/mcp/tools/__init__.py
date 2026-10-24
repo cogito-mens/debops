@@ -215,8 +215,9 @@ TOOL_OUTPUT_SCHEMAS = {
         'state': {'type': 'string', 'enum': ['created', 'unchanged']}},
         'required': ['path', 'state']},
     'project.read': {'type': 'object', 'properties': {
-        'path': {'type': 'string'}, 'content': {'type': 'string'}},
-        'required': ['path', 'content']},
+        'path': {'type': 'string'}, 'content': {'type': 'string'},
+        'digest': {'type': 'string'}},
+        'required': ['path', 'content', 'digest']},
     'file.move': {'type': 'object', 'properties': {
         'source': {'type': 'string'}, 'target': {'type': 'string'}},
         'required': ['source', 'target']},
@@ -979,7 +980,11 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
         ('project.read',
          'Read a file of the DebOps project (inventory, configuration, '
          'playbooks, ...), minus denied paths (secrets, key material, '
-         'virtual environments). Text files only, size-limited.',
+         'virtual environments). Text files only, size-limited. The '
+         'answer carries the content digest; pass it back as the '
+         '"digest" of file.write, file.delete or file.move to '
+         'precondition the change on the file not having changed '
+         'since the read.',
          {'type': 'object',
           'properties': {'path': {'type': 'string',
                                   'description': 'File to read, relative '
@@ -995,7 +1000,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
          'batch with "files" (one commit either way). The change is '
          'committed to git automatically. The change is '
          'complete when this call returns; a dependent call must wait '
-         'for it (batched requests run concurrently).',
+         'for it (batched requests run concurrently). With the '
+         '"digest" of a project.read answer the write is refused when '
+         'the file changed since the read.',
          {'type': 'object',
           'properties': {'path': {'type': 'string',
                                   'description': 'File to write, '
@@ -1012,6 +1019,11 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                   'only. Omit to keep the mode of an '
                                   'existing file, or 0644 for a new '
                                   'one'},
+                         'digest': {'type': 'string',
+                                    'description': 'The sha256:… '
+                                    'digest of a project.read answer; '
+                                    'given, the write is refused when '
+                                    'the file changed since the read'},
                          'files': {'type': 'array',
                                    'items': {'type': 'object',
                                              'properties': {
@@ -1020,14 +1032,19 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                                  'content': {'type':
                                                              'string'},
                                                  'mode': {'type':
-                                                          'string'}},
+                                                          'string'},
+                                                 'digest': {'type':
+                                                            'string'}},
                                              'required': ['path',
                                                           'content']},
                                    'description': 'Write several files '
                                    'in one call, one commit for the '
                                    'batch (instead of "path"/'
                                    '"content"); every entry is '
-                                   'validated before any write'}}},
+                                   'validated before any write, and a '
+                                   '"digest" entry preconditions it on '
+                                   'the file not having changed since '
+                                   'the read'}}},
          lambda arguments, context: tool_file_write(
                  project, policy, arguments, server=server,
                  context=context),
@@ -1038,12 +1055,17 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
          'Regular files only, one per call; the deletion is committed '
          'to git automatically. The change is complete when this call '
          'returns; a dependent call must wait for it (batched requests '
-         'run concurrently).',
+         'run concurrently). With the "digest" of a project.read '
+         'answer the deletion is refused when the file changed since '
+         'the read.',
          {'type': 'object',
           'properties': {'path': {'type': 'string',
                                   'description': 'File to delete, '
                                   'relative to the view root, e.g. '
-                                  '"playbooks/deploy.yml"'}},
+                                  '"playbooks/deploy.yml"'},
+                         'digest': {'type': 'string',
+                                    'description': 'The sha256:… '
+                                    'digest of a project.read answer'}},
           'required': ['path']},
          lambda arguments, context: tool_file_delete(
                  project, policy, arguments, server=server,
@@ -1071,7 +1093,9 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
          'must not exist — a move never overwrites. One commit '
          'records the rename, so the history follows the content. '
          'The change is complete when this call returns; a dependent '
-         'call must wait for it (batched requests run concurrently).',
+         'call must wait for it (batched requests run concurrently). '
+         'With the "digest" of a project.read answer the move is '
+         'refused when the source changed since the read.',
          {'type': 'object',
           'properties': {'source': {'type': 'string',
                                     'description': 'File to move, '
@@ -1079,7 +1103,11 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
                                     '"playbooks/deploy.yml"'},
                          'target': {'type': 'string',
                                     'description': 'The new path, '
-                                    'relative to the view root'}},
+                                    'relative to the view root'},
+                         'digest': {'type': 'string',
+                                    'description': 'The sha256:… '
+                                    'digest of the source, from '
+                                    'a project.read answer'}},
           'required': ['source', 'target']},
          lambda arguments, context: tool_file_move(
                  project, policy, arguments, server=server,

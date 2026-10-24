@@ -332,6 +332,89 @@ class VerbTestCase(unittest.TestCase):
         self.assertEqual(self.client.calls, [])
 
 
+class EditTestCase(unittest.TestCase):
+    """The edit verb: the digest of the read preconditions the write,
+    and a refusal keeps the edits as a local copy."""
+
+    READ = {'resultType': 'complete', 'isError': False,
+            'content': [{'type': 'text', 'text': '# site\n'}],
+            'structuredContent': {'path': 'playbooks/site.yml',
+                                  'content': 'old\n',
+                                  'digest': 'sha256:aaaa'}}
+
+    def make_session(self, write_result):
+        client = FakeClient()
+        client.queue('tools/call', dict(self.READ), write_result)
+        session, out, err = make_repl(client, interactive=True)
+        return client, session, out, err
+
+    def edit_with(self, session, append='new\n'):
+        """Run 'edit' with a scripted editor; the tmp path out."""
+        written = []
+
+        def fake_editor(path):
+            written.append(path)
+            if append is not None:
+                with open(path, 'a') as fp:
+                    fp.write(append)
+            return 0
+
+        session._run_editor = fake_editor
+        session.execute('edit playbooks/site.yml')
+        return written[0]
+
+    def test_the_digest_preconditions_the_write(self):
+        client, session, _out, _err = self.make_session(
+                {'resultType': 'complete', 'isError': False,
+                 'content': [{'type': 'text', 'text': 'overwritten'}]})
+        tmp = self.edit_with(session)
+        arguments = client.calls[1][1]['arguments']
+        self.assertEqual(client.calls[1][1]['name'], 'file.write')
+        self.assertEqual(arguments['digest'], 'sha256:aaaa')
+        self.assertEqual(arguments['content'], 'old\nnew\n')
+        # The scratch file is cleaned up on success
+        self.assertFalse(os.path.exists(tmp))
+
+    def test_a_refusal_keeps_the_local_copy(self):
+        # The file moved while the editor was open: the write is
+        # refused and the edits survive on the local disk
+        client, session, _out, err = self.make_session(
+                {'resultType': 'complete', 'isError': True,
+                 'content': [{'type': 'text', 'text':
+                              'the file changed since the read '
+                              '(digest mismatch)'}]})
+        tmp = self.edit_with(session)
+        self.assertIn('digest mismatch', err.getvalue())
+        self.assertIn('local copy', err.getvalue())
+        with open(tmp) as fp:
+            self.assertEqual(fp.read(), 'old\nnew\n')
+        os.unlink(tmp)
+
+    def test_unchanged_edits_clean_up(self):
+        client, session, _out, err = self.make_session(
+                {'resultType': 'complete', 'isError': False,
+                 'content': [{'type': 'text', 'text': '?'}]})
+        tmp = self.edit_with(session, append=None)
+        self.assertIn('unchanged', err.getvalue())
+        # No write call
+        self.assertEqual(len(client.calls), 1)
+        self.assertFalse(os.path.exists(tmp))
+
+    def test_an_older_daemon_writes_without_the_precondition(self):
+        read = dict(self.READ)
+        read['structuredContent'] = {'path': 'playbooks/site.yml',
+                                     'content': 'old\n'}
+        client = FakeClient()
+        client.queue('tools/call', read, {
+                'resultType': 'complete', 'isError': False,
+                'content': [{'type': 'text', 'text': 'overwritten'}]})
+        session, _out, _err = make_repl(client, interactive=True)
+        tmp = self.edit_with(session)
+        arguments = client.calls[1][1]['arguments']
+        self.assertNotIn('digest', arguments)
+        self.assertFalse(os.path.exists(tmp))
+
+
 class ConfirmationTestCase(unittest.TestCase):
 
     def test_the_gate_asks_and_retries(self):

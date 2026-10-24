@@ -965,6 +965,7 @@ class Repl(object):
         write_path = self._resolve_write(args[0])
         result = self._call_tool('project.read', {'path': path})
         current = ''
+        digest = None
         if result.get('isError'):
             text = ''.join(block.get('text', '') for block in
                            result.get('content', []))
@@ -975,8 +976,9 @@ class Repl(object):
                 self._render(result)
                 return
         else:
-            current = (result.get('structuredContent') or {}).get(
-                    'content')
+            structured = result.get('structuredContent') or {}
+            current = structured.get('content')
+            digest = structured.get('digest')
             if current is None:
                 # The text rendering is wrapped for display, not for
                 # editing; an older daemon has no structured answer
@@ -993,16 +995,41 @@ class Repl(object):
                                 .format(returncode))
             with open(tmp) as fp:
                 new = fp.read()
-        finally:
+        except Exception:
             try:
                 os.unlink(tmp)
             except OSError:
                 pass
+            raise
         if new == current:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
             self._note('unchanged: ' + path)
             return
-        result = self._call_tool('file.write',
-                                 {'path': write_path, 'content': new})
+        write_args = {'path': write_path, 'content': new}
+        if digest is not None:
+            # The write precondition: the file must not have changed
+            # since the read, or the save would silently revert
+            # whoever wrote it while the editor was open
+            write_args['digest'] = digest
+        try:
+            result = self._call_tool('file.write', write_args)
+        except ReplError:
+            self._note('the write did not land; your edits are kept '
+                       'as the local copy ' + tmp)
+            raise
+        if result.get('isError'):
+            self._render(result)
+            self._note('your edits are kept as the local copy {}; '
+                       '"edit" again to re-base them on the fresh '
+                       'content'.format(tmp))
+            return
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
         self._render(result)
 
     def _run_editor(self, path):
