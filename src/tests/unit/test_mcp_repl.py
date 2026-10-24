@@ -253,7 +253,7 @@ class VerbTestCase(unittest.TestCase):
                  'content': [{'type': 'text', 'text': 'accepted'}]})
         self.repl.execute('queue')
         self.repl.execute('batch create work')
-        self.repl.execute('job add work site mode=check --limit web1')
+        self.repl.execute('job add work check site --limit web1')
         self.repl.execute('batch accept work')
         names = [call[1]['name'] for call in self.client.calls]
         self.assertEqual(names, ['queue.list', 'batch.create',
@@ -272,6 +272,64 @@ class VerbTestCase(unittest.TestCase):
             self.repl.execute('queue bogus')
         with self.assertRaises(ReplError):
             self.repl.execute('job pop')
+
+    def test_the_job_add_mode_is_a_positional_word(self):
+        # UNIX-style: the mode word before the playbook, run by
+        # default
+        for line, expected in (
+                ('job add work site', 'run'),
+                ('job add work run site', 'run'),
+                ('job add work check site', 'check'),
+                ('job add work debug site', 'debug')):
+            self.client.queue('tools/call', {
+                    'resultType': 'complete', 'isError': False,
+                    'content': [{'type': 'text', 'text': 'queued'}]})
+            self.repl.execute(line)
+            self.assertEqual(
+                    self.client.calls[-1][1]['arguments']['mode'],
+                    expected, line)
+            self.assertEqual(
+                    self.client.calls[-1][1]['arguments']['playbook'],
+                    'site', line)
+
+    def test_the_job_add_mode_option(self):
+        # The -m/--mode option settles the mode from anywhere in the
+        # line, and the mode word is then not consumed — a playbook
+        # named 'check' stays a playbook
+        for line, mode, playbooks in (
+                ('job add work -m check site', 'check', 'site'),
+                ('job add work --mode debug site', 'debug', 'site'),
+                ('job add work site --mode=check', 'check', 'site'),
+                ('job add work -m run check', 'run', 'check')):
+            self.client.queue('tools/call', {
+                    'resultType': 'complete', 'isError': False,
+                    'content': [{'type': 'text', 'text': 'queued'}]})
+            self.repl.execute(line)
+            self.assertEqual(
+                    self.client.calls[-1][1]['arguments']['mode'],
+                    mode, line)
+            self.assertEqual(
+                    self.client.calls[-1][1]['arguments']['playbook'],
+                    playbooks, line)
+
+    def test_the_job_add_mode_option_validates(self):
+        with self.assertRaises(ReplError) as context:
+            self.repl.execute('job add work -m bogus site')
+        self.assertIn("one of: 'check', 'run', 'debug'",
+                      str(context.exception))
+        with self.assertRaises(ReplError) as context:
+            self.repl.execute('job add work -m')
+        self.assertIn('needs a value', str(context.exception))
+        self.assertEqual(self.client.calls, [])
+
+    def test_the_job_add_mode_word_eats_a_same_named_playbook(self):
+        # The keyword slot wins without the option; -m|--mode is the
+        # way to name the mode of a playbook called 'check'
+        with self.assertRaises(ReplError) as context:
+            self.repl.execute('job add work check')
+        self.assertIn('playbook target is required',
+                      str(context.exception))
+        self.assertEqual(self.client.calls, [])
 
 
 class ConfirmationTestCase(unittest.TestCase):

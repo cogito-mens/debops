@@ -763,19 +763,41 @@ class Repl(object):
                         'accept] <name>  (or: batch <name>)')
 
     def cmd_job(self, args):
-        """A queue job: 'job add <batch> <playbook> [...] '
-        '[mode=run|check|debug] [the run options]', 'job prune <id>'
-        or 'job pop <batch>'."""
+        """A queue job: 'job add <batch> [check|run|debug] '
+        '<playbook> [...] [the run options]', 'job prune <id>' or
+        'job pop <batch>'.
+
+        The mode word comes before the playbook, UNIX-style; the
+        -m|--mode option names it explicitly — with the option the
+        word is not consumed, so a playbook named exactly 'check',
+        'run' or 'debug' stays a playbook.
+        """
         if len(args) >= 2 and args[0] == 'add':
             tokens = list(args[1:])
             batch = tokens.pop(0)
-            mode = 'run'
+            mode = None
             rest = []
-            for token in tokens:
-                if token.startswith('mode='):
+            index = 0
+            while index < len(tokens):
+                token = tokens[index]
+                if token in ('-m', '--mode'):
+                    index += 1
+                    if index >= len(tokens):
+                        raise ReplError('-m/--mode needs a value: '
+                                        'check, run or debug')
+                    mode = tokens[index]
+                elif token.startswith('--mode='):
                     mode = token.split('=', 1)[1]
                 else:
                     rest.append(token)
+                index += 1
+            if mode is None:
+                mode = 'run'
+                if rest and rest[0] in ('check', 'run', 'debug'):
+                    mode = rest.pop(0)
+            elif mode not in ('check', 'run', 'debug'):
+                raise ReplError("the mode is one of: 'check', 'run', "
+                                "'debug'")
             job_args = dict(execution_arguments(rest))
             job_args['batch'] = batch
             job_args['mode'] = mode
@@ -784,8 +806,9 @@ class Repl(object):
             return self._call_tool('job.prune', {'id': args[1]})
         if len(args) == 2 and args[0] == 'pop':
             return self._call_tool('job.pop', {'batch': args[1]})
-        raise ReplError('usage: job add <batch> <playbook> [...] | '
-                        'job prune <id> | job pop <batch>')
+        raise ReplError('usage: job add <batch> [check|run|debug] '
+                        '[-m mode] <playbook> [...] | job prune <id> '
+                        '| job pop <batch>')
 
     def cmd_run(self, args):
         return self._call_tool('run', execution_arguments(args))
@@ -1494,8 +1517,10 @@ HELP = {
     'batch [verb] <name>': 'a job batch of the queue (verbs: '
                            'create, remove, prune, pending, accept; '
                            'bare shows it)',
-    'job add <batch> <pb> [mode=…]': 'a new queue job (prune <id>, '
-                                     'pop <batch> remove)',
+    'job add <batch> [mode] <pb> [...]': 'a new queue job; the mode '
+                                         'word before the playbook, '
+                                         'or -m|--mode (prune <id>, '
+                                         'pop <batch> remove)',
     'logs': 'the recorded executions',
     'log <id>': 'the output of an execution',
     'purge <seconds>': 'drop the run logs older than the age',
