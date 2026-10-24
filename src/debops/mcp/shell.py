@@ -61,7 +61,12 @@ def _shell_bindings(session):
         elif session.active_run is not None:
             # The signal passes along to the daemon: the run stops,
             # the shell keeps running (exit is exit/Ctrl-D)
-            session._cancel_active_run()
+            session._cancel_run()
+        elif (session._foreign_run is not None
+                and session._foreign_run.get('taskId') is not None):
+            # A run started elsewhere stops from here too — the
+            # daemon asks the cancelling client for the trust
+            session._cancel_run(session._foreign_run['taskId'])
         elif session._follow_client is not None:
             # A 'log --follow' tail ends; the run is untouched
             session._follow_client.close()

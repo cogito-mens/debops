@@ -81,6 +81,10 @@ def tool_project_status(project, policy, arguments):
                 structured['mode'] = mode
             total = metadata.get('taskCount')
             done = runs.task_count(log)
+            task_id = metadata.get('taskId')
+            if task_id is not None:
+                # A trusted client may cancel the in-flight run
+                structured['taskId'] = task_id
             # The playbook of the running task, by its tally span
             counts = metadata.get('taskCounts')
             if counts:

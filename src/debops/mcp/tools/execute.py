@@ -1143,6 +1143,10 @@ def _execute_playbook(project, policy, arguments, context, check,
             metadata = {'executionId': execution_id, 'mode': mode,
                         'playbooks': targets, 'hosts': resolved_hosts,
                         'startedAt': _utcnow()}
+            if context.task is not None:
+                # The run is addressable by the daemon's other
+                # clients: a trusted one may cancel it
+                metadata['taskId'] = context.task.task_id
             # The tally (when the probe produced one) and the queue
             # job (when one commissioned the run) ride the sidecar
             # for later viewing

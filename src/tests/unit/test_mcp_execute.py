@@ -1190,6 +1190,17 @@ class ProgressTestCase(unittest.TestCase):
                 captured['env']['ANSIBLE_DISPLAY_SKIPPED_HOSTS'],
                 'true')
 
+    def test_the_run_metadata_names_the_task(self):
+        # ... so another client of the daemon can address the run
+        # (a trusted one may cancel it)
+        from debops.mcp import runs
+        from debops.mcp.tasks import Task
+        task = Task(60000)
+        context = ToolContext(1, threading.Event(), task=task)
+        self.run_with_context(context)
+        metadata = runs.read_metadata(runs.log_path(self.project, 1))
+        self.assertEqual(metadata['taskId'], task.task_id)
+
     def test_the_run_announces_preparing_during_the_probe(self):
         # The tracker reads the 'preparing' phase while the tally
         # probe works; the run's own bookkeeping clears it

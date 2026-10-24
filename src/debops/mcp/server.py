@@ -1487,6 +1487,7 @@ class McpServer(object):
         task = self._tasks.create(
                 ttl_ms=max(3600000,
                            (timeout if timeout > 0 else 43200) * 2000))
+        task.owner_pid = context.peer_pid
         thread = threading.Thread(
                 target=self._run_task,
                 args=(task, tool, arguments, params, context),
@@ -1568,12 +1569,36 @@ class McpServer(object):
 
     def _tasks_cancel(self, params, context):
         self._require_tasks_capability(context)
+        task = self._tasks.get(params.get('taskId'))
+        if (task is not None and task.run_info
+                and context.peer_pid != task.owner_pid
+                and not context.trusted):
+            # A run started by another client stops on the trust;
+            # its owner cancels it outright
+            logger.notice('The cancellation of the run task %s by '
+                          'pid %s is refused: the run belongs to pid '
+                          '%s and the client is not trusted',
+                          task.task_id, context.peer_pid,
+                          task.owner_pid)
+            raise rpc.JsonRpcError(
+                    -32000, 'the run belongs to another client; '
+                    'cancelling it asks for the trust first '
+                    '(see: trust)',
+                    request_id=context.request_id)
         if not self._tasks.cancel(params.get('taskId')):
             raise rpc.JsonRpcError(
                     rpc.INVALID_PARAMS, 'Invalid params',
                     data={'details': 'unknown or expired task: {}'
                           .format(params.get('taskId'))},
                     request_id=context.request_id)
+        if task is not None and task.run_info:
+            # The audit trail names the cancelling client and its
+            # relation to the run
+            logger.notice('The run task %s is cancelled by pid %s '
+                          '(%s)', task.task_id, context.peer_pid,
+                          'the owner'
+                          if context.peer_pid == task.owner_pid
+                          else 'a trusted client')
         return {}
 
     # -- subscriptions -----------------------------------------------------

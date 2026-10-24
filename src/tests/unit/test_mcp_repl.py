@@ -2519,6 +2519,41 @@ class ShellTestCase(unittest.TestCase):
         binding.handler(event)
         event.app.exit.assert_not_called()
 
+    def test_ctrl_c_cancels_a_foreign_run(self):
+        # A run started elsewhere stops from here: the status
+        # answer named its task
+        bindings = self.shell._shell_bindings(self.session)
+        binding = [b for b in bindings.bindings if b.keys == ('c-c',)][0]
+        side = mock.Mock()
+        self.session.client.clone = mock.Mock(return_value=side)
+        self.session._foreign_run = {
+                'mode': 'run', 'playbooks': ['site'],
+                'tasksDone': 4, 'tasksTotal': 12, 'taskId': 't-9'}
+        binding.handler(mock.MagicMock())
+        side.request.assert_called_once_with('tasks/cancel',
+                                             {'taskId': 't-9'})
+        self.assertIn('cancelling the run', self.err.getvalue())
+
+    def test_ctrl_c_ignores_a_foreign_run_without_a_task(self):
+        # A queue-driven run has no task to address; the key falls
+        # through to clearing the line
+        bindings = self.shell._shell_bindings(self.session)
+        binding = [b for b in bindings.bindings if b.keys == ('c-c',)][0]
+        self.session._foreign_run = {'mode': 'run',
+                                     'playbooks': ['site']}
+        event = mock.MagicMock()
+        binding.handler(event)
+        event.app.current_buffer.reset.assert_called_once_with()
+
+    def test_the_cancel_refusal_lands_as_a_note(self):
+        # The daemon's answer to a foreign cancel without the trust
+        side = mock.Mock()
+        side.request.side_effect = ReplError(
+                'the run belongs to another client')
+        self.session.client.clone = mock.Mock(return_value=side)
+        self.assertFalse(self.session._cancel_run('t-9'))
+        self.assertIn('belongs to another client', self.err.getvalue())
+
     def test_ctrl_c_clears_the_idle_line(self):
         bindings = self.shell._shell_bindings(self.session)
         binding = [b for b in bindings.bindings if b.keys == ('c-c',)][0]

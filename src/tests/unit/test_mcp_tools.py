@@ -1873,7 +1873,8 @@ class ToolsTestCase(unittest.TestCase):
                     'playbooks': ['custom'],
                     'startedAt': '2026-10-24T00:00:00Z',
                     'taskCount': 3, 'hostCount': 1,
-                    'taskCounts': [3], 'estimateSeconds': 11})
+                    'taskCounts': [3], 'estimateSeconds': 11,
+                    'taskId': 'task-1'})
             with project_flock(self.project, policy, exclusive=True):
                 response = self.call_tool('project.status')
         text = self.result_text(response)
@@ -1887,6 +1888,7 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn('elapsedSeconds', structured)
         self.assertEqual(structured['estimateSeconds'], 11)
         self.assertEqual(structured['taskCounts'], [3])
+        self.assertEqual(structured['taskId'], 'task-1')
         text = self.result_text(response)
         self.assertFalse(response['result']['isError'])
         self.assertIn('Run: in flight', text)

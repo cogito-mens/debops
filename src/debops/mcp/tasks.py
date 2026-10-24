@@ -52,6 +52,10 @@ class Task(object):
         self.cancel_event = threading.Event()
         self.result = None
         self.error = None
+        # The pid of the client process which started the task: its
+        # owner cancels it outright; a run task started by another
+        # client asks for the trust first
+        self.owner_pid = None
         # The run bookkeeping of an execution task: the mode, the
         # playbooks and the tally at the start, the advancing task
         # index and the current task name during the run; the front

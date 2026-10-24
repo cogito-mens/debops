@@ -1282,30 +1282,38 @@ class Repl(object):
             cadence = 2 if self._foreign_run is not None else 5
             stop.wait(cadence)
 
-    def _cancel_active_run(self):
-        """Cancel the run this client started: the signal rides a
-        fresh side connection — the main one may be mid-request (a
-        Ctrl-C can land inside a poll). A human's run stops when the
-        human stops it. Returns True when a run was cancelled."""
-        active = self.active_run
-        if active is None:
-            return False
-        task_id = active.get('task_id')
+    def _cancel_run(self, task_id=None):
+        """Cancel a run task, ours (the default) or one started
+        elsewhere: the signal rides a fresh side connection — the
+        main one may be mid-request (a Ctrl-C can land inside a
+        poll). A foreign run asks the daemon for the trust; the
+        refusal lands as a note. Returns True when a run was
+        cancelled."""
         if task_id is None:
-            return False
+            active = self.active_run
+            if active is None:
+                return False
+            task_id = active.get('task_id')
+            if task_id is None:
+                return False
         try:
             # The fresh connection: the interrupted main one can be
             # mid-answer, and its buffer is not a clean channel
             side = self.client.clone()
             side.request('tasks/cancel', {'taskId': task_id})
             side.close()
-        except (AttributeError, ConnectionError, EOFError, OSError,
-                ReplError):
+        except (AttributeError, ConnectionError, EOFError, OSError):
             # The side connection failed; the main one still answers
             try:
                 self._request('tasks/cancel', {'taskId': task_id})
-            except ReplError:
-                pass
+            except ReplError as errmsg:
+                self._note(str(errmsg))
+                return False
+        except ReplError as errmsg:
+            # The daemon refused (a run started elsewhere asks for
+            # the trust)
+            self._note(str(errmsg))
+            return False
         self._note('cancelling the run')
         return True
 
@@ -1575,7 +1583,7 @@ class Repl(object):
                     raise ReplError(error.get('message',
                                               'the execution failed'))
         except KeyboardInterrupt:
-            self._cancel_active_run()
+            self._cancel_run()
             self._finish_run()
             raise ReplError('cancelled (interrupted)')
 

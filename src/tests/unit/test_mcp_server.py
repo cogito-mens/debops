@@ -11,6 +11,7 @@ dependencies.
 from debops.mcp import rpc
 from debops.mcp.policy import McpPolicy
 from debops.mcp.server import McpServer, PROTOCOL_VERSION, RequestCancelled
+from debops.mcp.server import TASKS_EXTENSION
 from debops.mcp.server import _config_signature
 import json
 import os
@@ -607,6 +608,99 @@ class CancellationTestCase(unittest.TestCase):
                 'tools/call', params={'name': 'plain', 'arguments': {}}))
         self.assertEqual(response['result']['content'], [])
         self.assertEqual(server._active_requests, {})
+
+
+class RunTaskCancelTrustTestCase(unittest.TestCase):
+    """tasks/cancel on a run task: the owner cancels outright, a
+    client which started nothing needs the trust."""
+
+    META = {
+        'io.modelcontextprotocol/protocolVersion': PROTOCOL_VERSION,
+        'io.modelcontextprotocol/clientCapabilities': {
+            'extensions': {TASKS_EXTENSION: {}}}}
+
+    def setUp(self):
+        self.server = McpServer()
+        self.server.policy = mock.Mock(confirm=set(),
+                                       execute_timeout=3600,
+                                       trust_ttl=43200,
+                                       elevate_ttl=900)
+        self.published = threading.Event()
+        self.addCleanup(self.server.cancel_all)
+
+        def run_tool(arguments, context):
+            # The run bookkeeping is what makes it a run task
+            context.task.update_run(mode='run', playbooks=['site'])
+            self.published.set()
+            context.cancelled.wait(10)
+            raise RequestCancelled()
+
+        def plain_tool(arguments, context):
+            self.published.set()
+            context.cancelled.wait(10)
+            raise RequestCancelled()
+
+        self.server.register_tool('run', 'A run', {'type': 'object'},
+                                  run_tool, needs_context=True,
+                                  task_eligible=True)
+        self.server.register_tool('slow', 'A slow read',
+                                  {'type': 'object'}, plain_tool,
+                                  needs_context=True,
+                                  task_eligible=True)
+
+    def _start(self, tool='run', peer_pid=100):
+        self.published.clear()
+        response = self.server.handle(
+                make_request('tools/call',
+                             params={'name': tool, 'arguments': {}},
+                             meta=self.META, request_id=11),
+                peer_pid=peer_pid)
+        task_id = response['result']['taskId']
+        self.assertTrue(self.published.wait(5))
+        return task_id
+
+    def _cancel(self, task_id, peer_pid, token=None):
+        meta = dict(self.META)
+        if token is not None:
+            meta['org.debops/token'] = token
+        return self.server.handle(
+                make_request('tasks/cancel', params={'taskId': task_id},
+                             meta=meta, request_id=12),
+                peer_pid=peer_pid)
+
+    def test_the_owner_cancels_without_the_trust(self):
+        task_id = self._start(peer_pid=100)
+        response = self._cancel(task_id, peer_pid=100)
+        self.assertNotIn('error', response)
+        task = self.server._tasks.get(task_id)
+        self.assertTrue(task.cancel_event.is_set())
+
+    def test_a_foreign_untrusted_client_is_refused(self):
+        task_id = self._start(peer_pid=100)
+        response = self._cancel(task_id, peer_pid=200)
+        self.assertIn('error', response)
+        self.assertIn('trust', response['error']['message'])
+        # ... and the run is untouched
+        task = self.server._tasks.get(task_id)
+        self.assertFalse(task.cancel_event.is_set())
+
+    def test_a_foreign_trusted_client_cancels(self):
+        task_id = self._start(peer_pid=100)
+        with self.server._bearers_lock:
+            self.server._bearers['tok'] = {
+                    'expires': time.monotonic() + 60,
+                    'elevated_until': 0}
+        response = self._cancel(task_id, peer_pid=200, token='tok')
+        self.assertNotIn('error', response)
+        task = self.server._tasks.get(task_id)
+        self.assertTrue(task.cancel_event.is_set())
+
+    def test_a_plain_task_stays_cancellable_by_anyone(self):
+        # The gate keys on the run bookkeeping; a task without it is
+        # a long read, which any client may drop
+        task_id = self._start(tool='slow', peer_pid=100)
+        response = self._cancel(task_id, peer_pid=200)
+        self.assertNotIn('error', response)
 
 
 class ProgressTestCase(unittest.TestCase):
