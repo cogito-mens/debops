@@ -859,10 +859,19 @@ Commands:
     def do_mcp_inspect(self):
         parser = _argument_parser(
                 parents=[self.global_parser],
-                description='inspect an MCP server on a UNIX socket',
-                usage='debops mcp inspect [<args>] <socket>')
-        parser.add_argument('socket', type=str,
-                            help='path of the MCP server UNIX socket')
+                description="inspect the project's MCP daemon (or "
+                            'the one on a given socket)',
+                usage='debops mcp inspect [<args>]')
+        parser.add_argument('--socket', type=str, metavar='PATH',
+                            help="the daemon's socket (default: the "
+                                 'well-known runtime path)')
+        parser.add_argument('--docs', action='store_true',
+                            help='inspect a documentation-mode daemon '
+                                 '(no project)')
+        parser.add_argument('--legacy', action='store_true',
+                            help='speak the 2025-era protocol '
+                                 'revision, matching a daemon started '
+                                 'with --legacy')
         parser.add_argument('--discover', dest='discover',
                             action='store_true',
                             help='show the server identity, capabilities '
@@ -880,6 +889,14 @@ Commands:
                             help='list the prompts the server exposes')
         parser.add_argument('--raw', dest='raw', action='store_true',
                             help='print the server responses as received')
+        spawn = parser.add_mutually_exclusive_group()
+        spawn.add_argument('--spawn', dest='spawn',
+                           action='store_true', default=None,
+                           help='spawn the daemon without asking when '
+                                'none is running')
+        spawn.add_argument('--no-spawn', dest='spawn',
+                           action='store_false',
+                           help='never spawn the daemon; fail instead')
         self.args = parser.parse_args(self.args[3:])
 
     def do_mcp_configure(self):

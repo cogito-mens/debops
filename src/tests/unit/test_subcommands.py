@@ -83,6 +83,20 @@ def test_mcp_stop_parses_its_arguments():
     assert subcommands.args.docs is False
 
 
+def test_mcp_inspect_parses_its_arguments():
+    subcommands = parse_cli("mcp", "inspect", "--socket", "/tmp/x.sock",
+                            "--tools", "--no-spawn")
+    assert subcommands.command == "inspect"
+    assert subcommands.args.socket == "/tmp/x.sock"
+    assert subcommands.args.tools is True
+    assert subcommands.args.spawn is False
+    # The defaults: the well-known path, spawn allowed
+    subcommands = parse_cli("mcp", "inspect")
+    assert subcommands.args.socket is None
+    assert subcommands.args.spawn is None
+    assert subcommands.args.docs is False
+
+
 def test_mcp_repl_no_longer_has_stop():
     # The daemon stop moved to its own command: 'debops mcp stop'
     with pytest.raises(SystemExit):

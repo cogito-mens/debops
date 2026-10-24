@@ -2150,38 +2150,38 @@ def test_inspect_via_socket(run_debops, mcp_env, tmp_path):
             time.sleep(0.01)
 
         # The default inspection is the discovery summary
-        result = run_debops("mcp", "inspect", socket_path, env=mcp_env)
+        result = run_debops("mcp", "inspect", "--socket", socket_path, env=mcp_env)
         assert result.returncode == 0
         assert "name: debops" in result.stdout
         assert "instructions:" in result.stdout
         assert "capabilities:" in result.stdout
 
-        result = run_debops("mcp", "inspect", socket_path, "--tools",
+        result = run_debops("mcp", "inspect", "--socket", socket_path, "--tools",
                             env=mcp_env)
         assert result.returncode == 0
         assert "tools (1):" in result.stdout
         assert "mop" in result.stdout
         assert "[non-destructive, idempotent]" in result.stdout
 
-        result = run_debops("mcp", "inspect", socket_path,
+        result = run_debops("mcp", "inspect", "--socket", socket_path,
                             "--tool", "mop", env=mcp_env)
         assert result.returncode == 0
         assert "mop — Mop the floors." in result.stdout
         assert "bucket, required" in result.stdout
 
-        result = run_debops("mcp", "inspect", socket_path, "--resources",
+        result = run_debops("mcp", "inspect", "--socket", socket_path, "--resources",
                             env=mcp_env)
         assert result.returncode == 0
         assert "debops-cli" in result.stdout
 
         # The prompts stub answers gracefully
-        result = run_debops("mcp", "inspect", socket_path, "--prompts",
+        result = run_debops("mcp", "inspect", "--socket", socket_path, "--prompts",
                             env=mcp_env)
         assert result.returncode == 0
         assert "does not support" in result.stdout
 
         # Raw responses are one JSON line per selected step
-        result = run_debops("mcp", "inspect", socket_path, "--raw",
+        result = run_debops("mcp", "inspect", "--socket", socket_path, "--raw",
                             "--discover", "--tools", env=mcp_env)
         assert result.returncode == 0
         first, second = read_json_lines(result.stdout)
@@ -2190,6 +2190,56 @@ def test_inspect_via_socket(run_debops, mcp_env, tmp_path):
     finally:
         transport.shutdown()
         thread.join(timeout=5)
+
+
+def test_inspect_finds_the_projects_daemon(run_debops, mcp_env,
+                                           project_dir, tmp_path):
+    """A bare 'mcp inspect' resolves the well-known socket of the
+    project and spawns the daemon when it is missing — the same
+    daemon a repl would attach to."""
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    env = dict(mcp_env, XDG_RUNTIME_DIR=str(runtime))
+    try:
+        result = run_debops("mcp", "inspect", cwd=str(project_dir),
+                            env=env)
+        assert result.returncode == 0
+        assert "name: debops" in result.stdout
+        assert "Spawning the MCP daemon" in result.stderr
+        # A second inspection connects; nothing is spawned twice
+        result = run_debops("mcp", "inspect", "--tools",
+                            cwd=str(project_dir), env=env)
+        assert result.returncode == 0
+        assert "project.read" in result.stdout
+        assert "Spawning" not in result.stderr
+        sockets = list((runtime / "debops" / "mcp").glob("*.sock"))
+        assert len(sockets) == 1
+    finally:
+        run_debops("mcp", "stop", env=env, cwd=str(project_dir))
+
+
+def test_inspect_no_spawn_refuses(run_debops, mcp_env, project_dir,
+                                  tmp_path):
+    """--no-spawn: a missing daemon is a clean refusal, naming the
+    socket it looked at."""
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    env = dict(mcp_env, XDG_RUNTIME_DIR=str(runtime))
+    result = run_debops("mcp", "inspect", "--no-spawn",
+                        cwd=str(project_dir), env=env)
+    assert result.returncode == 1
+    assert "no MCP daemon is running" in result.stderr
+
+
+def test_inspect_explicit_socket_never_spawns(run_debops, mcp_env,
+                                              tmp_path):
+    """An explicit socket is connect-only: no daemon there is an
+    error, nothing is spawned."""
+    result = run_debops("mcp", "inspect", "--socket",
+                        str(tmp_path / "nosuch.sock"), env=mcp_env)
+    assert result.returncode == 1
+    assert "no MCP daemon is running" in result.stderr
+    assert not (tmp_path / "nosuch.sock").exists()
 
 
 def test_connect_call_via_socket(run_debops, mcp_env, tmp_path):

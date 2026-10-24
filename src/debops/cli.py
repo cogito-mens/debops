@@ -994,6 +994,31 @@ class Interpreter(object):
             answers[key] = {'action': 'accept', 'content': content}
         return answers
 
+    def _mcp_daemon_socket(self, args):
+        """The socket of the project's daemon, for the client
+        commands: the explicit '--socket', or the well-known path of
+        the probed project (the documentation daemon with '--docs').
+
+        Returns (socket_path, project); the project is None with
+        '--docs' or an explicit socket.
+        """
+        project = None
+        if not args.docs and not args.socket:
+            # ProjectDir chdirs into the directory it probes, even
+            # when it then fails; capture the invocation directory
+            # first
+            invoked_in = os.getcwd()
+            try:
+                project = ProjectDir(path=args.project_dir,
+                                     config=self.config)
+            except (IsADirectoryError, NotADirectoryError) as errmsg:
+                os.chdir(invoked_in)
+                print('Error:', errmsg, file=sys.stderr)
+                sys.exit(1)
+        socket_path = (os.path.abspath(os.path.expanduser(args.socket))
+                       if args.socket else default_socket_path(project))
+        return socket_path, project
+
     def do_mcp_inspect(self, args):
         self._mcp_refuse_if_disabled()
         set_process_name('debops-mcp-conn')
@@ -1012,7 +1037,18 @@ class Interpreter(object):
         if args.resources:
             steps.append('resources')
 
-        client = UnixClient(args.socket)
+        socket_path, project = self._mcp_daemon_socket(args)
+        # A spawned daemon binds the well-known path; an explicit
+        # socket is connect-only
+        spawn = False if args.socket else args.spawn
+        from .mcp import repl as repl_mod
+        try:
+            client = repl_mod.connect_or_spawn(
+                    socket_path, project, docs=args.docs, spawn=spawn,
+                    interactive=False, legacy=args.legacy)
+        except repl_mod.ReplError as errmsg:
+            print('Error:', errmsg, file=sys.stderr)
+            sys.exit(1)
         try:
             with _mcp_client_errors():
                 for step in steps:
