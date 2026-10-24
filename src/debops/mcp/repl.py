@@ -1722,6 +1722,22 @@ def _key_bindings(repl):
     def _confined_suspend(event):
         repl._note('a confined session does not background')
 
+    # Swallow the pager keys and their modified variants: they would
+    # recall the history — and an unbound one self-inserts its raw
+    # escape sequence into the input line. The scrollback they
+    # suggest is the terminal's own (Shift-PgUp in the emulators,
+    # the copy mode in tmux) — an inline prompt cannot move it
+    @bindings.add('pageup')
+    @bindings.add('pagedown')
+    @bindings.add('s-pageup')
+    @bindings.add('s-pagedown')
+    @bindings.add('c-pageup')
+    @bindings.add('c-pagedown')
+    @bindings.add('c-s-pageup')
+    @bindings.add('c-s-pagedown')
+    def _no_history_jump(event):
+        pass
+
     @bindings.add('c-i', filter=has_focus(DEFAULT_BUFFER))
     def _tab(event):
         buffer = event.current_buffer

@@ -614,6 +614,72 @@ class ConsoleBuildTestCase(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(plain.called)
 
+    def _key_binding(self, app, key):
+        return [b.handler for b in app.key_bindings.bindings
+                if b.keys == (key,)][0]
+
+    def test_the_scrollback_pages_with_the_cursor(self):
+        # The window follows the buffer's cursor; a page moves the
+        # window's height (10 headless), Home/End jump to the ends
+        from debops.mcp import console
+        session, _client = make_session()
+        app = console._build_app(session)
+        buffer = session._scroll_buffer
+        session._out.write(''.join('line {}\n'.format(i)
+                                   for i in range(100)))
+        end = len(buffer.text)
+        self.assertEqual(buffer.document.cursor_position, end)
+        event = mock.MagicMock()
+        for key in ('pageup', 's-pageup'):
+            self._key_binding(app, key)(event)
+        self.assertLess(buffer.document.cursor_position, end)
+        paged = buffer.document.cursor_position
+        for key in ('pagedown', 's-pagedown'):
+            self._key_binding(app, key)(event)
+        self.assertGreater(buffer.document.cursor_position, paged)
+        for key in ('home', 's-home'):
+            self._key_binding(app, key)(event)
+        self.assertEqual(buffer.document.cursor_position, 0)
+        for key in ('end', 's-end'):
+            self._key_binding(app, key)(event)
+        self.assertEqual(buffer.document.cursor_position,
+                         len(buffer.text))
+
+    def test_the_writer_keeps_the_reading_position(self):
+        # Output appends at the document end even when the reader
+        # paged up — an insert at the cursor would corrupt the
+        # scrollback — and the view snaps only from the tail
+        from debops.mcp import console
+        session, _client = make_session()
+        console._build_app(session)
+        buffer = session._scroll_buffer
+        session._out.write(''.join('line {}\n'.format(i)
+                                   for i in range(50)))
+        buffer.cursor_position = 0
+        session._out.write('appended\n')
+        self.assertTrue(buffer.text.endswith('appended\n'))
+        self.assertEqual(buffer.document.cursor_position, 0)
+        buffer.cursor_position = len(buffer.text)
+        session._out.write('more\n')
+        self.assertEqual(buffer.document.cursor_position,
+                         len(buffer.text))
+
+    def test_ctrl_home_end_edit_the_input_line(self):
+        # Home/End page the scrollback; the line's start and end
+        # keep a chord of their own
+        from debops.mcp import console
+        session, _client = make_session()
+        app = console._build_app(session)
+        buffer = session._input_buffer
+        buffer.text = 'some command'
+        buffer.cursor_position = 4
+        event = mock.MagicMock()
+        event.current_buffer = buffer
+        self._key_binding(app, 'c-home')(event)
+        self.assertEqual(buffer.document.cursor_position, 0)
+        self._key_binding(app, 'c-end')(event)
+        self.assertEqual(buffer.document.cursor_position, 12)
+
     def test_run_dispatches_the_console_session(self):
         client = mock.MagicMock()
         with mock.patch('debops.mcp.console.run_console',

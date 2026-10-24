@@ -1496,6 +1496,28 @@ class CompletionTestCase(unittest.TestCase):
         self.assertIn('pull', out.getvalue())
         self.assertIn('push', out.getvalue())
 
+    def test_the_pager_keys_do_not_recall_the_history(self):
+        # PgUp/PgDn suggest a scrollback the inline prompt cannot
+        # move (it is the terminal's own); they are swallowed, the
+        # history stays on the arrows. The shift/control variants
+        # too — an unbound key would self-insert its raw escape
+        # sequence into the input line
+        session, _out, _err = make_repl(FakeClient())
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        bindings = repl._key_bindings(session)
+        for key in ('pageup', 'pagedown', 's-pageup', 's-pagedown',
+                    'c-pageup', 'c-pagedown', 'c-s-pageup',
+                    'c-s-pagedown'):
+            binding = [b for b in bindings.bindings
+                       if b.keys == (key,)][0]
+            event = mock.MagicMock()
+            binding.handler(event)
+            event.app.assert_not_called()
+            event.current_buffer.assert_not_called()
+
     def test_completion_columns_are_column_major(self):
         self.assertEqual(
                 repl._completion_columns(['aa', 'bb', 'cc', 'dd'], 10),

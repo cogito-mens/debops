@@ -35,7 +35,16 @@ class _BufferWriter(object):
         self._buffer = buffer
 
     def write(self, text):
-        self._buffer.insert_text(text)
+        buffer = self._buffer
+        position = buffer.document.cursor_position
+        at_end = position >= len(buffer.text)
+        # Always append at the document end — a reader paged up must
+        # not corrupt the scrollback — and keep their place: the view
+        # snaps to the tail only when it was already there
+        buffer.cursor_position = len(buffer.text)
+        buffer.insert_text(text)
+        if not at_end:
+            buffer.cursor_position = position
         self._session._invalidate()
 
     def flush(self):
@@ -312,6 +321,8 @@ def _build_app(session):
     from prompt_toolkit.buffer import Buffer
     from prompt_toolkit.filters import Condition
     from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.key_binding.bindings.named_commands import (
+            get_by_name)
     from prompt_toolkit.layout import (BufferControl,
                                        ConditionalContainer,
                                        DynamicContainer,
@@ -412,18 +423,46 @@ def _build_app(session):
                                          focusable=False),
                            wrap_lines=True, dont_extend_height=True)
 
-    @bindings.add('pageup')
-    def _pageup(event):
+    def _scroll_page(direction):
+        """A page of the scrollback: the window follows the buffer's
+        cursor — setting 'vertical_scroll' directly is defeated by
+        the render, which re-follows the cursor at every frame."""
         info = scroll_window.render_info
         height = info.window_height if info is not None else 10
-        scroll_window.vertical_scroll = max(
-                0, scroll_window.vertical_scroll - height)
+        if direction < 0:
+            scroll_buffer.cursor_up(count=height)
+        else:
+            scroll_buffer.cursor_down(count=height)
+
+    @bindings.add('pageup')
+    @bindings.add('s-pageup')
+    def _pageup(event):
+        _scroll_page(-1)
 
     @bindings.add('pagedown')
+    @bindings.add('s-pagedown')
     def _pagedown(event):
-        info = scroll_window.render_info
-        height = info.window_height if info is not None else 10
-        scroll_window.vertical_scroll += height
+        _scroll_page(1)
+
+    @bindings.add('home')
+    @bindings.add('s-home')
+    def _scroll_top(event):
+        scroll_buffer.cursor_position = 0
+
+    @bindings.add('end')
+    @bindings.add('s-end')
+    def _scroll_bottom(event):
+        scroll_buffer.cursor_position = len(scroll_buffer.text)
+
+    @bindings.add('c-home')
+    def _line_home(event):
+        # Home/End moved to the scrollback; the line's start and end
+        # keep a chord of their own
+        get_by_name('beginning-of-line').call(event)
+
+    @bindings.add('c-end')
+    def _line_end(event):
+        get_by_name('end-of-line').call(event)
 
     from prompt_toolkit.layout.containers import Float, FloatContainer
     from prompt_toolkit.layout.menus import CompletionsMenu
