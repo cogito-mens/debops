@@ -25,6 +25,10 @@ class FakeClient(object):
     def __init__(self):
         self.calls = []
         self._responses = {}
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     def queue(self, method, *responses):
         self._responses[method] = list(responses)
@@ -463,14 +467,17 @@ class TaskFlowTestCase(unittest.TestCase):
                       'statusMessage': 'PLAY [one]'},
                      {'status': 'completed',
                       'result': {'isError': False,
+                                 'structuredContent': {'exitCode': 0},
                                  'content': [{'type': 'text',
                                               'text': 'recap'}]}})
         with mock.patch('debops.mcp.repl.POLL_INTERVAL', 0):
             repl_obj.execute('check site')
-        # The status tail moved to the error channel, the recap to
-        # the answer
+        # The status tail moved to the error channel; the answer is
+        # not re-rendered — the run was shown live, the marker
+        # closes it out
         self.assertIn('PLAY [one]', err.getvalue())
-        self.assertIn('recap', out.getvalue())
+        self.assertIn('finished (exit 0)', err.getvalue())
+        self.assertNotIn('recap', out.getvalue())
 
     def test_the_confirmation_inside_a_task(self):
         client = FakeClient()
@@ -515,8 +522,9 @@ class TaskFlowTestCase(unittest.TestCase):
         with mock.patch('debops.mcp.repl.POLL_INTERVAL', 0):
             repl_obj.execute(command)
 
-    def test_the_run_progress_separates_from_the_log(self):
-        # The repl's tail: the moving status lines, a rule, the answer
+    def test_the_tailed_run_is_not_shown_again(self):
+        # The repl's tail: the moving status lines, then the rule and
+        # the verdict — the finished log is not rendered twice
         client = FakeClient()
         repl_obj, out, err = make_repl(client)
         self._run_task_script(repl_obj, [
@@ -526,34 +534,53 @@ class TaskFlowTestCase(unittest.TestCase):
                          'taskIndex': 1, 'currentTask': 'TASK [one]'}},
                 {'status': 'completed',
                  'result': {'isError': False,
+                            'structuredContent': {'exitCode': 0},
                             'content': [{'type': 'text',
                                          'text': 'recap'}]}}],
                 command='check site')
         self.assertIn('TASK [one]', err.getvalue())
         self.assertIn('-' * 72, err.getvalue())
+        self.assertIn('finished (exit 0)', err.getvalue())
+        self.assertNotIn('recap', out.getvalue())
+
+    def test_an_untailed_run_still_renders_its_result(self):
+        # A run which completed before the first poll shows its
+        # answer whole
+        client = FakeClient()
+        repl_obj, out, err = make_repl(client)
+        self._run_task_script(repl_obj, [
+                {'status': 'completed',
+                 'result': {'isError': False,
+                            'content': [{'type': 'text',
+                                         'text': 'recap'}]}}],
+                command='check site')
         self.assertIn('recap', out.getvalue())
 
-    def test_the_shell_grows_the_dotted_line(self):
-        # A dot per task advance, the verdict at the end; the moving
-        # status lines stay out of the scrollback
+    def test_the_shell_tails_and_marks_the_completion(self):
+        # The shell tails the log like the repl does, the toolbar
+        # carries the live status, and the dotted marker line lands
+        # at completion — the result is not rendered twice
         client = FakeClient()
         repl_obj, out, err = make_repl(client)
         repl_obj.run_display = 'dots'
         self._run_task_script(repl_obj, [
                 {'status': 'working',
+                 'statusMessage': 'TASK [a]',
                  'run': {'mode': 'run', 'playbooks': ['site'],
                          'taskIndex': 1, 'currentTask': 'TASK [a]'}},
                 {'status': 'working',
+                 'statusMessage': 'TASK [c]',
                  'run': {'mode': 'run', 'playbooks': ['site'],
                          'taskIndex': 3, 'currentTask': 'TASK [c]'}},
                 {'status': 'completed',
                  'result': {'isError': False,
+                            'structuredContent': {'exitCode': 0},
                             'content': [{'type': 'text',
                                          'text': 'recap'}]}}])
         text = err.getvalue()
+        self.assertIn('TASK [a]', text)
         self.assertIn('Running playbook site ... OK', text)
-        self.assertNotIn('TASK [a]', text)
-        self.assertIn('recap', out.getvalue())
+        self.assertNotIn('recap', out.getvalue())
         self.assertIsNone(repl_obj.active_run)
 
     def test_the_dots_mark_the_failure(self):
@@ -574,6 +601,52 @@ class TaskFlowTestCase(unittest.TestCase):
             repl_obj.execute('run site')
         self.assertIn(' FAILED', err.getvalue())
         self.assertIsNone(repl_obj.active_run)
+
+    def test_the_dots_mark_the_cancellation(self):
+        client = FakeClient()
+        repl_obj, _out, err = make_repl(client)
+        repl_obj.run_display = 'dots'
+        with mock.patch('debops.mcp.repl.POLL_INTERVAL', 0), \
+                self.assertRaises(ReplError):
+            client.queue('tools/call', {'resultType': 'task',
+                                        'taskId': 't1',
+                                        'status': 'working'})
+            client.queue('tasks/get',
+                         {'status': 'working',
+                          'run': {'mode': 'run', 'playbooks': ['site'],
+                                  'taskIndex': 1}},
+                         {'status': 'cancelled',
+                          'error': {'message': 'cancelled'}})
+            repl_obj.execute('run site')
+        self.assertIn(' cancelled', err.getvalue())
+        self.assertNotIn(' FAILED', err.getvalue())
+
+    def test_the_wait_retries_a_dropped_busy_connection(self):
+        # A run holds the daemon busy; a timed-out poll drops the
+        # connection and the wait continues on the next one
+        client = FakeClient()
+        repl_obj, _out, _err = make_repl(client)
+        client.queue('tools/call', {'resultType': 'task',
+                                    'taskId': 't1', 'status': 'working'})
+        client.queue('tasks/get',
+                     {'status': 'completed',
+                      'result': {'isError': False,
+                                 'structuredContent': {'exitCode': 0},
+                                 'content': []}})
+        original = client.request
+        state = {'dropped': False}
+
+        def request(method, params):
+            if method == 'tasks/get' and not state['dropped']:
+                state['dropped'] = True
+                raise TimeoutError('slow')
+            return original(method, params)
+
+        client.request = request
+        with mock.patch('debops.mcp.repl.POLL_INTERVAL', 0):
+            repl_obj.execute('run site')
+        self.assertTrue(state['dropped'])
+        self.assertFalse(repl_obj.had_error)
 
     def test_the_console_tracks_the_run_without_printing(self):
         # The status lines read the session; nothing prints per poll
@@ -1619,6 +1692,87 @@ class CompletionTestCase(unittest.TestCase):
             binding.handler(event)
             event.app.assert_not_called()
             event.current_buffer.assert_not_called()
+
+
+class ShellTestCase(unittest.TestCase):
+    """The shell front end: the persistent app with the toolbar, the
+    worker-submitted commands, the run status in the status line."""
+
+    def setUp(self):
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        from debops.mcp import shell
+        self.shell = shell
+        self.session, self.out, self.err = make_repl(FakeClient())
+
+    def test_build_shell_sets_the_live_flags(self):
+        self.shell._build_shell(self.session)
+        self.assertTrue(self.session.gate_input)
+        self.assertEqual(self.session.run_display, 'dots')
+        self.assertIn('aborts a run', self.session.busy_note)
+
+    def test_enter_submits_to_the_worker(self):
+        prompt_session = self.shell._build_shell(self.session)
+        accept = prompt_session.default_buffer.accept_handler
+        buffer = mock.Mock()
+        buffer.text = 'status'
+        with mock.patch.object(self.session, 'submit') as submit:
+            accept(buffer)
+        submit.assert_called_once_with('status')
+        buffer.append_to_history.assert_called_once_with()
+        buffer.reset.assert_called_once_with()
+
+    def test_the_gate_answer_skips_the_history(self):
+        # A passphrase typed at the gate never enters the history
+        prompt_session = self.shell._build_shell(self.session)
+        accept = prompt_session.default_buffer.accept_handler
+        buffer = mock.Mock()
+        buffer.text = 'supersecret'
+        self.session._gate = {'secret': True}
+        with mock.patch.object(self.session, 'submit') as submit:
+            accept(buffer)
+        submit.assert_called_once_with('supersecret')
+        buffer.append_to_history.assert_not_called()
+
+    def test_the_status_line_carries_the_run(self):
+        self.session.run_display = 'dots'
+        self.session.active_run = {
+                'run': {'mode': 'run', 'playbooks': ['site'],
+                        'taskIndex': 3, 'taskCount': 50,
+                        'currentTask': 'TASK [nginx : Install]'},
+                'started': time.monotonic(), 'task_id': 't1'}
+        left, right = self.session.status_line()
+        self.assertIn('Running site', right)
+        self.assertIn('3/50', right)
+        self.assertIn('nginx : Install', right)
+        # ... and not at rest
+        self.session.active_run = None
+        _left, right = self.session.status_line()
+        self.assertNotIn('running', right)
+
+    def test_ctrl_c_cancels_the_active_run(self):
+        bindings = self.shell._shell_bindings(self.session)
+        binding = [b for b in bindings.bindings if b.keys == ('c-c',)][0]
+        side = mock.Mock()
+        self.session.client.clone = mock.Mock(return_value=side)
+        self.session.active_run = {
+                'run': {'mode': 'run', 'playbooks': ['site']},
+                'started': time.monotonic(), 'task_id': 't1'}
+        binding.handler(mock.MagicMock())
+        side.request.assert_called_once_with('tasks/cancel',
+                                             {'taskId': 't1'})
+        side.close.assert_called_once_with()
+        self.assertIn('cancelled', self.err.getvalue())
+
+    def test_ctrl_c_drops_a_busy_commands_connection(self):
+        bindings = self.shell._shell_bindings(self.session)
+        binding = [b for b in bindings.bindings if b.keys == ('c-c',)][0]
+        self.session._busy = True
+        binding.handler(mock.MagicMock())
+        self.assertTrue(self.session.client.closed)
+        self.assertIn('lost its connection', self.err.getvalue())
 
     def test_completion_columns_are_column_major(self):
         self.assertEqual(

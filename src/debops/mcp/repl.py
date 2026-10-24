@@ -14,6 +14,7 @@ import datetime
 import getpass
 import logging
 import os
+import re
 import shlex
 import signal
 import socket
@@ -67,6 +68,11 @@ EXECUTION_OPTIONS = {
 
 class ReplError(Exception):
     """A command-line mistake of the REPL; printed, never raised out."""
+
+
+class TransientError(ReplError):
+    """A dropped connection mid-wait: the daemon is busy, not dead.
+    The wait loops retry it; the other errors stay fatal."""
 
 
 def ask(message, default=False):
@@ -472,6 +478,11 @@ class Repl(object):
         self.gate_input = False
         self._gate = None
         self._app = None
+        # The note when a command is refused for another in flight;
+        # the shell's Ctrl-C aborts its runs, the console's drops
+        # their connections
+        self.busy_note = ('a command is running; Ctrl-C drops its '
+                          'connection\n')
         # The server's tool surface ({name: summary}), fetched lazily
         # for the help and the completion; the 'tools' verb governs
         # their visibility in both
@@ -483,11 +494,9 @@ class Repl(object):
         # console, driven by active_run)
         self.run_display = 'tail'
         # The run currently tracked: {'run': the task's bookkeeping,
-        # 'started': the monotonic first sighting}; None at rest
+        # 'started': the monotonic first sighting, 'task_id': the
+        # task's handle}; None at rest
         self.active_run = None
-        # The dots printed for the active run so far (the shell's
-        # growing line); None when no dotted line is open
-        self._run_dots = None
 
     @property
     def prompt(self):
@@ -567,6 +576,23 @@ class Repl(object):
         if not right and getattr(self.client, 'bearer', None) is not None:
             right = 'trusted'
         left = '{}{}{}'.format(name, view, place)
+        if self.run_display == 'dots' and self.active_run is not None:
+            # The shell's status line carries the run: the verb and
+            # the targets, the tally progress, the current task
+            run = self.active_run['run']
+            segments = ['{} {}'.format(_run_verb(run.get('mode')),
+                                       ', '.join(run.get('playbooks')
+                                                 or ['?']))]
+            index, total = run.get('taskIndex'), run.get('taskCount')
+            if index is not None and total is not None:
+                segments.append('{}/{}'.format(index, total))
+            task = run.get('currentTask')
+            if task:
+                header = re.match(r'^(TASK|PLAY) \[(.*)\]$', task)
+                segments.append(header.group(2) if header is not None
+                                else task)
+            run_text = ' · '.join(segments)
+            right = (run_text + ' | ' + right) if right else run_text
         return left, right
 
     # -- the wire -------------------------------------------------
@@ -578,10 +604,12 @@ class Repl(object):
             # A slow answer is not a dead daemon: a run can hold the
             # project lock for its whole duration. The client dropped
             # the connection; the next command starts a fresh one
-            # (TimeoutError is an OSError; this clause goes first)
-            raise ReplError('{}; the daemon may be busy (a run in '
-                            'flight?) — the connection was dropped, '
-                            'retry shortly'.format(errmsg))
+            # (TimeoutError is an OSError; this clause goes first), and
+            # a wait loop retries the drop rather than abandoning the
+            # run it watches
+            raise TransientError('{}; the daemon may be busy (a run in '
+                                 'flight?) — the connection was dropped, '
+                                 'retry shortly'.format(errmsg))
         except (ConnectionError, EOFError, OSError) as errmsg:
             # A dead daemon is a line on the error channel, not a
             # traceback; the next command reconnects
@@ -658,49 +686,57 @@ class Repl(object):
         active = self.active_run
         if active is None:
             active = self.active_run = {'run': run,
-                                        'started': time.monotonic()}
+                                        'started': time.monotonic(),
+                                        'task_id': task.get('taskId')}
         else:
             active['run'] = run
-        if self.run_display == 'dots':
-            if self._run_dots is None:
-                self._run_dots = 0
-                # During a run no prompt app holds the terminal: the
-                # flushed partial line grows in place
-                print(_run_title(run) + ' ', end='', file=self._err,
-                      flush=True)
-            index = run.get('taskIndex') or 0
-            while self._run_dots < index:
-                print('.', end='', file=self._err, flush=True)
-                self._run_dots += 1
-        elif self.run_display == 'lines':
-            # The console's status lines read the session state
+        if self.run_display in ('dots', 'lines'):
+            # The live chrome (the shell's toolbar, the console's
+            # status lines) reads the session state
             self._invalidate()
         return run
 
-    def _finish_run(self, outcome):
-        """Close the progress rendering of a run: the shell's dotted
-        line gets its verdict, the console's status lines fold away."""
-        if self.run_display == 'dots' and self._run_dots is not None:
-            print(' ' + outcome, file=self._err, flush=True)
-        self._run_dots = None
-        if self.active_run is not None:
-            self.active_run = None
-            if self.run_display == 'lines':
-                self._invalidate()
+    def _finish_run(self, outcome, result=None, tailed=False):
+        """Close the progress rendering of a run. The shell's dotted
+        line lands whole as the scrollback marker; the tailed repl
+        gets the rule and the verdict; the console's status lines
+        fold away."""
+        active = self.active_run
+        if self.run_display == 'dots' and active is not None:
+            run = active['run']
+            count = run.get('taskIndex') or 0
+            print('{} {} {}'.format(_run_title(run), '.' * count,
+                                    outcome), file=self._err)
+        elif self.run_display == 'tail' and outcome == 'OK' and tailed:
+            code = None
+            if result is not None:
+                code = (result.get('structuredContent') or {}
+                        ).get('exitCode')
+            print('-' * 72, file=self._err)
+            print('finished (exit {})'.format(
+                    code if code is not None else '?'), file=self._err)
+        self.active_run = None
+        if self.run_display == 'lines':
+            self._invalidate()
 
     def _wait_task(self, task):
         """Poll a task to its end; the run progress renders per the
-        front end's 'run_display'. Ctrl-C cancels the task."""
+        front end's 'run_display'. A dropped connection retries — the
+        human's run keeps its watcher. Ctrl-C cancels the task."""
         task_id = task.get('taskId')
         last_message = None
         try:
             while True:
                 time.sleep(POLL_INTERVAL)
-                task = self._request('tasks/get', {'taskId': task_id})
+                try:
+                    task = self._request('tasks/get', {'taskId': task_id})
+                except TransientError:
+                    # The run holds the daemon busy; the wait survives
+                    continue
                 self._track_run(task)
                 message = task.get('statusMessage')
                 if (message and message != last_message
-                        and self.run_display == 'tail'):
+                        and self.run_display in ('tail', 'dots')):
                     print(message, file=self._err)
                     last_message = message
                 status = task.get('status')
@@ -714,14 +750,19 @@ class Repl(object):
                                    {'confirmation': answers}})
                     continue
                 if status == 'completed':
-                    self._finish_run('OK')
-                    if last_message is not None:
-                        # The moving tail and the finished log read
-                        # better apart
-                        print('-' * 72, file=self._err)
-                    return task.get('result') or {}
+                    result = task.get('result') or {}
+                    tailed = last_message is not None
+                    self._finish_run('OK', result, tailed)
+                    if result.get('isError'):
+                        return result
+                    if tailed and self.run_display in ('tail', 'dots'):
+                        # The run was shown live; the marker closed
+                        # it out — the log stays in its file
+                        return {'content': [], 'isError': False}
+                    return result
                 if status in ('failed', 'cancelled'):
-                    self._finish_run('FAILED')
+                    self._finish_run('FAILED' if status == 'failed'
+                                     else 'cancelled')
                     error = task.get('error') or {}
                     raise ReplError(error.get('message',
                                               'the execution failed'))
@@ -822,8 +863,7 @@ class Repl(object):
             self._gate_answer(line)
             return
         if self._busy:
-            self._echo('a command is running; Ctrl-C drops its '
-                       'connection\n')
+            self._echo(self.busy_note)
             return
         if not line.strip():
             return

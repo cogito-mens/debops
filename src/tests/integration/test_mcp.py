@@ -3760,8 +3760,13 @@ def test_repl_runs_a_check_through_the_daemon(run_debops, mcp_env,
                 input="check custom\nexit\n", capture_output=True,
                 text=True, timeout=120)
         assert result.returncode == 0
-        assert "exit code: 0" in result.stdout
-        assert "hello from the repl" in result.stdout
+        # The run was tailed live (the status lines on stderr); the
+        # verdict marker closes it and the finished log is not
+        # re-rendered
+        assert "finished (exit 0)" in result.stderr
+        logs = list(tmp_path.glob("xdg-cache/debops/mcp/runs/*/*.log"))
+        assert logs
+        assert "hello from the repl" in logs[0].read_text()
     finally:
         server.terminate()
         server.wait(timeout=10)
@@ -3955,7 +3960,9 @@ def test_repl_elevate_skips_the_gate(run_debops, mcp_env, project_dir,
                 capture_output=True, text=True, timeout=120)
         assert elevated.returncode == 0
         assert "elevated" in elevated.stderr
-        assert "exit code: 0" in elevated.stdout
+        # The tailed run is not re-rendered; the verdict marker
+        # closes it out
+        assert "finished (exit 0)" in elevated.stderr
     finally:
         server.terminate()
         server.wait(timeout=10)

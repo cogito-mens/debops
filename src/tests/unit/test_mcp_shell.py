@@ -66,17 +66,28 @@ class FakeWatcher(object):
 
 
 def run_shell_once(session, lines=()):
-    """Run the shell with a mocked prompt_toolkit session feeding the
-    lines, then EOF."""
+    """Run the shell with a mocked prompt_toolkit session: the lines
+    go through the accept handler (the worker picks them up), then
+    EOF ends it."""
     try:
         import prompt_toolkit  # noqa: F401
     except ImportError:
         raise unittest.SkipTest('prompt_toolkit is not installed')
-    with mock.patch('prompt_toolkit.PromptSession') as pt_session:
-        pt_session.return_value.prompt.side_effect = (
-                list(lines) + [EOFError()])
+    with mock.patch('prompt_toolkit.PromptSession') as pt_class:
+        prompt_session = pt_class.return_value
+
+        def prompt():
+            buffer = prompt_session.default_buffer
+            for line in lines:
+                buffer.text = line
+                buffer.accept_handler(buffer)
+            raise EOFError()
+
+        prompt_session.prompt.side_effect = prompt
         code = shell.run_shell(session)
-    return code, pt_session
+        # The commands run on the worker thread; wait them out
+        wait_for(lambda: not session._busy)
+    return code, pt_class
 
 
 class ShellTestCase(unittest.TestCase):
@@ -105,17 +116,20 @@ class ShellTestCase(unittest.TestCase):
 
     def test_the_shell_uses_the_toolbar_and_the_short_prompt(self):
         session, _client, _out, _err = make_session()
-        code, pt_session = run_shell_once(session)
+        code, pt_class = run_shell_once(session)
         self.assertEqual(code, 0)
-        _args, kwargs = pt_session.call_args
+        _args, kwargs = pt_class.call_args
         self.assertIn('bottom_toolbar', kwargs)
         self.assertIn('style', kwargs)
-        pt_session.return_value.prompt.assert_called_with('debops> ')
+        # The prompt marker is dynamic (the elevation shows on it)
+        message = kwargs['message']
+        self.assertEqual(message(), 'debops> ')
 
     def test_the_shell_prompt_marks_the_elevation(self):
         session, _client, _out, _err = make_session(elevated=True)
-        _code, pt_session = run_shell_once(session)
-        pt_session.return_value.prompt.assert_called_with('debops!> ')
+        _code, pt_class = run_shell_once(session)
+        message = pt_class.call_args[1]['message']
+        self.assertEqual(message(), 'debops!> ')
 
     def test_the_shell_restores_the_session_channels(self):
         session, _client, out, err = make_session()
