@@ -30,8 +30,8 @@ def _toolbar(session):
     and the trust state on the right, padded across the terminal
     width."""
     from prompt_toolkit.application import get_app
-    left, right = session.status_line()
     width = get_app().output.get_size().columns
+    left, right = session.status_line(width=width)
     if len(left) + 1 + len(right) > width:
         room = width - len(left) - 1
         right = right[:max(0, room - 1)] + '…'

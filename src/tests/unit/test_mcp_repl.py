@@ -2393,6 +2393,73 @@ class ShellTestCase(unittest.TestCase):
         self.assertIn('preparing', right)
         self.assertNotIn('running', right)
 
+    def test_the_playbook_list_shrinks_as_the_spans_pass(self):
+        # The running playbook and the ones after it; a finished
+        # playbook drops off the list
+        self.assertEqual(
+                repl._remaining_playbooks(['a', 'b', 'c'], 0, [2, 2, 2]),
+                ['a', 'b', 'c'])
+        self.assertEqual(
+                repl._remaining_playbooks(['a', 'b', 'c'], 3, [2, 2, 2]),
+                ['b', 'c'])
+        self.assertEqual(
+                repl._remaining_playbooks(['a', 'b', 'c'], 6, [2, 2, 2]),
+                ['c'])
+        # Without the spans the whole list stands; without playbooks
+        # there is nothing
+        self.assertEqual(
+                repl._remaining_playbooks(['a', 'b'], 3, None),
+                ['a', 'b'])
+        self.assertEqual(repl._remaining_playbooks([], 0, []), [])
+
+    def test_the_playbook_list_elides_its_middle(self):
+        names = ['one', 'two', 'three', 'four', 'five', 'six']
+        full = ' '.join(names)
+        self.assertEqual(repl._ellipsize_middle(names, len(full)), full)
+        # Whole names from the front and the back in alternation,
+        # the middle elided
+        self.assertEqual(repl._ellipsize_middle(names, 18),
+                         'one two … six')
+        self.assertEqual(repl._ellipsize_middle(names, 26),
+                         'one two three … five six')
+        # The running name survives an absurd budget, hard-cut
+        self.assertEqual(repl._ellipsize_middle(names, 3), 'one')
+        self.assertEqual(repl._ellipsize_middle([], 10), '')
+
+    def test_the_run_segment_keeps_to_two_thirds_of_the_bar(self):
+        # A long list elides its middle so the place on the left
+        # keeps its third of the bar
+        self.session.run_display = 'shell'
+        self.session.active_run = {
+                'run': {'mode': 'run',
+                        'playbooks': ['service/alpha', 'service/beta',
+                                      'service/gamma', 'service/delta',
+                                      'service/epsilon'],
+                        'taskIndex': 3, 'taskCount': 50,
+                        'taskCounts': [10, 10, 10, 10, 10]},
+                'started': time.monotonic(), 'task_id': 't1'}
+        _left, right = self.session.status_line(width=120)
+        self.assertIn('…', right)
+        self.assertIn('service/alpha', right)
+        self.assertIn('service/epsilon', right)
+        self.assertNotIn('service/gamma', right)
+        # The whole right side stays within the two thirds
+        self.assertLessEqual(len(right), 120 * 2 // 3)
+
+    def test_the_foreign_list_shrinks_by_the_status_spans(self):
+        # The structured status carries the tally spans, so a run
+        # watched from another client drops its finished playbooks
+        # the same way
+        self.session.run_display = 'shell'
+        self.session._foreign_run = {
+                'mode': 'run', 'playbooks': ['service/core',
+                                             'service/ferm'],
+                'tasksDone': 21, 'tasksTotal': 50,
+                'taskCounts': [20, 30]}
+        _left, right = self.session.status_line()
+        self.assertIn('running service/ferm', right)
+        self.assertNotIn('service/core', right)
+
     def test_the_poller_reads_the_project_status(self):
         watcher = FakeClient()
         watcher.queue('tools/call', {

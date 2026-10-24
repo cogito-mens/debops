@@ -675,17 +675,53 @@ def _run_verb_of(run):
     return _run_verb(mode) if mode else 'Preparing'
 
 
-def _current_playbook(playbooks, done, counts):
-    """The playbook of the running task: its tally span. None without
-    the spans; the only playbook answers for itself."""
+def _remaining_playbooks(playbooks, done, counts):
+    """The playbooks still on the status line: the running one (its
+    tally span holds the task position) and the ones after it,
+    dropping one by one as the spans pass; the whole list when the
+    spans are unknown. The last one stays while its recap prints
+    (the span walk clamps to it)."""
     if not playbooks:
-        return None
+        return []
     if counts is None or len(counts) != len(playbooks):
-        return playbooks[0] if len(playbooks) == 1 else None
+        return list(playbooks)
     span = current_span(counts, done or 0)
     if span is None:
-        return None
-    return playbooks[span]
+        return list(playbooks[-1:])
+    return list(playbooks[span:])
+
+
+def _ellipsize_middle(names, budget):
+    """The playbook list fitted to the budget: whole names from the
+    front and the back in alternation, the middle elided with an
+    ellipsis; the running (first) name survives any budget."""
+    if not names:
+        return ''
+    full = ' '.join(names)
+    if budget is None or len(full) <= budget:
+        return full
+    room = max(1, budget - 3)  # the ' … ' between the two ends
+    front, back = [], []
+    left, right = 0, len(names) - 1
+    turn_front = True
+    taken = 0
+    while left <= right:
+        name = names[left] if turn_front else names[right]
+        extra = len(name) + (1 if front or back else 0)
+        if taken + extra > room:
+            break
+        if turn_front:
+            front.append(name)
+            left += 1
+        else:
+            back.insert(0, name)
+            right -= 1
+        taken += extra
+        turn_front = not turn_front
+    if not front and not back:
+        # An absurd budget: the running name, hard-cut
+        return names[0][:max(1, budget)]
+    return ' '.join(front + ['…'] + back)
 
 
 def _foreground_run(command, shell):
@@ -1037,10 +1073,11 @@ class Repl(object):
         return _bounded_history_class()(self.history_file,
                                         self.history_max)
 
-    def status_line(self):
+    def status_line(self, width=None):
         """The session state for a status bar: the place on the left,
         the trust state on the right. The shell renders it below the
-        input line; the plain interpreter never calls it."""
+        input line; the plain interpreter never calls it. With the
+        bar's width, the run segment keeps to its two thirds."""
         name = self.project_name or 'docs'
         view = ':{}'.format(self.view) if self.view else ''
         root = self._view_root_rel
@@ -1070,6 +1107,9 @@ class Repl(object):
         left = '{}{}{}'.format(name, view, place)
         if self.run_display == 'shell':
             run_segment = None
+            # The trust text shares the right side; the run segment
+            # counts it into its two-thirds budget
+            reserved = len(right) + 3 if right else 0
             if self.active_run is not None:
                 # Our own run reports through its task polls
                 run = self.active_run['run']
@@ -1079,7 +1119,8 @@ class Repl(object):
                         run.get('taskCounts'),
                         elapsed=time.monotonic()
                         - self.active_run['started'],
-                        estimate=run.get('estimateSeconds'))
+                        estimate=run.get('estimateSeconds'),
+                        width=width, reserved=reserved)
             elif self._foreign_run is not None:
                 # A run started elsewhere (the queue, an agent,
                 # another client), from the status poller
@@ -1090,26 +1131,26 @@ class Repl(object):
                         foreign.get('tasksDone'),
                         foreign.get('tasksTotal'),
                         foreign.get('taskCounts'),
-                        current=foreign.get('currentPlaybook'),
                         elapsed=foreign.get('elapsedSeconds'),
-                        estimate=foreign.get('estimateSeconds'))
+                        estimate=foreign.get('estimateSeconds'),
+                        width=width, reserved=reserved)
             if run_segment:
                 right = (run_segment + ' │ ' + right) \
                         if right else run_segment
         return left, right
 
     def _run_segment(self, verb, playbooks, done, total, counts=None,
-                     current=None, elapsed=None, estimate=None):
-        """The run on the status line: the verb and the current
-        playbook, then the tally and the clock — the stable-width
-        parts (the task and play names shift too fast to read). The
+                     elapsed=None, estimate=None, width=None,
+                     reserved=0):
+        """The run on the status line: the verb and the playbooks
+        still to run (dropping one by one as their tally spans
+        pass), then the tally and the clock — the stable-width parts
+        (the task and play names shift too fast to read). The
         time-to-completion is the client's own extrapolation,
-        recalculated at every render."""
-        if current is None:
-            current = _current_playbook(playbooks, done, counts)
-        if current is None and playbooks and len(playbooks) > 1:
-            current = '{} playbooks'.format(len(playbooks))
-        parts = ['{} {}'.format(verb, current)] if current else [verb]
+        recalculated at every render. The playbook list elides its
+        middle to keep the segment within two thirds of the bar —
+        the place on the left keeps its share."""
+        parts = [verb]
         if done is not None and total:
             parts.append('{}/{}'.format(done, total))
         if elapsed is not None:
@@ -1117,6 +1158,14 @@ class Repl(object):
             remaining = _run_remaining(elapsed, done, total, estimate)
             if remaining is not None:
                 parts.append('~' + _format_duration(remaining))
+        # (+1 for the space the listing takes after the verb)
+        fixed = len(' │ '.join(parts)) + reserved + 1
+        budget = None if width is None else max(
+                8, int(width * 2 / 3) - fixed)
+        listing = _ellipsize_middle(
+                _remaining_playbooks(playbooks, done, counts), budget)
+        if listing:
+            parts[0] = '{} {}'.format(verb, listing)
         return ' │ '.join(parts)
 
     # -- the wire -------------------------------------------------

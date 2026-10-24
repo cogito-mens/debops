@@ -83,6 +83,8 @@ def tool_project_status(project, policy, arguments):
             done = runs.task_count(log)
             # The playbook of the running task, by its tally span
             counts = metadata.get('taskCounts')
+            if counts:
+                structured['taskCounts'] = list(counts)
             if counts and targets and done is not None:
                 span = runs.current_span(counts, min(done, total
                                                      or done))
