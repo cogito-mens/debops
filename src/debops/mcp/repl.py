@@ -497,6 +497,16 @@ class Repl(object):
         # 'started': the monotonic first sighting, 'task_id': the
         # task's handle}; None at rest
         self.active_run = None
+        # The run's live log tail, on a side connection of its own
+        # (like the watch's): the run's own output instead of the
+        # status digests
+        self._tail_client = None
+        self._tail_thread = None
+        # A standalone 'log --follow' tail, for the front ends whose
+        # Ctrl-C binding ends it
+        self._follow_client = None
+        # The lines the run's tail printed (the skip-render decision)
+        self._tail_lines = 0
 
     @property
     def prompt(self):
@@ -688,6 +698,8 @@ class Repl(object):
             active = self.active_run = {'run': run,
                                         'started': time.monotonic(),
                                         'task_id': task.get('taskId')}
+            if self.run_display in ('tail', 'dots'):
+                self._start_log_tail(run)
         else:
             active['run'] = run
         if self.run_display in ('dots', 'lines'):
@@ -696,11 +708,68 @@ class Repl(object):
             self._invalidate()
         return run
 
+    # -- the run's live log tail --------------------------------------
+
+    def _start_log_tail(self, run):
+        """Tail the run's log over a side connection: the run's own
+        output, live, instead of the status digests. The replay of
+        the log's start rides the stream, so a fast run still prints
+        whole."""
+        execution_id = run.get('executionId')
+        if (execution_id is None or self._tail_client is not None
+                or self.client.legacy):
+            return
+        try:
+            watcher = self.client.clone()
+        except (AttributeError, ConnectionError, OSError):
+            # No side connection — the status digests carry the run
+            return
+        self._tail_client = watcher
+        self._tail_lines = 0
+        thread = threading.Thread(target=self._tail_loop,
+                                  args=(watcher, execution_id),
+                                  daemon=True)
+        self._tail_thread = thread
+        thread.start()
+
+    def _tail_loop(self, watcher, execution_id):
+        """Print the run's log lines as they stream; the server ends
+        the stream when the run finalizes."""
+        try:
+            for message in watcher.request_streaming(
+                    'subscriptions/listen',
+                    {'notifications': {'runLog': execution_id}}):
+                if message.get('method') == 'notifications/runs/log':
+                    print(message.get('params', {}).get('line', ''),
+                          file=self._out)
+                    self._tail_lines += 1
+        except (EOFError, ConnectionError, OSError, RuntimeError):
+            pass
+        finally:
+            watcher.close()
+
+    def _stop_log_tail(self):
+        """End the run's tail, draining it first: the last log lines
+        land before the completion marker does."""
+        watcher = self._tail_client
+        thread = self._tail_thread
+        if thread is not None:
+            thread.join(timeout=3)
+        if thread is not None and thread.is_alive():
+            # The finalize stream-end never came (an old daemon);
+            # drop the connection
+            if watcher is not None:
+                watcher.close()
+            thread.join(timeout=3)
+        self._tail_client = None
+        self._tail_thread = None
+
     def _finish_run(self, outcome, result=None, tailed=False):
-        """Close the progress rendering of a run. The shell's dotted
-        line lands whole as the scrollback marker; the tailed repl
-        gets the rule and the verdict; the console's status lines
-        fold away."""
+        """Close the progress rendering of a run. The log tail drains
+        before the marker prints; the shell's dotted line lands whole
+        as the scrollback marker; the tailed repl gets the rule and
+        the verdict; the console's status lines fold away."""
+        self._stop_log_tail()
         active = self.active_run
         if self.run_display == 'dots' and active is not None:
             run = active['run']
@@ -736,7 +805,8 @@ class Repl(object):
                 self._track_run(task)
                 message = task.get('statusMessage')
                 if (message and message != last_message
-                        and self.run_display in ('tail', 'dots')):
+                        and self.run_display in ('tail', 'dots')
+                        and self._tail_client is None):
                     print(message, file=self._err)
                     last_message = message
                 status = task.get('status')
@@ -751,7 +821,8 @@ class Repl(object):
                     continue
                 if status == 'completed':
                     result = task.get('result') or {}
-                    tailed = last_message is not None
+                    tailed = (last_message is not None
+                              or self._tail_lines > 0)
                     self._finish_run('OK', result, tailed)
                     if result.get('isError'):
                         return result
@@ -1350,15 +1421,46 @@ class Repl(object):
         return self._call_tool('execution.list', {})
 
     def cmd_log(self, args):
-        if len(args) != 1:
-            raise ReplError('usage: log <execution id>')
+        follow = False
+        rest = []
+        for token in args:
+            if token in ('-f', '--follow'):
+                follow = True
+            else:
+                rest.append(token)
+        if len(rest) != 1:
+            raise ReplError('usage: log <execution id> [-f|--follow]')
         try:
-            execution_id = int(args[0])
+            execution_id = int(rest[0])
         except ValueError:
             raise ReplError('the execution id is a number: {!r}'
-                            .format(args[0]))
-        return self._call_tool('execution.output',
-                               {'id': execution_id})
+                            .format(rest[0]))
+        if not follow:
+            return self._call_tool('execution.output',
+                                   {'id': execution_id})
+        if self.client.legacy:
+            raise ReplError('the 2025-era protocol has no '
+                            'subscription streams')
+        # Replay the log and follow a live run; the server ends the
+        # stream at the run's finalization. Ctrl-C stops the tail —
+        # the run itself is untouched
+        watcher = self.client.clone()
+        self._follow_client = watcher
+        try:
+            for message in watcher.request_streaming(
+                    'subscriptions/listen',
+                    {'notifications': {'runLog': execution_id}}):
+                if message.get('method') == 'notifications/runs/log':
+                    print(message.get('params', {}).get('line', ''),
+                          file=self._out)
+        except KeyboardInterrupt:
+            self._note('the tail ends; the run is untouched')
+        except (EOFError, ConnectionError, OSError, RuntimeError) \
+                as errmsg:
+            raise ReplError(str(errmsg))
+        finally:
+            self._follow_client = None
+            watcher.close()
 
     def cmd_purge(self, args):
         if len(args) != 1:
@@ -1813,7 +1915,7 @@ HELP = {
                                          'del <batch> removes the '
                                          'last job)',
     'logs': 'the recorded executions',
-    'log <id>': 'the output of an execution',
+    'log <id> [-f]': 'the output of an execution; --follow tails a live one',
     'purge <seconds>': 'drop the run logs older than the age',
     'roles [filter]': 'the visible collections and their roles',
     'role <name>': 'describe a role',

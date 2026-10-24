@@ -1817,6 +1817,30 @@ def test_check_via_tasks_extension(run_debops, mcp_env, project_dir,
         assert run["hostCount"] == 1
         assert run["taskIndex"] == 1
         assert "Say hello" in run["currentTask"]
+
+        # The run's log streams to a runLog subscriber: the replay of
+        # a finished run, then the stream ends
+        import socket as socket_module
+        connection = socket_module.socket(socket_module.AF_UNIX,
+                                          socket_module.SOCK_STREAM)
+        connection.connect(socket_path)
+        connection.sendall((json.dumps({
+                "jsonrpc": "2.0", "id": 9,
+                "method": "subscriptions/listen",
+                "params": {"_meta": tasks_meta,
+                           "notifications": {"runLog": 1}}})
+                + "\n").encode())
+        reader = connection.makefile("rb")
+        lines = []
+        while True:
+            message = json.loads(reader.readline())
+            if message.get("method") == "notifications/runs/log":
+                lines.append(message["params"]["line"])
+            if message.get("id") == 9:
+                break
+        connection.close()
+        assert any("hello from a task" in line for line in lines)
+        assert any(line.startswith("PLAY RECAP") for line in lines)
     finally:
         server.terminate()
         server.wait(timeout=10)

@@ -1136,10 +1136,25 @@ class ProgressTestCase(unittest.TestCase):
             self.run_with_context(context)
         self.assertEqual(task.run_info['mode'], 'check')
         self.assertEqual(task.run_info['playbooks'], ['site'])
+        self.assertEqual(task.run_info['executionId'], 1)
         self.assertNotIn('taskCount', task.run_info)
         self.assertEqual(task.run_info['taskIndex'], 1)
         self.assertEqual(task.run_info['currentTask'],
                          'TASK [Say hello]')
+
+    def test_the_run_log_streams_to_the_subscribers(self):
+        # Every output line of the run goes to the run's
+        # subscribers; the finalization closes the stream
+        server = mock.Mock()
+        context = ToolContext(1, threading.Event(), server=server)
+        self.run_with_context(context)
+        emitted = [call.args for call in
+                   server.emit_run_log.call_args_list]
+        self.assertIn((1, 'ok: [localhost]'), emitted)
+        self.assertIn((1, 'TASK [Say hello] '
+                          '********************************************'),
+                      emitted)
+        server.finish_run_log.assert_called_once_with(1)
 
 
 class DetachedCommandTestCase(unittest.TestCase):

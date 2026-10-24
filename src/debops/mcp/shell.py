@@ -56,6 +56,10 @@ def _shell_bindings(session):
             except Exception:
                 session.client.close()
             session._note('the run is cancelled')
+        elif session._follow_client is not None:
+            # A 'log --follow' tail ends; the run is untouched
+            session._follow_client.close()
+            session._note('the tail ends')
         elif session._busy:
             # The command's connection drops; its worker errors out
             session.client.close()

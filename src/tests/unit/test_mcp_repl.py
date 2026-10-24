@@ -26,9 +26,18 @@ class FakeClient(object):
         self.calls = []
         self._responses = {}
         self.closed = False
+        self.legacy = False
+        # A scripted side connection for the log tails, when the
+        # test wants one (the clone without it refuses)
+        self.tail = None
 
     def close(self):
         self.closed = True
+
+    def clone(self):
+        if self.tail is None:
+            raise AttributeError('no tail scripted')
+        return self.tail
 
     def queue(self, method, *responses):
         self._responses[method] = list(responses)
@@ -38,6 +47,25 @@ class FakeClient(object):
         queued = self._responses.get(method, [])
         response = queued.pop(0) if queued else {'result': {}}
         return {'result': response}
+
+
+class FakeTailConnection(object):
+    """A scripted side connection: the queued log lines stream, then
+    the stream ends (the server's finalization)."""
+
+    def __init__(self, lines=()):
+        self.lines = list(lines)
+        self.closed = False
+        self.subscriptions = []
+
+    def request_streaming(self, method, params):
+        self.subscriptions.append(params['notifications'])
+        for line in self.lines:
+            yield {'method': 'notifications/runs/log',
+                   'params': {'line': line}}
+
+    def close(self):
+        self.closed = True
 
 
 def make_repl(client, interactive=False):
@@ -647,6 +675,81 @@ class TaskFlowTestCase(unittest.TestCase):
             repl_obj.execute('run site')
         self.assertTrue(state['dropped'])
         self.assertFalse(repl_obj.had_error)
+
+    def test_the_run_tails_its_log(self):
+        # The run's own output streams on the answer channel, the
+        # status digest is superseded, the marker closes it out
+        client = FakeClient()
+        client.tail = FakeTailConnection(['ok: [localhost]',
+                                          'changed: [localhost]'])
+        repl_obj, out, err = make_repl(client)
+        self._run_task_script(repl_obj, [
+                {'status': 'working',
+                 'statusMessage': 'TASK [one]',
+                 'run': {'mode': 'run', 'playbooks': ['site'],
+                         'executionId': 7, 'taskIndex': 1}},
+                {'status': 'completed',
+                 'result': {'isError': False,
+                            'structuredContent': {'exitCode': 0},
+                            'content': [{'type': 'text',
+                                         'text': 'recap'}]}}])
+        self.assertIn('ok: [localhost]', out.getvalue())
+        self.assertIn('changed: [localhost]', out.getvalue())
+        self.assertNotIn('TASK [one]', err.getvalue())
+        self.assertIn('finished (exit 0)', err.getvalue())
+        self.assertNotIn('recap', out.getvalue())
+        self.assertTrue(client.tail.closed)
+        self.assertEqual(client.tail.subscriptions, [{'runLog': 7}])
+
+    def test_a_legacy_client_keeps_the_status_digest(self):
+        # The 2025 era has no streams; the digest prints as before
+        client = FakeClient()
+        client.legacy = True
+        repl_obj, _out, err = make_repl(client)
+        self._run_task_script(repl_obj, [
+                {'status': 'working',
+                 'statusMessage': 'TASK [one]',
+                 'run': {'mode': 'run', 'playbooks': ['site'],
+                         'executionId': 7, 'taskIndex': 1}},
+                {'status': 'completed',
+                 'result': {'isError': False,
+                            'structuredContent': {'exitCode': 0},
+                            'content': []}}])
+        self.assertIn('TASK [one]', err.getvalue())
+        self.assertIsNone(repl_obj._tail_client)
+
+    def test_log_follow_tails_the_execution(self):
+        client = FakeClient()
+        client.tail = FakeTailConnection(['one', 'two'])
+        session, out, _err = make_repl(client)
+        session.execute('log 7 --follow')
+        self.assertEqual(out.getvalue(), 'one\ntwo\n')
+        self.assertEqual(client.tail.subscriptions, [{'runLog': 7}])
+        self.assertTrue(client.tail.closed)
+
+    def test_log_follow_ctrl_c_keeps_the_run(self):
+        class Interrupting(FakeTailConnection):
+            def request_streaming(self, method, params):
+                self.subscriptions.append(params['notifications'])
+                yield {'method': 'notifications/runs/log',
+                       'params': {'line': 'one'}}
+                raise KeyboardInterrupt()
+
+        client = FakeClient()
+        client.tail = Interrupting()
+        session, out, err = make_repl(client)
+        session.execute('log 7 -f')
+        self.assertIn('one', out.getvalue())
+        self.assertIn('the tail ends', err.getvalue())
+        self.assertFalse(session.had_error)
+
+    def test_log_follow_needs_a_stream_capable_era(self):
+        client = FakeClient()
+        client.legacy = True
+        session, _out, _err = make_repl(client)
+        with self.assertRaises(ReplError) as context:
+            session.execute('log 7 -f')
+        self.assertIn('2025-era', str(context.exception))
 
     def test_the_console_tracks_the_run_without_printing(self):
         # The status lines read the session; nothing prints per poll

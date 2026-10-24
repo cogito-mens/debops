@@ -331,7 +331,8 @@ class JobQueue(object):
                              'createdAt': job['createdAt']}
         context = ToolContext(
                 None, threading.Event(), client_capabilities={},
-                client_info={'name': 'the job queue'}, trusted=True)
+                client_info={'name': 'the job queue'}, trusted=True,
+                server=server)
         result = _execute_playbook(
                 project, policy, arguments, context,
                 check=(job['mode'] == 'check'),

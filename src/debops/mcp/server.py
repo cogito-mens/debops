@@ -68,6 +68,9 @@ VIEW_META_KEY = 'org.debops/view'
 
 SUBSCRIPTION_ID_KEY = 'io.modelcontextprotocol/subscriptionId'
 
+# The sentinel ending a run-log stream when the run finalizes
+RUN_LOG_DONE = object()
+
 
 def _reject_cursor(params):
     """Reject a pagination cursor on a list method: the lists are
@@ -281,7 +284,7 @@ class ToolContext(object):
     def __init__(self, request_id, cancelled, progress_token=None,
                  notify=None, peer_pid=None, client_capabilities=None,
                  client_info=None, input_responses=None, task=None,
-                 trusted=False, elevated=False):
+                 trusted=False, elevated=False, server=None):
         self.request_id = request_id
         self.cancelled = cancelled
         self.progress_token = progress_token
@@ -297,6 +300,9 @@ class ToolContext(object):
         self.task = task
         self.trusted = trusted
         self.elevated = elevated
+        # The server handling the call, for the tools which broadcast
+        # beyond the caller's channel (a run's log stream)
+        self.server = server
         self._notify = notify
 
     def progress(self, message, progress=None, total=None):
@@ -443,6 +449,9 @@ class McpServer(object):
         # Open subscription streams: request id → filter and event queue
         self._subscriptions = {}
         self._subscriptions_lock = threading.Lock()
+        # The line numbers of the runs currently emitting their log
+        # (execution id → last seq), for the replay/follow dedupe
+        self._run_log_seq = {}
         # The task registry: long-running work the client polls for
         self._tasks = TaskRegistry()
         self._tasks.on_task_change = self._emit_task_change
@@ -1228,7 +1237,8 @@ class McpServer(object):
                     client_capabilities=context.client_capabilities,
                     client_info=context.client_info,
                     input_responses=params.get('inputResponses'),
-                    trusted=context.trusted, elevated=context.elevated)
+                    trusted=context.trusted, elevated=context.elevated,
+                    server=self)
             result = tool.handler(arguments, tool_context)
             logger.notice('Tool %s(%s) -> %s%s', name,
                           ','.join(sorted(arguments)),
@@ -1503,7 +1513,7 @@ class McpServer(object):
                     # The trust of the requesting moment rides with
                     # the task
                     trusted=context.trusted, elevated=context.elevated,
-                    task=task)
+                    task=task, server=self)
             if tool.needs_context:
                 result = tool.handler(arguments, tool_context)
             else:
@@ -1636,6 +1646,31 @@ class McpServer(object):
             if task.task_id in subscription['filter'].get('taskIds', []):
                 subscription['queue'].put(message)
 
+    def emit_run_log(self, execution_id, line):
+        """Push one run-log line to the run's subscribers. The 'seq'
+        is the line's number in the run; a replaying subscriber skips
+        what it already read from the log file."""
+        with self._subscriptions_lock:
+            seq = self._run_log_seq.get(execution_id, 0) + 1
+            self._run_log_seq[execution_id] = seq
+            subscriptions = list(self._subscriptions.values())
+        message = {'jsonrpc': '2.0', 'method': 'notifications/runs/log',
+                   'params': {'executionId': execution_id, 'seq': seq,
+                              'line': line}}
+        for subscription in subscriptions:
+            if subscription['filter'].get('runLog') == execution_id:
+                subscription['queue'].put(message)
+
+    def finish_run_log(self, execution_id):
+        """Close the run's log streams: the run has finalized. The
+        sentinel ends the subscription loop."""
+        with self._subscriptions_lock:
+            self._run_log_seq.pop(execution_id, None)
+            subscriptions = list(self._subscriptions.values())
+        for subscription in subscriptions:
+            if subscription['filter'].get('runLog') == execution_id:
+                subscription['queue'].put(RUN_LOG_DONE)
+
     def content_fingerprint(self):
         """A fingerprint of the project content served (skills, prompts)."""
         return {
@@ -1712,6 +1747,35 @@ class McpServer(object):
                               {'extensions': {TASKS_EXTENSION: {}}}},
                         request_id=request_id)
             honored['taskIds'] = [str(task_id) for task_id in task_ids]
+        run_log = requested.get('runLog')
+        log_path = None
+        if run_log is not None:
+            # The live tail of a run's log: replay then follow, until
+            # the run finalizes. The content is the run's output —
+            # the exposure class of execution.output; a debug run's
+            # log carries secrets
+            if self.project is None:
+                raise rpc.JsonRpcError(
+                        rpc.INVALID_PARAMS, 'Invalid params',
+                        data={'details': 'no runs without a project; '
+                              'this server is read-only documentation'},
+                        request_id=request_id)
+            try:
+                execution_id = int(run_log)
+            except (TypeError, ValueError):
+                raise rpc.JsonRpcError(
+                        rpc.INVALID_PARAMS, 'Invalid params',
+                        data={'details': "'runLog' names an execution "
+                              'id'}, request_id=request_id)
+            _id, log_path = runs.execution_log(self.project,
+                                               execution_id)
+            if log_path is None:
+                raise rpc.JsonRpcError(
+                        rpc.INVALID_PARAMS, 'Invalid params',
+                        data={'details': 'unknown execution: {}'
+                              .format(execution_id)},
+                        request_id=request_id)
+            honored['runLog'] = execution_id
 
         event_queue = self._subscribe(request_id, honored)
         cancel_event = threading.Event()
@@ -1723,11 +1787,37 @@ class McpServer(object):
                            'notifications': honored}})
         logger.info('Subscription %s opened: %s', request_id,
                     ', '.join(sorted(honored)) or '(nothing honored)')
+        replayed = 0
+        if 'runLog' in honored:
+            # The backlog first, so a run which finished before the
+            # tail connected still prints whole; the live lines skip
+            # what the replay printed, by their seq
+            try:
+                with open(log_path) as fp:
+                    backlog = fp.read()
+            except OSError:
+                backlog = ''
+            for line in backlog.splitlines():
+                replayed += 1
+                notify({'jsonrpc': '2.0',
+                        'method': 'notifications/runs/log',
+                        'params': {'executionId': honored['runLog'],
+                                   'seq': replayed, 'line': line,
+                                   '_meta': {SUBSCRIPTION_ID_KEY:
+                                             request_id}}})
+            metadata = runs.read_metadata(log_path)
+            if metadata is not None and 'finishedAt' in metadata:
+                event_queue.put(RUN_LOG_DONE)
         try:
             while not cancel_event.is_set() and not context.is_dead():
                 try:
                     message = event_queue.get(timeout=0.5)
                 except queue.Empty:
+                    continue
+                if message is RUN_LOG_DONE:
+                    break
+                if message.get('method') == 'notifications/runs/log' \
+                        and message['params'].get('seq', 0) <= replayed:
                     continue
                 message['params'].setdefault('_meta', {})[
                         SUBSCRIPTION_ID_KEY] = request_id

@@ -743,14 +743,17 @@ class _RunProgress(object):
         """The play/task header without its asterisk padding."""
         return re.sub(r'\s+\*+\s*$', '', line.rstrip())
 
-    def begin(self, mode, targets, tally):
+    def begin(self, mode, targets, tally, execution_id=None):
         """The run details at the start of the run: the mode, the
         playbooks and the tally, for the client's tracking. A run
-        without a probe carries no counts."""
+        without a probe carries no counts. The execution id lets the
+        client tail the run's log."""
         task = self._context.task
         if task is None:
             return
         info = {'mode': mode, 'playbooks': list(targets)}
+        if execution_id is not None:
+            info['executionId'] = execution_id
         if tally is not None:
             info.update({'taskCount': tally['taskCount'],
                          'hostCount': tally['hostCount'],
@@ -1040,9 +1043,13 @@ def _execute_playbook(project, policy, arguments, context, check,
             # throttled notifications, the log tail in the status
             tail = collections.deque(maxlen=runs.TAIL_LINES)
             run_progress = _RunProgress(context)
+            # The run's own output streams to the log subscribers
+            server = getattr(context, 'server', None)
 
             def on_line(line):
                 tail.append(line)
+                if server is not None:
+                    server.emit_run_log(execution_id, line)
                 run_progress.on_line(line, tail)
 
             started = time.monotonic()
@@ -1077,7 +1084,7 @@ def _execute_playbook(project, policy, arguments, context, check,
                     _finalize_command(project))
             # The run's details reach the client's tracker before the
             # first output line can
-            run_progress.begin(mode, targets, tally)
+            run_progress.begin(mode, targets, tally, execution_id)
             output, returncode, status = run_cancellable(
                     command, env=env, cwd=project.path, context=context,
                     timeout=policy.execute_timeout, on_line=on_line,
@@ -1104,6 +1111,8 @@ def _execute_playbook(project, policy, arguments, context, check,
                     logger.warning('Cannot update the run metadata for '
                                    'execution %s: %s', execution_id,
                                    errmsg)
+            if server is not None:
+                server.finish_run_log(execution_id)
         finally:
             if unlocked:
                 inventory.lock()

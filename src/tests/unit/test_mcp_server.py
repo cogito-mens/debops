@@ -972,6 +972,115 @@ class ConfigWatchTestCase(unittest.TestCase):
         self.assertEqual(len(self.reloads), count)
 
 
+class RunLogStreamTestCase(unittest.TestCase):
+    """The 'runLog' subscription topic: the log replays, then
+    follows, until the run finalizes."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-runlog-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        os.environ['XDG_CACHE_HOME'] = os.path.join(self.tmpdir, 'cache')
+        os.makedirs(os.path.join(self.tmpdir, 'project'))
+        self.project = type('Project', (), {
+            'path': os.path.join(self.tmpdir, 'project'),
+            'name': 'project',
+            'project_type': 'legacy',
+            'view': 'system',
+            'auto_commit': lambda self, message=None: None,
+            'config': type('Config', (), {'raw': {},
+                                          '_env_vars': {}})(),
+        })()
+        self.server = McpServer(project=self.project,
+                                policy=McpPolicy(self.project))
+
+    def write_log(self, content, execution_id=1, finished=False):
+        from debops.mcp import runs
+        _id, path = runs.new_log(self.project)
+        self.assertEqual(_id, execution_id)
+        with open(path, 'w') as fp:
+            fp.write(content)
+        if finished:
+            runs.write_metadata(path, {'executionId': execution_id,
+                                       'finishedAt': 'done'})
+        return path
+
+    def listen(self, execution_id, sent):
+        request = make_request(
+                'subscriptions/listen',
+                params={'notifications': {'runLog': execution_id}})
+        return self.server.handle_bytes(json.dumps(request).encode(),
+                                        notify=sent.append)
+
+    def wait_for(self, predicate, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def log_lines(self, sent):
+        return [message['params']['line'] for message in sent
+                if message.get('method') == 'notifications/runs/log']
+
+    def test_an_unknown_execution_is_an_error(self):
+        sent = []
+        response = self.server.handle_bytes(
+                json.dumps(make_request(
+                        'subscriptions/listen',
+                        params={'notifications': {'runLog': 99}})
+                        ).encode(),
+                notify=sent.append)
+        self.assertIn('unknown execution',
+                      response['error']['data']['details'])
+
+    def test_a_finished_run_replays_and_ends(self):
+        self.write_log('line one\nline two\n', finished=True)
+        sent = []
+        response = self.listen(1, sent)
+        self.assertIsNotNone(response)
+        self.assertEqual(self.log_lines(sent), ['line one',
+                                                'line two'])
+
+    def test_replay_then_follow_then_the_end(self):
+        self.write_log('line one\n')
+        sent = []
+        outcome = []
+        thread = threading.Thread(
+                target=lambda: outcome.append(self.listen(1, sent)),
+                daemon=True)
+        thread.start()
+        # The replay lands first; the stream stays open
+        self.assertTrue(self.wait_for(
+                lambda: self.log_lines(sent) == ['line one']))
+        self.assertEqual(outcome, [])
+        # A line replayed already is skipped by its seq; the live
+        # ones follow
+        self.server.emit_run_log(1, 'line one')
+        self.server.emit_run_log(1, 'line two')
+        self.assertTrue(self.wait_for(
+                lambda: self.log_lines(sent) == ['line one',
+                                                 'line two']))
+        # The finalization closes the stream with the completion
+        self.server.finish_run_log(1)
+        self.assertTrue(self.wait_for(lambda: bool(outcome)))
+        thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+
+    def test_docs_mode_has_no_runs(self):
+        server = McpServer(project=None,
+                           policy=McpPolicy.for_documentation())
+        sent = []
+        response = server.handle_bytes(
+                json.dumps(make_request(
+                        'subscriptions/listen',
+                        params={'notifications': {'runLog': 1}})
+                        ).encode(),
+                notify=sent.append)
+        self.assertIn('read-only documentation',
+                      response['error']['data']['details'])
+
+
 class ClacksOverheadTestCase(unittest.TestCase):
     """Every result carries the tribute in its '_meta' overhead."""
 

@@ -347,6 +347,10 @@ def _build_app(session):
     def _ctrl_c(event):
         if session._gate is not None:
             session._gate_decline()
+        elif session._follow_client is not None:
+            # A 'log --follow' tail ends; the run is untouched
+            session._follow_client.close()
+            session._echo('^C (the log tail)\n')
         elif session._busy:
             # The command's connection drops; its worker errors out
             session.client.close()
