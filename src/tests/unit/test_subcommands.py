@@ -104,6 +104,16 @@ def test_plain_flag_on_all_front_ends():
     assert parse_cli("mcp", "repl").args.plain is False
 
 
+@pytest.mark.parametrize("section", ["run", "check"])
+def test_debug_flag_on_the_run_sections(section):
+    subcommands = parse_cli(section, "--debug", "site")
+
+    assert subcommands.args.debug is True
+    assert "site" in subcommands.args.ansible_args
+    # ... and off by default
+    assert parse_cli(section, "site").args.debug is False
+
+
 def test_unknown_config_command_exits_with_an_error(capsys):
     with pytest.raises(SystemExit) as exc:
         parse_cli("config", "bogus")

@@ -124,6 +124,32 @@ def test_read_only_friday_respects_existing_check_mode(stub_project,
     assert runner._ansible_command.count("--check") == 1
 
 
+def test_debug_adds_the_flag_and_the_environment(stub_project):
+    runner = AnsiblePlaybookRunner(stub_project(), ansible_args=["site.yml"],
+                                   debug=True)
+
+    assert runner._ansible_command == ["ansible-playbook", "site.yml", "-vv"]
+    assert runner._ansible_env["ANSIBLE_DEBUG"] == "true"
+    assert runner._ansible_env["ANSIBLE_KEEP_REMOTE_FILES"] == "1"
+
+
+def test_debug_stacks_with_the_users_own_verbosity(stub_project):
+    runner = AnsiblePlaybookRunner(stub_project(),
+                                   ansible_args=["-vvvv", "site.yml"],
+                                   debug=True)
+
+    assert runner._ansible_command == ["ansible-playbook", "-vvvv",
+                                       "site.yml", "-vv"]
+
+
+def test_no_debug_by_default(stub_project):
+    runner = AnsiblePlaybookRunner(stub_project(), ansible_args=["site.yml"])
+
+    assert "-vv" not in runner._ansible_command
+    assert "ANSIBLE_DEBUG" not in runner._ansible_env
+    assert "ANSIBLE_KEEP_REMOTE_FILES" not in runner._ansible_env
+
+
 def test_get_check_mode_defaults_to_run(stub_project):
     runner = AnsiblePlaybookRunner(stub_project(), ansible_args=["site.yml"])
     assert runner._get_check_mode() == "run"

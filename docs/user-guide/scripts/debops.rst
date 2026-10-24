@@ -35,6 +35,10 @@ split into sections.
   automatically adds the ``--diff`` and ``--check`` :command:`ansible-playbook`
   options to ensure that the playbooks are executed in a check mode;
 
+  Both commands accept the ``--debug`` option, which runs the playbooks with
+  debugging output: ``-vv`` verbosity, :envvar:`ANSIBLE_DEBUG` and
+  :envvar:`ANSIBLE_KEEP_REMOTE_FILES` in the execution environment;
+
 :command:`debops env`
   This command can be used to inspect the environment variables which will be
   present when various DebOps commands are executed. It can also be used to run

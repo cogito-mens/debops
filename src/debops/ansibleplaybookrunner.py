@@ -136,6 +136,16 @@ class AnsiblePlaybookRunner(object):
                           file=sys.stderr)
                     self._ansible_command.extend(['--diff', '--check'])
 
+        if self.kwargs.get('debug'):
+            # -vv pairs the invocation with the result per task,
+            # without the connection chatter of -vvv; the user's own
+            # verbosity flags ride alongside and Ansible counts the
+            # v's. The module scripts stay on the host for manual
+            # re-runs ('expel' them with the next normal run)
+            self._ansible_command.append('-vv')
+            self._ansible_env['ANSIBLE_DEBUG'] = 'true'
+            self._ansible_env['ANSIBLE_KEEP_REMOTE_FILES'] = '1'
+
     def _quote_spaces(self, string):
         if ' ' in string:
             return '"{}"'.format(string)

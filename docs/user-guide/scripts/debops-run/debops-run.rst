@@ -49,6 +49,14 @@ The options below need to be specified before any playbooks to take effect.
   Do not execute :command:`ansible-playbook` command; instead print out all the
   environment variables and the command itself to stdout.
 
+``--debug``
+  Run the playbooks with debugging output: the :command:`ansible-playbook`
+  command gets the ``-vv`` option (stacking with any verbosity options of your
+  own), and the execution environment enables :envvar:`ANSIBLE_DEBUG` and
+  :envvar:`ANSIBLE_KEEP_REMOTE_FILES`, so the module scripts stay on the
+  managed hosts for manual re-runs. Note that the debugging output prints the
+  task arguments, secrets included.
+
 ``-v, --verbose``
   Increase output verbosity. More letters means higher verbosity.
 

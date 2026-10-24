@@ -58,6 +58,11 @@ General
 - Added :ref:`hook scripts <debops_hooks>` support for extending DebOps CLI
   behavior at various execution points.
 
+- The :command:`debops run` and :command:`debops check` commands accept the
+  ``--debug`` option, which runs the playbooks with debugging output: ``-vv``
+  verbosity, :envvar:`ANSIBLE_DEBUG` and :envvar:`ANSIBLE_KEEP_REMOTE_FILES`
+  in the execution environment.
+
 - Manual pages for each Ansible role now include the role default
   variables rendered from the :file:`defaults/main.yml` file.
 
