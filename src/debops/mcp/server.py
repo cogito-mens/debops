@@ -330,6 +330,28 @@ class ToolContext(object):
                          exc_info=True)
 
 
+# The journal level of a tool's result line: the state-changing
+# calls keep NOTICE (the audit trail), the read-only tools drop to
+# INFO and the poll-shaped reads to DEBUG — the journal tells what
+# changed, not who looked. Errors are always NOTICE: a failure is
+# news either way
+_TOOL_RESULT_LEVELS = {
+    # The foreign-run poller of every attached front end
+    'project.status': logging.DEBUG,
+}
+
+
+def _tool_result_level(tool):
+    """The journal level of a tool's result line, per the table,
+    the read-only annotation, or the NOTICE default."""
+    level = _TOOL_RESULT_LEVELS.get(tool.name)
+    if level is not None:
+        return level
+    if (tool.annotations or {}).get('readOnlyHint'):
+        return logging.INFO
+    return logging.NOTICE
+
+
 class Tool(object):
     """A single tool exposed by the server."""
 
@@ -767,9 +789,9 @@ class McpServer(object):
         if is_notification:
             logger.info('Notification: %s', method)
         else:
-            logger.info('Request: %s (id=%s, client=%s %s)', method,
-                        request_id, (client_info or {}).get('name', '?'),
-                        (client_info or {}).get('version', ''))
+            logger.debug('Request: %s (id=%s, client=%s %s)', method,
+                         request_id, (client_info or {}).get('name', '?'),
+                         (client_info or {}).get('version', ''))
 
         handler = self._methods.get(method)
         if handler is None:
@@ -1217,10 +1239,12 @@ class McpServer(object):
             return self._start_task(tool, arguments, params, context)
         if not tool.needs_context:
             result = tool.handler(arguments)
-            logger.notice('Tool %s(%s) -> %s%s', name,
-                          ','.join(sorted(arguments)),
-                          'error' if result.get('isError') else 'ok',
-                          _audit_tag(context))
+            logger.log(logging.NOTICE if result.get('isError')
+                       else _tool_result_level(tool),
+                       'Tool %s(%s) -> %s%s', name,
+                       ','.join(sorted(arguments)),
+                       'error' if result.get('isError') else 'ok',
+                       _audit_tag(context))
             return result
 
         request_id = context.request_id
@@ -1240,10 +1264,12 @@ class McpServer(object):
                     trusted=context.trusted, elevated=context.elevated,
                     server=self)
             result = tool.handler(arguments, tool_context)
-            logger.notice('Tool %s(%s) -> %s%s', name,
-                          ','.join(sorted(arguments)),
-                          'error' if result.get('isError') else 'ok',
-                          _audit_tag(context))
+            logger.log(logging.NOTICE if result.get('isError')
+                       else _tool_result_level(tool),
+                       'Tool %s(%s) -> %s%s', name,
+                       ','.join(sorted(arguments)),
+                       'error' if result.get('isError') else 'ok',
+                       _audit_tag(context))
             return result
         finally:
             if request_id is not None:

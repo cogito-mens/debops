@@ -13,7 +13,9 @@ from debops.mcp.policy import McpPolicy
 from debops.mcp.server import McpServer, PROTOCOL_VERSION, RequestCancelled
 from debops.mcp.server import TASKS_EXTENSION
 from debops.mcp.server import _config_signature
+from debops.mcp.server import _tool_result_level
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -701,6 +703,58 @@ class RunTaskCancelTrustTestCase(unittest.TestCase):
         task_id = self._start(tool='slow', peer_pid=100)
         response = self._cancel(task_id, peer_pid=200)
         self.assertNotIn('error', response)
+
+
+class ToolResultLevelTestCase(unittest.TestCase):
+    """The journal level of the tool result lines: the polls chat
+    at DEBUG, the read-only tools inform at INFO, the changes keep
+    NOTICE — and an error is always news."""
+
+    def _level(self, name, annotations=None):
+        tool = type('Tool', (), {'name': name,
+                                 'annotations': annotations})()
+        return _tool_result_level(tool)
+
+    def test_the_poll_reads_chat_at_debug(self):
+        self.assertEqual(self._level('project.status',
+                                     {'readOnlyHint': True}),
+                         logging.DEBUG)
+
+    def test_the_read_only_tools_inform(self):
+        self.assertEqual(self._level('role.info',
+                                     {'readOnlyHint': True}),
+                         logging.INFO)
+
+    def test_the_state_changes_keep_notice(self):
+        self.assertEqual(self._level('file.write'), logging.NOTICE)
+        self.assertEqual(self._level('run'), logging.NOTICE)
+        self.assertEqual(self._level('check'), logging.NOTICE)
+
+    def test_the_result_lines_carry_their_levels(self):
+        server = McpServer()
+        for name, annotations in (
+                ('peek', {'readOnlyHint': True}),
+                ('poke', None)):
+            server.register_tool(
+                    name, 'A tool', {'type': 'object'},
+                    lambda arguments: {'content': [],
+                                       'isError': False},
+                    annotations=annotations)
+        with self.assertLogs('debops.mcp.server', level='DEBUG') \
+                as logs:
+            for name in ('peek', 'poke'):
+                server.handle(make_request(
+                        'tools/call',
+                        params={'name': name, 'arguments': {}},
+                        request_id=name))
+        for record in logs.records:
+            message = record.getMessage()
+            if message.startswith('Request: '):
+                self.assertEqual(record.levelno, logging.DEBUG)
+            elif message.startswith('Tool peek('):
+                self.assertEqual(record.levelno, logging.INFO)
+            elif message.startswith('Tool poke('):
+                self.assertEqual(record.levelno, logging.NOTICE)
 
 
 class ProgressTestCase(unittest.TestCase):
