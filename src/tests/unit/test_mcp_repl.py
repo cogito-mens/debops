@@ -1321,15 +1321,38 @@ class CompletionTestCase(unittest.TestCase):
         session, _out, _err = make_repl(client)
         completer = repl._Completer(session)
         self.assertTrue(hasattr(completer, 'get_completions_async'))
-        # The verbs complete at the start of the line
+        # The verbs complete at the start of the line; a finished
+        # word carries the trailing space of the shell habit, shown
+        # only once the line moves on (the display stays clean)
         found = [entry.text for entry in completer.get_completions(
                 Document('sta'), None)]
-        self.assertIn('status', found)
+        self.assertIn('status ', found)
         # The execution options complete after the target
         found = [entry.text for entry in completer.get_completions(
                 Document('check site --l'), None)]
-        self.assertIn('--limit', found)
-        self.assertIn('--list-hosts', found)
+        self.assertIn('--limit ', found)
+        self.assertIn('--list-hosts ', found)
+
+    def test_a_directory_candidate_stays_open(self):
+        # No trailing space on a directory: the path below it
+        # continues the completion
+        try:
+            from prompt_toolkit.document import Document
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        session, _out, _err = make_repl(FakeClient())
+        completer = repl._Completer(session)
+        with mock.patch.object(
+                repl, '_candidates_for',
+                return_value=('doc', ['docs/', 'docker-compose.yml'])):
+            found = list(completer.get_completions(Document('doc'),
+                                                   None))
+        by_text = {entry.text: entry for entry in found}
+        self.assertIn('docs/', by_text)
+        self.assertIn('docker-compose.yml ', by_text)
+        self.assertEqual(by_text['docs/'].display_text, 'docs/')
+        self.assertEqual(by_text['docker-compose.yml '].display_text,
+                         'docker-compose.yml')
 
     def test_the_pt_path_is_taken_when_available(self):
         # A bad import inside the pt branch must not silently fall
@@ -1416,7 +1439,7 @@ class CompletionTestCase(unittest.TestCase):
         client = FakeClient()
         session, _out, err = make_repl(client)
         session.confined = True
-        bindings = repl._suspend_bindings(session)
+        bindings = repl._key_bindings(session)
         binding = bindings.bindings[0]
         self.assertEqual(binding.keys, ('c-z',))
         # The note binding is active only in a confined session;
@@ -1427,6 +1450,61 @@ class CompletionTestCase(unittest.TestCase):
                       err.getvalue())
         session.confined = False
         self.assertFalse(binding.filter())
+
+    def _tab_binding(self, session):
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        bindings = repl._key_bindings(session)
+        return [binding for binding in bindings.bindings
+                if binding.keys == ('c-i',)][0]
+
+    def _tab_event(self, document_text, candidates):
+        from prompt_toolkit.completion import Completion
+        from prompt_toolkit.document import Document
+        buffer = mock.Mock()
+        buffer.document = Document(document_text)
+        buffer.completer.get_completions.return_value = [
+                Completion(candidate, start_position=-len(document_text))
+                for candidate in candidates]
+        return mock.Mock(current_buffer=buffer), buffer
+
+    def test_the_tab_binding_inserts_the_single_candidate(self):
+        session, _out, _err = make_repl(FakeClient())
+        binding = self._tab_binding(session)
+        event, buffer = self._tab_event('stat', ['status'])
+        binding.handler(event)
+        buffer.delete_before_cursor.assert_called_once_with(4)
+        buffer.insert_text.assert_called_once_with('status')
+
+    def test_the_tab_binding_extends_the_common_prefix(self):
+        session, _out, _err = make_repl(FakeClient())
+        binding = self._tab_binding(session)
+        event, buffer = self._tab_event('pl', ['playbook', 'playbooks'])
+        binding.handler(event)
+        buffer.delete_before_cursor.assert_not_called()
+        buffer.insert_text.assert_called_once_with('aybook')
+
+    def test_the_tab_binding_lists_the_ambiguous_candidates(self):
+        session, _out, _err = make_repl(FakeClient())
+        binding = self._tab_binding(session)
+        event, buffer = self._tab_event('p', ['pull', 'push', 'pwd'])
+        with mock.patch('sys.stdout', new=io.StringIO()) as out:
+            binding.handler(event)
+        buffer.insert_text.assert_not_called()
+        self.assertIn('pull', out.getvalue())
+        self.assertIn('push', out.getvalue())
+
+    def test_completion_columns_are_column_major(self):
+        self.assertEqual(
+                repl._completion_columns(['aa', 'bb', 'cc', 'dd'], 10),
+                ['aa  cc', 'bb  dd'])
+        self.assertEqual(repl._completion_columns([], 80), [])
+        # A narrow terminal wraps to one column
+        self.assertEqual(
+                repl._completion_columns(['aa', 'bb'], 3),
+                ['aa', 'bb'])
 
     def test_the_confined_plain_loop_ignores_suspend(self):
         tmp_history_home(self)
@@ -1930,10 +2008,11 @@ class NavigationTestCase(unittest.TestCase):
         found = [entry.text for entry in completer.get_completions(
                 Document('cd in'), None)]
         self.assertEqual(found, ['inventory/'])
-        # The verbs themselves complete at the start of the line
+        # The verbs themselves complete at the start of the line,
+        # with the trailing space of a finished word
         found = [entry.text for entry in completer.get_completions(
                 Document('mkd'), None)]
-        self.assertIn('mkdir', found)
+        self.assertIn('mkdir ', found)
 
     def test_the_status_line(self):
         session, _client, _out, _err = self.make_session()

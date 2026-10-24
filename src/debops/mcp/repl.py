@@ -1655,13 +1655,66 @@ def _candidates_for(repl, before):
     return word, repl.complete_candidates(words[0])
 
 
-def _suspend_bindings(repl):
-    """The Ctrl-Z of the prompt front ends: UNIX job control when
-    the account is free (the 'enable_suspend' of prompt_toolkit
-    carries it), a note when it is confined — the default binding
-    would insert a literal '^Z' into the input line, which neither
-    wants."""
-    from prompt_toolkit.filters import Condition
+def _completion_columns(names, width):
+    """The candidates as readline lists them: sorted, column-major,
+    padded to even columns; one string per row."""
+    if not names:
+        return []
+    column_width = max(len(name) for name in names) + 2
+    columns = max(1, width // column_width)
+    rows = (len(names) + columns - 1) // columns
+    lines = []
+    for row in range(rows):
+        line = []
+        for column in range(columns):
+            index = column * rows + row
+            if index < len(names):
+                line.append(names[index].ljust(column_width))
+        lines.append(''.join(line).rstrip())
+    return lines
+
+
+def _print_completion_candidates(completions):
+    """List the candidates above the prompt, readline-style. The
+    print goes through the patch_stdout proxy when it is active (the
+    shell) and through run_in_terminal otherwise: both erase the
+    interface first, so a bottom toolbar stays below the listing —
+    prompt_toolkit's own readline display writes behind the
+    renderer's back and strands the toolbar in the middle of the
+    list."""
+    from prompt_toolkit.application import get_app
+    from prompt_toolkit.application.current import get_app_or_none
+    from prompt_toolkit.application.run_in_terminal import (
+            run_in_terminal)
+    from prompt_toolkit.patch_stdout import StdoutProxy
+    names = sorted(completion.display_text or completion.text
+                   for completion in completions)
+    try:
+        width = get_app().output.get_size().columns
+    except Exception:
+        width = 80
+    text = '\n'.join(_completion_columns(names, width))
+    if isinstance(sys.stdout, StdoutProxy):
+        print(text)
+        return
+    app = get_app_or_none()
+    if app is not None and app.is_running:
+        run_in_terminal(lambda: print(text))
+    else:
+        print(text)
+
+
+def _key_bindings(repl):
+    """The session's keys: the readline-habit Tab (complete the one
+    candidate or the common prefix, list the candidates otherwise),
+    and Ctrl-Z job control where the account is free — the
+    'enable_suspend' of prompt_toolkit carries it; a confined session
+    gets a note — the default binding would insert a literal '^Z'
+    into the input line, which neither wants."""
+    from prompt_toolkit.completion import (CompleteEvent,
+                                           get_common_complete_suffix)
+    from prompt_toolkit.enums import DEFAULT_BUFFER
+    from prompt_toolkit.filters import Condition, has_focus
     from prompt_toolkit.key_binding import KeyBindings
     bindings = KeyBindings()
 
@@ -1669,12 +1722,34 @@ def _suspend_bindings(repl):
     def _confined_suspend(event):
         repl._note('a confined session does not background')
 
+    @bindings.add('c-i', filter=has_focus(DEFAULT_BUFFER))
+    def _tab(event):
+        buffer = event.current_buffer
+        if buffer.completer is None:
+            return
+        completions = list(buffer.completer.get_completions(
+                buffer.document, CompleteEvent(completion_requested=True)))
+        if not completions:
+            return
+        common = get_common_complete_suffix(buffer.document,
+                                            completions)
+        if len(completions) == 1:
+            buffer.delete_before_cursor(-completions[0].start_position)
+            buffer.insert_text(completions[0].text)
+        elif common:
+            buffer.insert_text(common)
+        else:
+            _print_completion_candidates(completions)
+
     return bindings
 
 
 class _Completer(_PtCompleter):
     """The prompt_toolkit completer: the verbs, then the candidates
-    of the verb (playbook targets, role names, files, views)."""
+    of the verb (playbook targets, role names, files, views). A
+    finished word earns the trailing space of the shell habit — the
+    next argument follows right away; a directory candidate stays
+    open for the path below it."""
 
     def __init__(self, repl):
         self._repl = repl
@@ -1685,7 +1760,11 @@ class _Completer(_PtCompleter):
                 self._repl, document.text_before_cursor)
         for candidate in candidates:
             if candidate.startswith(word):
-                yield Completion(candidate, start_position=-len(word))
+                yield Completion(
+                        candidate if candidate.endswith('/')
+                        else candidate + ' ',
+                        start_position=-len(word),
+                        display=candidate)
 
 
 def _readline_complete(readline, repl):
@@ -1758,7 +1837,7 @@ def run_interactive(repl):
             complete_style=CompleteStyle.READLINE_LIKE,
             # Job control, unless the account is confined
             enable_suspend=not repl.confined,
-            key_bindings=_suspend_bindings(repl),
+            key_bindings=_key_bindings(repl),
             history=repl._new_history())
     # A view switch moves the recall and the record to the view's
     # own history file

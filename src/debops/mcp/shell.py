@@ -14,7 +14,7 @@ to the plain reader.
 import sys
 
 from .repl import (_banner, _Completer, _execute_line,
-                   _suspend_bindings, run_interactive_plain)
+                   _key_bindings, run_interactive_plain)
 
 
 def _toolbar(session):
@@ -45,7 +45,7 @@ def run_shell(session):
             complete_style=CompleteStyle.READLINE_LIKE,
             # Job control, unless the account is confined
             enable_suspend=not session.confined,
-            key_bindings=_suspend_bindings(session),
+            key_bindings=_key_bindings(session),
             history=session._new_history(),
             bottom_toolbar=lambda: _toolbar(session),
             style=Style.from_dict({'bottom-toolbar': 'reverse'}))
