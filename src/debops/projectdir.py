@@ -41,7 +41,8 @@ logger = logging.getLogger(__name__)
 # files cannot be listed at runtime
 CONFIG_TEMPLATE_DIR = os.path.join('_data', 'templates', 'conf.d')
 CONFIG_TEMPLATES = {'mcp': 'mcp.toml',
-                    'mcp-executor': 'mcp-executor.toml'}
+                    'mcp-executor': 'mcp-executor.toml',
+                    'mcp-console': 'mcp-console.toml'}
 
 
 def _read_config_template(filename):

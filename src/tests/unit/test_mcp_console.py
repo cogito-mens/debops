@@ -20,9 +20,10 @@ from unittest import mock
 
 from debops.mcp import repl
 from debops.mcp.console import ConsoleRepl
+from tests.unit.test_mcp_repl import FakeClient, FakeTailConnection
 
 
-def make_session():
+def make_session(console_config=None):
     client = mock.MagicMock()
     client.legacy = False
     client.bearer = None
@@ -30,22 +31,22 @@ def make_session():
             'resultType': 'complete', 'isError': False,
             'content': [{'type': 'text', 'text': 'Project: x'}]}}
     session = ConsoleRepl(client, project_name='project', view='system',
-                          project_type='legacy', view_root_rel='ansible')
+                          project_type='legacy', view_root_rel='ansible',
+                          console_config=console_config)
     return session, client
 
 
-def attach_buffers(session):
-    """The prompt_toolkit buffers the interface build attaches."""
-    try:
-        from prompt_toolkit.buffer import Buffer
-    except ImportError:
-        raise unittest.SkipTest('prompt_toolkit is not installed')
-    from debops.mcp.console import _BufferWriter
-    session._scroll_buffer = Buffer()
-    session._activity_buffer = Buffer()
-    writer = _BufferWriter(session, session._scroll_buffer)
+def attach_transcript(session):
+    """The transcript writer the interface build attaches."""
+    from debops.mcp.console import _TranscriptWriter
+    writer = _TranscriptWriter(session)
     session._out = writer
     session._err = writer
+
+
+def transcript_text(session):
+    """The transcript's lines as one text."""
+    return '\n'.join(session._console_lines)
 
 
 def wait_for(predicate, timeout=5):
@@ -67,18 +68,18 @@ def passphrase_error(session):
 
 class ConsoleSessionTestCase(unittest.TestCase):
 
-    def test_the_scrollback_collects_the_session(self):
+    def test_the_transcript_collects_the_session(self):
         session, _client = make_session()
-        attach_buffers(session)
+        attach_transcript(session)
         session.submit('status')
         self.assertTrue(wait_for(lambda: not session._busy))
-        text = session._scroll_buffer.text
+        text = transcript_text(session)
         self.assertIn('> status', text)
         self.assertIn('Project: x', text)
 
     def test_the_gate_is_answered_on_the_input_line(self):
         session, _client = make_session()
-        attach_buffers(session)
+        attach_transcript(session)
         answers = []
         thread = threading.Thread(
                 target=lambda: answers.append(
@@ -87,8 +88,7 @@ class ConsoleSessionTestCase(unittest.TestCase):
         thread.start()
         self.assertTrue(wait_for(lambda: session._gate is not None))
         # The question is visible; the input line answers it
-        self.assertIn('apply the changes?',
-                      session._scroll_buffer.text)
+        self.assertIn('apply the changes?', transcript_text(session))
         session.submit('y')
         thread.join(timeout=5)
         self.assertEqual(answers, [True])
@@ -96,7 +96,7 @@ class ConsoleSessionTestCase(unittest.TestCase):
 
     def test_the_gate_decline(self):
         session, _client = make_session()
-        attach_buffers(session)
+        attach_transcript(session)
         answers = []
         thread = threading.Thread(
                 target=lambda: answers.append(session._ask('sure?')),
@@ -109,7 +109,7 @@ class ConsoleSessionTestCase(unittest.TestCase):
 
     def test_the_passphrase_gate_does_not_echo_the_secret(self):
         session, _client = make_session()
-        attach_buffers(session)
+        attach_transcript(session)
         answers = []
         thread = threading.Thread(
                 target=lambda: answers.append(
@@ -119,11 +119,11 @@ class ConsoleSessionTestCase(unittest.TestCase):
         session.submit('correct horse battery staple')
         thread.join(timeout=5)
         self.assertEqual(answers, ['correct horse battery staple'])
-        self.assertNotIn('correct horse', session._scroll_buffer.text)
+        self.assertNotIn('correct horse', transcript_text(session))
 
     def test_the_passphrase_gate_cancelled(self):
         session, _client = make_session()
-        attach_buffers(session)
+        attach_transcript(session)
         errors = []
         thread = threading.Thread(
                 target=lambda: errors.append(
@@ -136,98 +136,84 @@ class ConsoleSessionTestCase(unittest.TestCase):
 
     def test_submit_serializes_the_commands(self):
         session, _client = make_session()
-        attach_buffers(session)
+        attach_transcript(session)
         session._busy = True
         session.submit('status')
-        self.assertIn('a command is running',
-                      session._scroll_buffer.text)
+        self.assertIn('a command is running', transcript_text(session))
 
-    def test_the_watch_lands_in_the_activity_pane(self):
+    def test_the_watch_lands_in_the_transcript(self):
         session, _client = make_session()
-        attach_buffers(session)
+        attach_transcript(session)
         session._watch_line('run #1 finished')
         session._watch_line('run #2 running')
-        self.assertEqual(session._activity_buffer.text,
-                         'run #1 finished\nrun #2 running\n')
-        # The scrollback is not the feed
-        self.assertNotIn('run #1', session._scroll_buffer.text)
+        self.assertIn('run #1 finished\nrun #2 running',
+                      transcript_text(session))
 
     def test_the_watch_line_without_the_interface_prints(self):
         session, _client = make_session()
-        # No buffers attached: the engine's default (a print) —
+        # No transcript attached: the engine's default (a print) —
         # nothing crashes
         session._out = mock.MagicMock()
         session._watch_line('a line')
         session._out.write.assert_called()
 
-    def test_the_panel_cycle(self):
-        session, client = make_session()
-        attach_buffers(session)
-        client.request.return_value = {'result': {
-                'resultType': 'complete', 'isError': False,
-                'content': [],
-                'structuredContent': [{'name': 'inventory',
-                                       'type': 'dir'},
-                                      {'name': 'note.txt',
-                                       'type': 'file'}]}}
-        self.assertEqual(session.pane, 'off')
-        session.cycle_pane()
-        self.assertEqual(session.pane, 'tree')
-        self.assertEqual(session._tree_lines,
-                         ['inventory/', 'note.txt'])
-        session.cycle_pane()
-        self.assertEqual(session.pane, 'activity')
-        session.cycle_pane()
-        self.assertEqual(session.pane, 'off')
-
-    def test_the_panel_verb(self):
+    def test_the_focus_dance(self):
+        # Headless (no application): the state moves, the focus
+        # calls no-op
         session, _client = make_session()
-        attach_buffers(session)
-        session.execute('panel activity')
-        self.assertEqual(session.pane, 'activity')
-        with self.assertRaises(repl.ReplError) as context:
-            session.execute('panel sideways')
-        self.assertIn('usage: panel', str(context.exception))
+        self.assertEqual(session.console_focus, 'prompt')
+        self.assertIsNone(session.console_tab)
+        session._focus_area()
+        self.assertEqual(session.console_focus, 'area')
+        self.assertEqual(session.console_tab, 'queue')
+        session._cycle_tab(1)
+        self.assertEqual(session.console_tab, 'runs')
+        session._cycle_tab(-2)
+        self.assertEqual(session.console_tab, 'credits')
+        session._toggle_tab('docs')
+        self.assertEqual(session.console_tab, 'docs')
+        # The open tab's key closes the area, back to the prompt
+        session._toggle_tab('docs')
+        self.assertIsNone(session.console_tab)
+        self.assertEqual(session.console_focus, 'prompt')
+        session._focus_prompt()
 
-    def test_the_tree_pane_refreshes_after_a_command(self):
-        session, client = make_session()
-        attach_buffers(session)
-        client.request.side_effect = [
-                {'result': {'resultType': 'complete', 'isError': False,
-                            'content': []}},
-                {'result': {'resultType': 'complete', 'isError': False,
-                            'content': [],
-                            'structuredContent': [
-                                    {'name': 'new', 'type': 'dir'}]}},
-        ]
-        session.pane = 'tree'
-        session.submit('status')
-        self.assertTrue(wait_for(lambda: not session._busy))
-        self.assertEqual(session._tree_lines, ['new/'])
+    def test_the_console_config_overrides(self):
+        session, _client = make_session(
+                console_config={'repl_lines': 8,
+                                'prompt_active': False,
+                                'keys': 'emacs'})
+        self.assertEqual(session.console_repl_lines, 8)
+        self.assertFalse(session.console_prompt_active)
+        self.assertEqual(session.console_keys, 'emacs')
+        session, _client = make_session()
+        self.assertEqual(session.console_repl_lines, 5)
+        self.assertTrue(session.console_prompt_active)
+        self.assertEqual(session.console_keys, 'vim')
 
     def test_exit_leaves_the_application(self):
         session, _client = make_session()
-        attach_buffers(session)
+        attach_transcript(session)
         app = mock.MagicMock()
         session._app = app
         session.submit('exit')
         self.assertTrue(wait_for(lambda: app.exit.called))
         self.assertFalse(session._busy)
 
-    def test_an_internal_error_lands_in_the_scrollback(self):
+    def test_an_internal_error_lands_in_the_transcript(self):
         session, client = make_session()
-        attach_buffers(session)
+        attach_transcript(session)
         client.request.side_effect = RuntimeError('boom')
         session.submit('status')
         self.assertTrue(wait_for(lambda: not session._busy))
-        text = session._scroll_buffer.text
+        text = transcript_text(session)
         self.assertIn('error: internal: boom', text)
         self.assertIn('Traceback', text)
         # The session survived
         client.request.side_effect = None
         session.submit('status')
         self.assertTrue(wait_for(lambda: 'Project: x'
-                                 in session._scroll_buffer.text))
+                                 in transcript_text(session)))
 
 
 class EditorSuspensionTestCase(unittest.TestCase):
@@ -335,6 +321,7 @@ class ConsoleBuildTestCase(unittest.TestCase):
 
         app = console._build_app(session)
         app.renderer.output = SmallOutput()
+        app.output = SmallOutput()
         return app
 
     def render_app(self, app, rows=10, cols=30):
@@ -354,90 +341,9 @@ class ConsoleBuildTestCase(unittest.TestCase):
                 for r in range(rows)]
         return lines, screen.visible_windows_to_write_positions
 
-    def scroll_position(self, session, positions):
-        """The write position of the session's scrollback window."""
-        for window, point in positions.items():
-            content = getattr(window, 'content', None)
-            if getattr(content, 'buffer', None) is \
-                    session._scroll_buffer:
-                return point
-        return None
-
-    def test_the_scrollback_hugs_the_input_line(self):
-        try:
-            import prompt_toolkit  # noqa: F401
-        except ImportError:
-            self.skipTest('prompt_toolkit is not installed')
-        session, _client = make_session()
-        app = self.build_sized_app(session)
-        session._echo('one\ntwo\nthree\n')
-        lines, positions = self.render_app(app)
-        point = self.scroll_position(session, positions)
-        self.assertIsNotNone(point)
-        # Not at the top of the screen, and directly above the
-        # input line and the status bar
-        self.assertGreater(point.ypos, 0)
-        self.assertEqual(point.ypos + point.height, 10 - 2)
-        # The trailing newline leaves one empty row under the text
-        self.assertEqual(lines[6], 'three')
-        self.assertEqual(lines[7], '')
-        self.assertEqual(lines[0], '')
-
-    def test_the_scrollback_claims_the_area_when_full(self):
-        try:
-            import prompt_toolkit  # noqa: F401
-        except ImportError:
-            self.skipTest('prompt_toolkit is not installed')
-        session, _client = make_session()
-        app = self.build_sized_app(session)
-        session._echo(''.join('line{:02d}\n'.format(i)
-                              for i in range(25)))
-        lines, positions = self.render_app(app)
-        point = self.scroll_position(session, positions)
-        self.assertIsNotNone(point)
-        # The filler collapses; the tail stays visible
-        self.assertEqual(point.ypos, 0)
-        self.assertEqual(point.height, 10 - 2)
-        self.assertIn('line24', ''.join(lines))
-        self.assertNotIn('line00', ''.join(lines))
-
-    def test_the_input_line_carries_the_prompt_marker(self):
-        try:
-            import prompt_toolkit  # noqa: F401
-        except ImportError:
-            self.skipTest('prompt_toolkit is not installed')
-        session, _client = make_session()
-        app = self.build_sized_app(session)
-        lines, _positions = self.render_app(app)
-        # The input row is above the status bar
-        self.assertEqual(lines[8], '>')
-        session.elevated = True
-        lines, _positions = self.render_app(app)
-        self.assertEqual(lines[8], '!>')
-
-    def test_the_secret_gate_masks_the_input_line(self):
-        try:
-            import prompt_toolkit  # noqa: F401
-        except ImportError:
-            self.skipTest('prompt_toolkit is not installed')
-        session, _client = make_session()
-        app = self.build_sized_app(session)
-        errors = []
-        thread = threading.Thread(
-                target=lambda: errors.append(
-                        passphrase_error(session)), daemon=True)
-        thread.start()
-        self.assertTrue(wait_for(lambda: session._gate is not None))
-        app.layout.current_buffer.text = 'supersecret'
-        lines, _positions = self.render_app(app)
-        self.assertIn('*' * 11, lines[8])
-        self.assertNotIn('supersecret', '\n'.join(lines))
-        session._gate_decline()
-        thread.join(timeout=5)
-        self.assertEqual(errors, ['cancelled'])
-        # The mask follows the gate, not the buffer content
-        lines, _positions = self.render_app(app)
-        self.assertIn('supersecret', lines[8])
+    def _key_binding(self, app, *keys):
+        return [b.handler for b in app.key_bindings.bindings
+                if b.keys == keys][0]
 
     def test_the_application_builds_headless(self):
         try:
@@ -451,8 +357,173 @@ class ConsoleBuildTestCase(unittest.TestCase):
         app = console._build_app(session)
         self.assertIsInstance(app, Application)
         self.assertIsInstance(app.layout.container, FloatContainer)
-        self.assertIsNotNone(session._scroll_buffer)
-        self.assertIsNotNone(session._activity_buffer)
+        self.assertIsNotNone(session._input_buffer)
+        self.assertEqual(len(session._tab_buffers), 6)
+
+    def test_the_chrome_layout(self):
+        # The title on top; the transcript, the prompt and the
+        # status line hugging the bottom; the tab area hidden
+        from debops.mcp import console
+        session, _client = make_session()
+        app = self.build_sized_app(session, rows=12, cols=40)
+        lines, _positions = self.render_app(app, rows=12, cols=40)
+        self.assertTrue(lines[0].startswith('DebOps'), lines)
+        self.assertRegex(lines[0].rstrip()[-5:],
+                         r'\d{2}:\d{2}')
+        self.assertEqual(lines[10], '>')
+        self.assertIn('project:system', lines[11])
+        self.assertNotIn('Queue │', '\n'.join(lines))
+
+    def test_the_title_bangs_when_elevated(self):
+        from debops.mcp import console
+        session, _client = make_session()
+        app = self.build_sized_app(session, rows=12, cols=40)
+        session.elevated = True
+        lines, _positions = self.render_app(app, rows=12, cols=40)
+        self.assertTrue(lines[0].startswith('DebOps!'), lines)
+
+    def test_the_input_line_carries_the_chip(self):
+        from debops.mcp import console
+        session, _client = make_session()
+        app = self.build_sized_app(session, rows=12, cols=40)
+        lines, _positions = self.render_app(app, rows=12, cols=40)
+        self.assertEqual(lines[10], '>')
+        session.confined = True
+        lines, _positions = self.render_app(app, rows=12, cols=40)
+        self.assertEqual(lines[10], '[>]')
+
+    def test_the_tab_area_dances(self):
+        from debops.mcp import console
+        session, _client = make_session()
+        app = self.build_sized_app(session, rows=16, cols=40)
+        session._app = app
+        event = mock.MagicMock()
+        # Escape leaves the prompt for the area, opened on the Queue
+        self._key_binding(app, 'escape')(event)
+        self.assertEqual(session.console_focus, 'area')
+        self.assertEqual(session.console_tab, 'queue')
+        lines, _positions = self.render_app(app, rows=16, cols=40)
+        self.assertIn('Queue', lines[1])
+        self.assertIn('(Queue: soon)', lines[2])
+        # Tab cycles the tabs, Shift-Tab back
+        self._key_binding(app, 'c-i')(event)
+        self.assertEqual(session.console_tab, 'runs')
+        self._key_binding(app, 's-tab')(event)
+        self.assertEqual(session.console_tab, 'queue')
+        # The F-keys select; the open tab's key closes the area
+        self._key_binding(app, 'f3')(event)
+        self.assertEqual(session.console_tab, 'runs')
+        self._key_binding(app, 'f3')(event)
+        self.assertIsNone(session.console_tab)
+        self.assertEqual(session.console_focus, 'prompt')
+        # 'i' returns to the prompt; 'C-x o' toggles
+        session._focus_area('journal')
+        self._key_binding(app, 'i')(event)
+        self.assertEqual(session.console_focus, 'prompt')
+        self.assertEqual(session.console_tab, 'journal')
+        self._key_binding(app, 'c-x', 'o')(event)
+        self.assertEqual(session.console_focus, 'area')
+        # ... and Escape declines a pending gate first
+        session._gate = {'secret': False,
+                         'answered': threading.Event(),
+                         'value': None}
+        session._focus_prompt()
+        self._key_binding(app, 'escape')(event)
+        # The gate got its 'no'; the focus stayed on the prompt
+        self.assertTrue(session._gate['answered'].is_set())
+        self.assertIs(session._gate['value'], False)
+        self.assertEqual(session.console_focus, 'prompt')
+
+    def test_the_prompt_inactive_default_opens_the_area(self):
+        from debops.mcp import console
+        session, _client = make_session(
+                console_config={'prompt_active': False})
+        app = self.build_sized_app(session, rows=16, cols=40)
+        # The area opens on the Queue and holds the focus
+        self.assertEqual(session.console_tab, 'queue')
+        self.assertIs(app.layout.current_buffer,
+                      session._tab_buffers['queue'])
+        lines, _positions = self.render_app(app, rows=16, cols=40)
+        self.assertIn('Queue', lines[1])
+
+    def test_the_transcript_shows_the_tail_slice(self):
+        from debops.mcp import console
+        session, _client = make_session()
+        app = self.build_sized_app(session, rows=12, cols=40)
+        session._echo(''.join('line{:02d}\n'.format(i)
+                              for i in range(10)))
+        lines, _positions = self.render_app(app, rows=12, cols=40)
+        # The window is five lines of the tail; the scrollback holds
+        # the rest
+        self.assertEqual(lines[5], 'line05')
+        self.assertEqual(lines[9], 'line09')
+        self.assertEqual(len(session._console_lines), 10)
+
+    def test_the_transcript_scroll_holds_the_position(self):
+        from debops.mcp import console
+        session, _client = make_session()
+        app = self.build_sized_app(session, rows=12, cols=40)
+        session._echo(''.join('line{:02d}\n'.format(i)
+                              for i in range(10)))
+        event = mock.MagicMock()
+        self._key_binding(app, 'pageup')(event)
+        lines, _positions = self.render_app(app, rows=12, cols=40)
+        self.assertEqual(lines[5], 'line00')
+        self.assertEqual(lines[9], 'line04')
+        # New output while paged up holds the viewport
+        session._echo('new\n')
+        lines, _positions = self.render_app(app, rows=12, cols=40)
+        self.assertEqual(lines[5], 'line00')
+        # ... and End snaps back to the tail
+        self._key_binding(app, 'end')(event)
+        lines, _positions = self.render_app(app, rows=12, cols=40)
+        self.assertEqual(lines[9], 'new')
+
+    def test_a_run_tails_into_the_transcript(self):
+        # The run's live log streams into the transcript, colored
+        session, _client = make_session()
+        attach_transcript(session)
+        client = FakeClient()
+        client.tail = FakeTailConnection(['ok: [localhost]'])
+        session.client = client
+        client.queue('tools/call', {'resultType': 'task',
+                                    'taskId': 't1', 'status': 'working'})
+        client.queue('tasks/get',
+                     {'status': 'working',
+                      'run': {'mode': 'run', 'playbooks': ['site'],
+                              'executionId': 7, 'taskIndex': 1}},
+                     {'status': 'completed',
+                      'result': {'isError': False,
+                                 'structuredContent': {'exitCode': 0},
+                                 'content': []}})
+        with mock.patch('debops.mcp.repl.POLL_INTERVAL', 0):
+            session.execute('run site')
+        self.assertIn('ok: [localhost]', transcript_text(session))
+        self.assertEqual(client.tail.subscriptions, [{'runLog': 7}])
+
+    def test_the_secret_gate_masks_the_input_line(self):
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        session, _client = make_session()
+        app = self.build_sized_app(session, rows=12, cols=40)
+        errors = []
+        thread = threading.Thread(
+                target=lambda: errors.append(
+                        passphrase_error(session)), daemon=True)
+        thread.start()
+        self.assertTrue(wait_for(lambda: session._gate is not None))
+        app.layout.current_buffer.text = 'supersecret'
+        lines, _positions = self.render_app(app, rows=12, cols=40)
+        self.assertIn('*' * 11, lines[10])
+        self.assertNotIn('supersecret', '\n'.join(lines))
+        session._gate_decline()
+        thread.join(timeout=5)
+        self.assertEqual(errors, ['cancelled'])
+        # The mask follows the gate, not the buffer content
+        lines, _positions = self.render_app(app, rows=12, cols=40)
+        self.assertIn('supersecret', lines[10])
 
     def test_the_console_runs_headless_and_exits(self):
         try:
@@ -477,8 +548,8 @@ class ConsoleBuildTestCase(unittest.TestCase):
                     app.exit()
                     thread.join(timeout=5)
                     self.fail('the console did not exit')
-        self.assertIn('debops mcp repl', session._scroll_buffer.text)
-        self.assertIn('> exit', session._scroll_buffer.text)
+        self.assertIn('debops mcp repl', transcript_text(session))
+        self.assertIn('> exit', transcript_text(session))
 
     def test_commands_are_recorded_in_the_shared_history(self):
         try:
@@ -588,7 +659,7 @@ class ConsoleBuildTestCase(unittest.TestCase):
             self.skipTest('prompt_toolkit is not installed')
         from debops.mcp import console
         session, _client = make_session()
-        attach_buffers(session)
+        attach_transcript(session)
         bindings = KeyBindings()
         console._bind_suspend(bindings, session)
         handler = bindings.bindings[0].handler
@@ -602,7 +673,7 @@ class ConsoleBuildTestCase(unittest.TestCase):
         handler(event)
         self.assertFalse(event.app.suspend_to_background.called)
         self.assertIn('a confined session does not background',
-                      session._scroll_buffer.text)
+                      transcript_text(session))
 
     def test_the_console_falls_back_without_prompt_toolkit(self):
         from debops.mcp import console
@@ -613,56 +684,6 @@ class ConsoleBuildTestCase(unittest.TestCase):
                 code = console.run_console(session)
         self.assertEqual(code, 0)
         self.assertTrue(plain.called)
-
-    def _key_binding(self, app, key):
-        return [b.handler for b in app.key_bindings.bindings
-                if b.keys == (key,)][0]
-
-    def test_the_scrollback_pages_with_the_cursor(self):
-        # The window follows the buffer's cursor; a page moves the
-        # window's height (10 headless), Home/End jump to the ends
-        from debops.mcp import console
-        session, _client = make_session()
-        app = console._build_app(session)
-        buffer = session._scroll_buffer
-        session._out.write(''.join('line {}\n'.format(i)
-                                   for i in range(100)))
-        end = len(buffer.text)
-        self.assertEqual(buffer.document.cursor_position, end)
-        event = mock.MagicMock()
-        for key in ('pageup', 's-pageup'):
-            self._key_binding(app, key)(event)
-        self.assertLess(buffer.document.cursor_position, end)
-        paged = buffer.document.cursor_position
-        for key in ('pagedown', 's-pagedown'):
-            self._key_binding(app, key)(event)
-        self.assertGreater(buffer.document.cursor_position, paged)
-        for key in ('home', 's-home'):
-            self._key_binding(app, key)(event)
-        self.assertEqual(buffer.document.cursor_position, 0)
-        for key in ('end', 's-end'):
-            self._key_binding(app, key)(event)
-        self.assertEqual(buffer.document.cursor_position,
-                         len(buffer.text))
-
-    def test_the_writer_keeps_the_reading_position(self):
-        # Output appends at the document end even when the reader
-        # paged up — an insert at the cursor would corrupt the
-        # scrollback — and the view snaps only from the tail
-        from debops.mcp import console
-        session, _client = make_session()
-        console._build_app(session)
-        buffer = session._scroll_buffer
-        session._out.write(''.join('line {}\n'.format(i)
-                                   for i in range(50)))
-        buffer.cursor_position = 0
-        session._out.write('appended\n')
-        self.assertTrue(buffer.text.endswith('appended\n'))
-        self.assertEqual(buffer.document.cursor_position, 0)
-        buffer.cursor_position = len(buffer.text)
-        session._out.write('more\n')
-        self.assertEqual(buffer.document.cursor_position,
-                         len(buffer.text))
 
     def test_ctrl_home_end_edit_the_input_line(self):
         # Home/End page the scrollback; the line's start and end
@@ -679,61 +700,6 @@ class ConsoleBuildTestCase(unittest.TestCase):
         self.assertEqual(buffer.document.cursor_position, 0)
         self._key_binding(app, 'c-end')(event)
         self.assertEqual(buffer.document.cursor_position, 12)
-
-    def test_the_run_status_lines(self):
-        # The two floating lines of an active run: the title with the
-        # counters, then the current task; hidden at rest
-        from debops.mcp import console
-        session, _client = make_session()
-        console._build_app(session)
-        self.assertEqual(session._run_status_text(), '')
-        session.active_run = {
-                'run': {'mode': 'run', 'playbooks': ['site'],
-                        'taskIndex': 2, 'taskCount': 50,
-                        'estimateSeconds': 240,
-                        'currentTask': 'TASK [nginx : Install]'},
-                'started': time.monotonic() - 30}
-        text = session._run_status_text()
-        # The estimate refines itself against the tally: 30 s for
-        # 2 of 50 tasks extrapolates to 12 minutes left
-        self.assertIn('Running playbook: site (Task: 2/50 │ '
-                      'Elapsed: 0:30 │ Left: ~12:00)', text)
-        # The header's wrapper unwraps for the second line
-        self.assertIn('TASK: nginx : Install', text)
-        session.active_run = None
-        self.assertEqual(session._run_status_text(), '')
-
-    def test_the_run_status_lines_degrade_without_a_tally(self):
-        from debops.mcp import console
-        session, _client = make_session()
-        console._build_app(session)
-        session.active_run = {
-                'run': {'mode': 'check', 'playbooks': ['site']},
-                'started': time.monotonic()}
-        text = session._run_status_text()
-        self.assertNotIn('Task:', text)
-        self.assertNotIn('Left:', text)
-        self.assertIn('Checking playbook: site', text)
-        self.assertIn('TASK: (starting)', text)
-
-    def test_the_run_status_lines_render_above_the_prompt(self):
-        from debops.mcp import console
-        session, _client = make_session()
-        app = self.build_sized_app(session, rows=24, cols=60)
-        session.active_run = {
-                'run': {'mode': 'run', 'playbooks': ['site'],
-                        'taskIndex': 2, 'taskCount': 50,
-                        'currentTask': 'TASK [nginx]'},
-                'started': time.monotonic() - 5}
-        lines, _positions = self.render_app(app, rows=24, cols=60)
-        self.assertTrue(any('Running playbook: site' in line
-                            for line in lines), lines)
-        self.assertTrue(any('TASK: nginx' in line
-                            for line in lines), lines)
-        session.active_run = None
-        lines, _positions = self.render_app(app, rows=24, cols=60)
-        self.assertFalse(any('Running playbook' in line
-                             for line in lines), lines)
 
     def test_run_dispatches_the_console_session(self):
         client = mock.MagicMock()

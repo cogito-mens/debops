@@ -1220,7 +1220,11 @@ class Interpreter(object):
                     confined=confined, history_max=history_max,
                     plain=getattr(args, 'plain', False),
                     untrusted=getattr(args, 'untrusted', False),
-                    elevated=getattr(args, 'elevated', False))
+                    elevated=getattr(args, 'elevated', False),
+                    console_config=(
+                            project.config.raw.get('project', {})
+                            .get('mcp', {}).get('console')
+                            if project is not None else None))
         sys.exit(code)
 
     def do_autostart(self):

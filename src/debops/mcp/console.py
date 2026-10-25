@@ -4,173 +4,192 @@
 
 """The console front end: the interpreter as a fullscreen cockpit.
 
-The same engine as the plain REPL and the shell, with the screen
-divided into regions: the scrollback of the session, the input line,
-a status bar (the place and the trust state), and a side pane (F2
-cycles: off, the directory tree of the working directory, the
-activity feed of the watch). Commands run on a worker thread, so the
-interface stays alive during a run; questions (the confirmation
-gates, the passphrase prompt) are answered on the input line, Escape
-declines. Without prompt_toolkit the console degrades to the plain
-reader.
+The layout, top to bottom: the title line (the project's name, a
+bang while elevated, the clock), the toggleable tab area (Queue,
+Runs, Journal, Docs, Credits — F2-F6 select, F1 the help, Tab and
+Shift-Tab cycle), the transcript (the REPL's output and the live
+log of a run, a few lines high), the prompt line, and the status
+line the shell shares.
+
+The prompt holds the focus by default (project.mcp.console.
+prompt_active); Escape leaves it for the tab area, 'i' returns —
+and 'C-x o' toggles the focus for the Emacs habit. Without
+prompt_toolkit the console degrades to the plain reader.
 """
 
-import re
+import collections
 import threading
 import time
 
-from .repl import (Repl, ReplError, _banner, _format_duration,
-                   _run_remaining, _run_verb_of, run_interactive_plain)
+from .repl import (Repl, ReplError, _banner, run_interactive_plain)
 
-# The scrollback keeps this many lines; the activity pane this many
-_SCROLLBACK_LINES = 5000
-_ACTIVITY_LINES = 500
+# The tabs of the console's area, in order; F2-F6 select them and
+# F1 opens the help
+TABS = ('queue', 'runs', 'journal', 'docs', 'credits')
+
+_TAB_KEYS = {'f1': 'help', 'f2': 'queue', 'f3': 'runs',
+             'f4': 'journal', 'f5': 'docs', 'f6': 'credits'}
+
+_TAB_TITLES = {'help': 'Help', 'queue': 'Queue', 'runs': 'Runs',
+               'journal': 'Journal', 'docs': 'Docs',
+               'credits': 'Credits'}
+
+_HELP_TEXT = """\
+The console keys
+
+  F1          this help (again to close)
+  F2-F6       the tabs: Queue, Runs, Journal, Docs, Credits
+  Tab, S-Tab  cycle the tabs (when the area has the focus)
+  Esc         leave the prompt for the tab area; back again
+  i           return to the prompt (the vim habit)
+  C-x o       the other window, the Emacs habit
+  PgUp/PgDn   scroll the transcript; Home/End its ends
+  Ctrl-C      decline a question; cancel the run; clear the line
+  Ctrl-D      exit
+"""
 
 
-class _BufferWriter(object):
-    """A file-like sink appending printed text to a prompt_toolkit
-    buffer (the scrollback panes of the console)."""
+class _TranscriptWriter(object):
+    """The file-like the session's output channels write into: the
+    text lands in the console's transcript as lines (ANSI-colored
+    as they arrived), bounded; the window renders the tail slice.
+    A reader paged up holds its place while the lines grow."""
 
-    def __init__(self, session, buffer):
+    def __init__(self, session):
         self._session = session
-        self._buffer = buffer
+        self._partial = ''
 
     def write(self, text):
-        buffer = self._buffer
-        position = buffer.document.cursor_position
-        at_end = position >= len(buffer.text)
-        # Always append at the document end — a reader paged up must
-        # not corrupt the scrollback — and keep their place: the view
-        # snaps to the tail only when it was already there
-        buffer.cursor_position = len(buffer.text)
-        buffer.insert_text(text)
-        if not at_end:
-            buffer.cursor_position = position
-        self._session._invalidate()
+        if not text:
+            return 0
+        session = self._session
+        parts = (self._partial + text).split('\n')
+        # The trailing fragment waits for its newline
+        self._partial = parts.pop()
+        if not parts:
+            return len(text)
+        with session._transcript_lock:
+            session._console_lines.extend(parts)
+            if session._transcript_scroll:
+                # A reader in the scrollback keeps the viewport:
+                # the scroll counts up as the tail grows
+                session._transcript_scroll += len(parts)
+        session._invalidate()
+        return len(text)
 
     def flush(self):
         pass
 
 
+def _title_text(session):
+    """The top status line: the project's name (a bang while
+    elevated) on the left, the clock on the right."""
+    from prompt_toolkit.application import get_app
+    title = 'DebOps!' if session.elevated else 'DebOps'
+    clock = time.strftime('%H:%M')
+    width = get_app().output.get_size().columns
+    padding = max(1, width - len(title) - len(clock))
+    return title + ' ' * padding + clock
+
+
+def _tab_bar_text(session):
+    """The tab bar: the titles in order, the active one standing
+    out, the key hints at the right."""
+    from prompt_toolkit.application import get_app
+    titles = ['help'] + list(TABS)
+    fragments = []
+    for name in titles:
+        style = 'class:tabs-active' if name == session.console_tab \
+                else 'class:tabs'
+        fragments.append((style, ' {} '.format(_TAB_TITLES[name])))
+        fragments.append(('class:tabs', '│'))
+    hints = 'i: prompt │ Esc: back'
+    used = sum(len(fragment[1]) for fragment in fragments)
+    width = get_app().output.get_size().columns
+    # A narrow bar drops the hints before it clips the titles
+    if used + len(hints) + 1 <= width:
+        fragments.append(('class:tabs',
+                          ' ' * (width - used - len(hints)) + hints))
+    return fragments
+
+
+def _transcript_text(session):
+    """The transcript's visible slice: the tail of the lines, held
+    up by the scroll when the reader pages back. A short content
+    hugs the bottom of the window, like a terminal's."""
+    with session._transcript_lock:
+        total = len(session._console_lines)
+        end = total - session._transcript_scroll
+        start = max(0, end - session.console_repl_lines)
+        slice_ = list(session._console_lines)[start:end]
+    missing = session.console_repl_lines - len(slice_)
+    if missing > 0 and not session._transcript_scroll:
+        slice_ = [''] * missing + slice_
+    return '\n'.join(slice_)
+
+
 class ConsoleRepl(Repl):
-    """The fullscreen session: the scrollback, the side pane and the
-    input gate live here; the prompt_toolkit wiring lives in
-    run_console(). The buffers attach when the interface is built,
-    so the session works headless (the tests drive it directly)."""
+    """The fullscreen session: the transcript, the tab area and the
+    focus dance live here; the prompt_toolkit wiring lives in
+    run_console(). The session works headless (the tests drive it
+    directly); the buffers attach when the interface is built."""
 
-    HELP_EXTRA = {'panel [off|tree|activity]': 'the side pane '
-                                               '(F2 cycles)'}
-
-    _PANES = ('off', 'tree', 'activity')
+    def _prompt_marker(self):
+        """The input-line chip: the state flags ('>' normally, '!'
+        while elevated, '#' for root, bracketed when confined). The
+        live prompt and the transcript echo share it."""
+        return self._console_marker()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.pane = 'off'
-        # The run progress floats above the prompt as the two
-        # status lines
-        self.run_display = 'lines'
-        self._tree_lines = []
+        config = self.console_config
+        self.console_repl_lines = max(3, int(config.get(
+                'repl_lines', 5)))
+        prompt_active = config.get('prompt_active', True)
+        if isinstance(prompt_active, str):
+            prompt_active = prompt_active.strip().lower() not in (
+                    '0', 'false', 'no', 'off')
+        self.console_prompt_active = bool(prompt_active)
+        self.console_keys = str(config.get('keys', 'vim'))
+        # The active tab ('help', 'queue', ...); None: the area is
+        # closed
+        self.console_tab = None
+        # Where the focus lives: the prompt or the tab area
+        self.console_focus = 'prompt'
+        # The tail and the bottom status line, like the shell's
+        self.run_display = 'shell'
         # The questions are answered on the input line
         self.gate_input = True
-        # The prompt_toolkit buffers, attached by _build_app
-        self._scroll_buffer = None
-        self._activity_buffer = None
+        # The transcript: the bounded output lines and the window's
+        # scroll offset (the lines held up from the tail)
+        self._console_lines = collections.deque(maxlen=2000)
+        self._transcript_lock = threading.Lock()
+        self._transcript_scroll = 0
+        # The tab contents and the prompt buffer attach at build
         self._input_buffer = None
+        self._tab_buffers = {}
 
-    # -- the scrollback plumbing -------------------------------------
+    # -- the transcript plumbing -------------------------------------
 
-    def _run_status_text(self):
-        """The two status lines of the active run, floated above the
-        prompt: the title with the counters, then the current task."""
-        active = self.active_run
-        if active is None:
-            return ''
-        run = active['run']
-        segments = []
-        index, total = run.get('taskIndex'), run.get('taskCount')
-        if index is not None and total is not None:
-            segments.append('Task: {}/{}'.format(index, total))
-        elapsed = time.monotonic() - active['started']
-        segments.append('Elapsed: ' + _format_duration(elapsed))
-        # The estimate refines itself against the tally as the run
-        # advances; before the first task it is the probe's static one
-        remaining = _run_remaining(elapsed, index, total,
-                                   run.get('estimateSeconds'))
-        if remaining is not None:
-            segments.append('Left: ~' + _format_duration(remaining))
-        title = '{} playbook: {} ({})'.format(
-                _run_verb_of(run),
-                ', '.join(run.get('playbooks') or ['?']),
-                ' │ '.join(segments))
-        task = run.get('currentTask') or ''
-        header = re.match(r'^(TASK|PLAY) \[(.*)\]$', task)
-        if header is not None:
-            # The header unwrapped: 'TASK [name]' shows as
-            # 'TASK: name'
-            task = '{}: {}'.format(header.group(1), header.group(2))
-        return title + '\n' + (task or 'TASK: (starting)')
+    def _color_output(self):
+        # The transcript renders the ANSI itself; the console always
+        # drives a terminal
+        return True
 
-    def _watch_line(self, line):
-        buffer = self._activity_buffer
-        if buffer is None:
-            super()._watch_line(line)
-            return
-        buffer.insert_text(line + '\n')
-        # The pane keeps the tail of the stream
-        lines = buffer.text.split('\n')
-        if len(lines) > _ACTIVITY_LINES:
-            buffer.text = '\n'.join(lines[-_ACTIVITY_LINES:])
-            buffer.cursor_position = len(buffer.text)
+    def _print_output_text(self, text):
+        # The run's output lands in the transcript, not above the
+        # fullscreen application
+        self._out.write(text)
+
+    def _scroll_transcript(self, lines):
+        """Scroll the transcript's window by whole lines; zero is
+        the tail (the window follows the output)."""
+        with self._transcript_lock:
+            limit = max(0, len(self._console_lines)
+                        - self.console_repl_lines)
+            self._transcript_scroll = min(
+                    limit, max(0, self._transcript_scroll + lines))
         self._invalidate()
-
-    # -- the input gate (questions answered on the input line) -------
-
-    def _prompt_marker(self):
-        """The input-line marker: '>' normally, '!' while elevated.
-        The live prompt and the scrollback echo share it."""
-        return '!>' if self.elevated else '>'
-
-    def _execute_guarded(self, line):
-        super()._execute_guarded(line)
-        if self.pane == 'tree':
-            self._refresh_tree()
-
-    # -- the side pane -------------------------------------------------
-
-    def cmd_panel(self, args):
-        """The side pane: off, the directory tree of the working
-        directory, or the activity feed of the watch."""
-        if len(args) > 1 or (args and args[0] not in self._PANES):
-            raise ReplError('usage: panel [off|tree|activity]')
-        self.pane = args[0] if args else 'off'
-        if self.pane == 'tree':
-            self._refresh_tree()
-        self._invalidate()
-
-    def cycle_pane(self):
-        """The F2 cycle: off -> tree -> activity -> off."""
-        index = (self._PANES.index(self.pane) + 1) % len(self._PANES)
-        self.pane = self._PANES[index]
-        if self.pane == 'tree' and not self._busy:
-            self._refresh_tree()
-        self._invalidate()
-
-    def _refresh_tree(self):
-        """The pane's directory listing of the working directory."""
-        try:
-            result = self._request(
-                    'tools/call',
-                    {'name': 'project.list',
-                     'arguments': ({'path': self.cwd} if self.cwd
-                                   else {})})
-        except ReplError:
-            return
-        if result.get('isError'):
-            return
-        self._tree_lines = [
-                entry.get('name', '') + (
-                        '/' if entry.get('type') == 'dir' else '')
-                for entry in result.get('structuredContent') or []]
 
     # -- the editor ----------------------------------------------------
 
@@ -233,6 +252,48 @@ class ConsoleRepl(Repl):
             raise ReplError('the editor never ran')
         return outcome['returncode']
 
+    # -- the focus dance -----------------------------------------------
+
+    def _focus_area(self, tab=None):
+        """Move the focus to the tab area, opening it first when it
+        is closed."""
+        if tab is not None:
+            self.console_tab = tab
+        if self.console_tab is None:
+            self.console_tab = 'queue'
+        self.console_focus = 'area'
+        app = self._app
+        if app is not None:
+            app.layout.focus(self._tab_buffers[self.console_tab])
+        self._invalidate()
+
+    def _focus_prompt(self):
+        """Move the focus back to the prompt line."""
+        self.console_focus = 'prompt'
+        app = self._app
+        if app is not None:
+            app.layout.focus(self._input_buffer)
+        self._invalidate()
+
+    def _toggle_tab(self, tab):
+        """An F-key: open the area on its tab; the open tab's key
+        closes the area and returns to the prompt."""
+        if self.console_tab == tab and self.console_focus == 'area':
+            self.console_tab = None
+            self._focus_prompt()
+        else:
+            self._focus_area(tab)
+
+    def _cycle_tab(self, direction):
+        """Tab and Shift-Tab in the area: the tabs in a ring."""
+        order = list(TABS)
+        index = order.index(self.console_tab)
+        self.console_tab = order[(index + direction) % len(order)]
+        app = self._app
+        if app is not None:
+            app.layout.focus(self._tab_buffers[self.console_tab])
+        self._invalidate()
+
 
 def _bind_suspend(bindings, session):
     """The console's Ctrl-Z: UNIX job control when the account is
@@ -254,6 +315,7 @@ def _build_app(session):
     from prompt_toolkit.application import Application
     from prompt_toolkit.buffer import Buffer
     from prompt_toolkit.filters import Condition
+    from prompt_toolkit.formatted_text import ANSI
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.key_binding.bindings.named_commands import (
             get_by_name)
@@ -262,19 +324,34 @@ def _build_app(session):
                                        DynamicContainer,
                                        FormattedTextControl, HSplit,
                                        Layout, VSplit, Window)
+    from prompt_toolkit.layout.containers import Float, FloatContainer
+    from prompt_toolkit.layout.menus import CompletionsMenu
     from prompt_toolkit.layout.processors import (
             DynamicProcessor, PasswordProcessor)
     from prompt_toolkit.styles import Style
     from .repl import _Completer
     from .shell import _toolbar
 
-    scroll_buffer = Buffer()
-    activity_buffer = Buffer()
-    session._scroll_buffer = scroll_buffer
-    session._activity_buffer = activity_buffer
-    writer = _BufferWriter(session, scroll_buffer)
+    writer = _TranscriptWriter(session)
     session._out = writer
     session._err = writer
+
+    # The tab contents: the placeholders for now, each its own
+    # buffer so the area's focus has somewhere to sit
+    tab_buffers = {}
+    tab_containers = {}
+    for name in ('help',) + TABS:
+        buffer = Buffer()
+        buffer.text = (_HELP_TEXT if name == 'help'
+                       else '({}: soon)'.format(_TAB_TITLES[name]))
+        tab_buffers[name] = buffer
+        tab_containers[name] = Window(
+                BufferControl(buffer=buffer, focusable=True),
+                wrap_lines=True)
+    session._tab_buffers = tab_buffers
+    if not session.console_prompt_active and session.console_tab is None:
+        # The configurable default: the console starts on the Queue
+        session.console_tab = 'queue'
 
     def accept(buffer):
         line = buffer.text
@@ -306,38 +383,92 @@ def _build_app(session):
                     lambda: (password if session._gate is not None
                              and session._gate['secret'] else None))])
 
-    def pane_container():
-        if session.pane == 'tree':
-            return Window(FormattedTextControl(
-                    lambda: '\n'.join(session._tree_lines)
-                    or '(empty directory)'),
-                    width=30, style='class:pane')
-        if session.pane == 'activity':
-            # The feed grows upward from the input line, like the
-            # scrollback next to it
-            return HSplit([
-                    Window(style='class:pane'),
-                    Window(BufferControl(buffer=activity_buffer,
-                                         focusable=False),
-                           dont_extend_height=True,
-                           style='class:pane')], width=40)
-        return Window()
+    def tab_area_content():
+        # The hidden area has no tab to render; the layout walks
+        # the container regardless
+        if session.console_tab is None:
+            return Window()
+        return tab_containers[session.console_tab]
 
     bindings = KeyBindings()
-
     _bind_suspend(bindings, session)
 
-    @bindings.add('f2')
-    def _cycle(event):
-        session.cycle_pane()
+    area_live = Condition(lambda: session.console_focus == 'area')
 
     @bindings.add('escape')
     def _escape(event):
-        gate = session._gate
-        session._gate_decline()
-        if gate is None or gate['secret']:
-            # Do not leave a half-typed secret on the line
-            event.app.current_buffer.reset()
+        if session._gate is not None:
+            session._gate_decline()
+            if session._gate is None:
+                # The secret never lingers on the line
+                event.app.current_buffer.reset()
+            return
+        # The focus dance: the prompt leaves for the tab area and
+        # back
+        if session.console_focus == 'prompt':
+            session._focus_area()
+        else:
+            session._focus_prompt()
+
+    @bindings.add('i', filter=area_live)
+    def _insert(event):
+        # The vim habit: back to the prompt
+        session._focus_prompt()
+
+    @bindings.add('c-x', 'o')
+    def _other_window(event):
+        # The Emacs habit: the other window
+        if session.console_focus == 'prompt':
+            session._focus_area()
+        else:
+            session._focus_prompt()
+
+    for _key, _tab in _TAB_KEYS.items():
+        @bindings.add(_key)
+        def _tab_key(event, tab=_tab):
+            session._toggle_tab(tab)
+
+    @bindings.add('tab', filter=area_live)
+    def _tab_next(event):
+        session._cycle_tab(1)
+
+    @bindings.add('s-tab', filter=area_live)
+    def _tab_prev(event):
+        session._cycle_tab(-1)
+
+    @bindings.add('pageup')
+    @bindings.add('s-pageup')
+    def _pageup(event):
+        session._scroll_transcript(session.console_repl_lines)
+
+    @bindings.add('pagedown')
+    @bindings.add('s-pagedown')
+    def _pagedown(event):
+        session._scroll_transcript(-session.console_repl_lines)
+
+    @bindings.add('home')
+    @bindings.add('s-home')
+    def _scroll_top(event):
+        with session._transcript_lock:
+            session._transcript_scroll = max(
+                    0, len(session._console_lines)
+                    - session.console_repl_lines)
+        session._invalidate()
+
+    @bindings.add('end')
+    @bindings.add('s-end')
+    def _scroll_bottom(event):
+        session._scroll_transcript(-10 ** 9)
+
+    @bindings.add('c-home')
+    def _line_home(event):
+        # Home/End moved to the scrollback; the line's start and end
+        # keep a chord of their own
+        get_by_name('beginning-of-line').call(event)
+
+    @bindings.add('c-end')
+    def _line_end(event):
+        get_by_name('end-of-line').call(event)
 
     @bindings.add('c-c')
     def _ctrl_c(event):
@@ -364,78 +495,43 @@ def _build_app(session):
         else:
             event.app.current_buffer.reset()
 
-    # 'dont_extend_height' under an empty filler window: the
-    # scrollback grows upward from the input line like a terminal,
-    # and claims the whole area once the content overflows
-    scroll_window = Window(BufferControl(buffer=scroll_buffer,
-                                         focusable=False),
-                           wrap_lines=True, dont_extend_height=True)
-
-    def _scroll_page(direction):
-        """A page of the scrollback: the window follows the buffer's
-        cursor — setting 'vertical_scroll' directly is defeated by
-        the render, which re-follows the cursor at every frame."""
-        info = scroll_window.render_info
-        height = info.window_height if info is not None else 10
-        if direction < 0:
-            scroll_buffer.cursor_up(count=height)
-        else:
-            scroll_buffer.cursor_down(count=height)
-
-    @bindings.add('pageup')
-    @bindings.add('s-pageup')
-    def _pageup(event):
-        _scroll_page(-1)
-
-    @bindings.add('pagedown')
-    @bindings.add('s-pagedown')
-    def _pagedown(event):
-        _scroll_page(1)
-
-    @bindings.add('home')
-    @bindings.add('s-home')
-    def _scroll_top(event):
-        scroll_buffer.cursor_position = 0
-
-    @bindings.add('end')
-    @bindings.add('s-end')
-    def _scroll_bottom(event):
-        scroll_buffer.cursor_position = len(scroll_buffer.text)
-
-    @bindings.add('c-home')
-    def _line_home(event):
-        # Home/End moved to the scrollback; the line's start and end
-        # keep a chord of their own
-        get_by_name('beginning-of-line').call(event)
-
-    @bindings.add('c-end')
-    def _line_end(event):
-        get_by_name('end-of-line').call(event)
-
-    from prompt_toolkit.layout.containers import Float, FloatContainer
-    from prompt_toolkit.layout.menus import CompletionsMenu
     panes = HSplit([
-            VSplit([
-                    HSplit([Window(), scroll_window]),
-                    ConditionalContainer(
-                            DynamicContainer(pane_container),
-                            filter=Condition(
-                                    lambda: session.pane != 'off')),
-            ]),
-            # The run's status lines float above the prompt while a
-            # run is active
+            # The title line: the project's name left, the clock
+            # right
+            Window(FormattedTextControl(lambda: _title_text(session),
+                                        focusable=False),
+                   height=1, style='class:status'),
+            # The tab area, hidden until a key opens it; it claims
+            # the free space with the filler
             ConditionalContainer(
-                    Window(FormattedTextControl(
-                            lambda: session._run_status_text()),
-                           height=2, style='class:run'),
+                    HSplit([
+                            Window(FormattedTextControl(
+                                    lambda: _tab_bar_text(session),
+                                    focusable=False),
+                                   height=1, style='class:tabs'),
+                            DynamicContainer(tab_area_content),
+                    ]),
                     filter=Condition(
-                            lambda: session.active_run is not None)),
+                            lambda: session.console_tab is not None)),
+            # The filler takes the slack, so the transcript, the
+            # prompt and the status line hug the bottom of the
+            # screen like a terminal's
+            Window(),
+            # The transcript: the REPL's output and the run's live
+            # log, the tail few lines
+            Window(FormattedTextControl(
+                    lambda: ANSI(_transcript_text(session)),
+                    focusable=False),
+                   height=session.console_repl_lines,
+                   dont_extend_height=True, wrap_lines=True),
+            # The prompt line
             VSplit([
                     Window(FormattedTextControl(
-                            lambda: session._console_marker() + ' '),
+                            lambda: session._prompt_marker() + ' '),
                            dont_extend_width=True),
                     Window(input_control),
             ], height=1),
+            # The status line the shell shares
             Window(FormattedTextControl(lambda: _toolbar(session)),
                    height=1, style='class:status'),
     ])
@@ -444,12 +540,14 @@ def _build_app(session):
                     content=panes,
                     floats=[Float(xcursor=True, ycursor=True,
                                   content=CompletionsMenu())]),
-            focused_element=input_buffer)
+            focused_element=(input_buffer
+                             if session.console_prompt_active
+                             else tab_buffers[session.console_tab]))
     return Application(
             layout=layout, key_bindings=bindings, full_screen=True,
             style=Style.from_dict({'status': 'reverse',
-                                   'pane': 'bg:#444444',
-                                   'run': 'bg:#005f00'}))
+                                   'tabs': '',
+                                   'tabs-active': 'reverse bold'}))
 
 
 def run_console(session):
@@ -463,11 +561,19 @@ def run_console(session):
         return run_interactive_plain(session)
     app = _build_app(session)
     session._app = app
-    session.background_watch = True
     session._echo(_banner(session) + '\n')
+    # The status poller: the runs started elsewhere ride the status
+    # line, and its ticks keep the clock honest
+    watcher = session.client.clone()
+    stop = threading.Event()
+    poller = threading.Thread(
+            target=session._poll_foreign_runs,
+            args=(watcher, stop), daemon=True)
+    poller.start()
     try:
         app.run()
     finally:
-        session.stop_watch()
+        stop.set()
+        watcher.close()
         session._app = None
     return 0

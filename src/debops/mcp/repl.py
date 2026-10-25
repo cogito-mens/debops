@@ -943,8 +943,11 @@ class Repl(object):
                  out=sys.stdout, err=sys.stderr, interactive=False,
                  project_path=None, project_type=None,
                  view_root_rel=None, confined=False,
-                 history_max=0, untrusted=False):
+                 history_max=0, untrusted=False, console_config=None):
         self.client = client
+        # The console's interface preferences
+        # (project.mcp.console.*), read by the console front end
+        self.console_config = dict(console_config or {})
         self.project_name = project_name
         self.view = view
         self._out = out
@@ -3488,7 +3491,8 @@ def _execute_line(repl, line):
 def run(client, project_name=None, view=None, interactive=None,
         project_path=None, project_type=None, view_root_rel=None,
         frontend=None, command=None, confined=False, history_max=0,
-        plain=False, untrusted=False, elevated=False):
+        plain=False, untrusted=False, elevated=False,
+        console_config=None):
     """Build and run an interpreter session against the connected
     daemon. 'frontend' selects the chrome: None for the plain
     interpreter, 'shell' for the status-bar interface, 'console' for
@@ -3519,7 +3523,8 @@ def run(client, project_name=None, view=None, interactive=None,
                             project_type=project_type,
                             view_root_rel=view_root_rel,
                             confined=confined, history_max=history_max,
-                            untrusted=untrusted)
+                            untrusted=untrusted,
+                            console_config=console_config)
     if elevated:
         # '--elevated': trusted, then elevated for the session's
         # duration; a session which cannot prove itself runs

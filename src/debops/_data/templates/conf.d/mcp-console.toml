@@ -1,0 +1,23 @@
+{# Copyright (C) 2026 Maciej Delmanowski <drybjed@gmail.com>
+ # Copyright (C) 2026 DebOps <https://debops.org/>
+ # SPDX-License-Identifier: GPL-3.0-or-later
+#}
+# Interface preferences of the console front end ('debops mcp
+# console'), read by the client process. They tune the local UI
+# only; the daemon never sees them.
+
+[project.mcp.console]
+
+# The transcript's height in lines of output above the prompt line.
+#repl_lines = 5
+
+# Whether the prompt holds the focus at startup; with false the tab
+# area opens first (on the Queue), and 'i' / Esc move the focus as
+# usual.
+#prompt_active = true
+
+# The editing keys of the tab area: 'vim' (i returns to the prompt,
+# dd/x remove queue entries) or 'emacs' (C-x o switches the window,
+# C-k removes). The focus keys — Esc, F1-F6, Tab/Shift-Tab — work
+# either way.
+#keys = "vim"
