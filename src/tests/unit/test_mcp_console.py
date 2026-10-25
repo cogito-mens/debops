@@ -701,6 +701,214 @@ class ConsoleRunsTabTestCase(unittest.TestCase):
         self.assertIsNone(session._runs_detail)
 
 
+class ConsoleInventoryTabTestCase(unittest.TestCase):
+    """The Inventory tab: the tree as miller columns (ranger-style)
+    from the inventory.query answer, the preview of the selected
+    node, the edit through the tracked write path."""
+
+    INVENTORY = {
+        '_meta': {'hostvars': {'web1': {'ansible_host': '10.0.0.1'}}},
+        'all': {'children': ['dbservers', 'ungrouped', 'webservers']},
+        'dbservers': {'hosts': ['db1']},
+        'ungrouped': {},
+        'webservers': {'children': ['webservers_eu'],
+                       'hosts': ['web1', 'web2'],
+                       'vars': {'http_port': 80}},
+        'webservers_eu': {'hosts': ['web3']},
+    }
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-coninv-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        patcher = mock.patch.dict(os.environ,
+                                  {'XDG_DATA_HOME': self.tmpdir})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _inventory_session(self):
+        """A console session with the inventory scripted, the tab
+        open and refreshed."""
+        session, _client = make_session()
+        attach_transcript(session)
+        client = FakeClient()
+        session.client = client
+        # The refresh and the previews ride side connections; the
+        # scripted client clones into itself
+        client.tail = client
+        client.queue(
+                'tools/call',
+                {'resultType': 'complete', 'isError': False,
+                 'structuredContent': {'action': 'list',
+                                       'inventory': self.INVENTORY}})
+        session._focus_area('inventory')
+        self.assertTrue(wait_for(
+                lambda: session._inventory is not None))
+        return session, client
+
+    def _rendered(self, session):
+        from debops.mcp import console
+        fragments = console._inventory_tab_text(session)
+        return ''.join(text for _style, text in fragments)
+
+    def test_the_tree_renders_in_columns(self):
+        session, _client = self._inventory_session()
+        text = self._rendered(session)
+        # The header: the current level, then the miller uprights
+        self.assertIn('all/', text)
+        self.assertIn('│', text)
+        # Groups first, sorted, with the drill mark; hosts plain
+        self.assertIn('dbservers/', text)
+        self.assertIn('webservers/', text)
+        # The initial selection's preview lands (nothing on disk,
+        # no vars: the honest note)
+        self.assertTrue(wait_for(lambda: '(no variables)'
+                                 in self._rendered(session)))
+
+    def test_the_cursor_moves_and_the_preview_follows(self):
+        session, client = self._inventory_session()
+        self.assertEqual(session._inventory_selected(),
+                         ('group', 'dbservers', False))
+        session._inventory_move(1)
+        self.assertEqual(session._inventory_selected(),
+                         ('group', 'ungrouped', False))
+        # The preview fetch asked for the node's backing file
+        self.assertTrue(wait_for(lambda: any(
+                params.get('arguments', {}).get('path')
+                == 'ansible/inventory/group_vars/ungrouped.yml'
+                for _method, params in client.calls)))
+
+    def test_drilling_in_and_back_remembers_the_cursor(self):
+        session, _client = self._inventory_session()
+        session._inventory_move(2)   # webservers
+        session._inventory_drill()
+        self.assertEqual(session._inventory_path,
+                         ['all', 'webservers'])
+        # The level: the subgroup, then the hosts
+        self.assertEqual(session._inventory_selected(),
+                         ('group', 'webservers_eu', False))
+        session._inventory_move(1)
+        self.assertEqual(session._inventory_selected(),
+                         ('host', 'web1', False))
+        session._inventory_up()
+        self.assertEqual(session._inventory_path, ['all'])
+        # The cursor of the level is where it was left
+        self.assertEqual(session._inventory_selected(),
+                         ('group', 'webservers', False))
+
+    def test_a_cycle_cannot_be_drilled(self):
+        session, _client = self._inventory_session()
+        session._inventory = {
+                'all': {'children': ['loop_a']},
+                'loop_a': {'children': ['loop_b']},
+                'loop_b': {'children': ['loop_a']}}
+        session._inventory_drill()
+        session._inventory_drill()
+        self.assertEqual(session._inventory_path,
+                         ['all', 'loop_a', 'loop_b'])
+        # loop_a is on the path: marked a cycle, undrillable
+        self.assertEqual(session._inventory_selected(),
+                         ('group', 'loop_a', True))
+        self.assertIn('↩', self._rendered(session))
+        session._inventory_drill()
+        self.assertEqual(session._inventory_path,
+                         ['all', 'loop_a', 'loop_b'])
+
+    def test_the_preview_prefers_the_file(self):
+        session, _client = make_session()
+        client = FakeClient()
+        session._inventory = self.INVENTORY
+        client.queue('tools/call',
+                     {'resultType': 'complete', 'isError': False,
+                      'structuredContent': {
+                              'path': 'ansible/inventory/group_vars/'
+                                      'webservers.yml',
+                              'content': '---\nhttp_port: 80\n',
+                              'digest': 'sha256:x'}})
+        preview = session._inventory_fetch_preview(
+                client, 'group', 'webservers')
+        self.assertEqual(preview['title'], 'group_vars/webservers.yml')
+        self.assertEqual(preview['lines'], ['---', 'http_port: 80'])
+        # The read asked for the view's inventory path
+        self.assertEqual(client.calls[0][1]['arguments']['path'],
+                         'ansible/inventory/group_vars/'
+                         'webservers.yml')
+
+    def test_the_preview_lists_a_directory(self):
+        session, _client = make_session()
+        client = FakeClient()
+        session._inventory = self.INVENTORY
+        client.queue(
+                'tools/call',
+                {'resultType': 'complete', 'isError': True,
+                 'content': [{'type': 'text', 'text': 'not found'}]},
+                {'resultType': 'complete', 'isError': False,
+                 'structuredContent': [
+                         'ansible/inventory/group_vars/web/a.yml',
+                         'ansible/inventory/group_vars/web/b.yml']})
+        preview = session._inventory_fetch_preview(
+                client, 'group', 'web')
+        self.assertEqual(preview['title'], 'group_vars/web/')
+        self.assertEqual(preview['lines'], ['a.yml', 'b.yml'])
+
+    def test_the_preview_falls_back_to_the_composed_vars(self):
+        session, _client = make_session()
+        client = FakeClient()
+        session._inventory = self.INVENTORY
+        client.queue(
+                'tools/call',
+                {'resultType': 'complete', 'isError': True,
+                 'content': [{'type': 'text', 'text': 'not found'}]},
+                {'resultType': 'complete', 'isError': True,
+                 'content': [{'type': 'text',
+                              'text': 'directory not found'}]})
+        preview = session._inventory_fetch_preview(
+                client, 'group', 'webservers')
+        self.assertEqual(preview['title'], 'webservers (composed)')
+        self.assertIn('  "http_port": 80', preview['lines'])
+        # A host's composed vars come from the _meta hostvars
+        client.queue(
+                'tools/call',
+                {'resultType': 'complete', 'isError': True,
+                 'content': [{'type': 'text', 'text': 'not found'}]},
+                {'resultType': 'complete', 'isError': True,
+                 'content': [{'type': 'text',
+                              'text': 'directory not found'}]})
+        preview = session._inventory_fetch_preview(
+                client, 'host', 'web1')
+        self.assertIn('  "ansible_host": "10.0.0.1"',
+                      preview['lines'])
+
+    def test_edit_submits_the_backing_file(self):
+        session, _client = self._inventory_session()
+        submitted = []
+        session.submit = submitted.append
+        session._inventory_move(2)   # webservers
+        session._inventory_edit()
+        session._inventory_drill()
+        session._inventory_move(1)   # web1
+        session._inventory_edit()
+        self.assertEqual(submitted, [
+                'edit /ansible/inventory/group_vars/webservers.yml',
+                'edit /ansible/inventory/host_vars/web1.yml'])
+
+    def test_a_failed_query_leaves_a_note(self):
+        session, _client = make_session()
+        attach_transcript(session)
+        client = FakeClient()
+        session.client = client
+        client.tail = client
+        client.queue('tools/call',
+                     {'resultType': 'complete', 'isError': True,
+                      'content': [{'type': 'text',
+                                   'text': 'ansible-inventory failed: '
+                                   'boom'}]})
+        session._focus_area('inventory')
+        self.assertTrue(wait_for(
+                lambda: session._inventory_note is not None))
+        self.assertIn('boom', session._inventory_note)
+        self.assertIn('boom', self._rendered(session))
+
+
 class ConsoleBuildTestCase(unittest.TestCase):
 
     def setUp(self):
@@ -751,7 +959,7 @@ class ConsoleBuildTestCase(unittest.TestCase):
         # filter passes, most recently registered first
         matches = [b for b in app.key_bindings.bindings
                    if b.keys == keys]
-        for binding in matches:
+        for binding in reversed(matches):
             filter_ = binding.filter
             try:
                 passes = filter_() if callable(filter_) else bool(
@@ -775,7 +983,7 @@ class ConsoleBuildTestCase(unittest.TestCase):
         self.assertIsInstance(app, Application)
         self.assertIsInstance(app.layout.container, FloatContainer)
         self.assertIsNotNone(session._input_buffer)
-        self.assertEqual(len(session._tab_controls), 6)
+        self.assertEqual(len(session._tab_controls), 7)
 
     def test_the_chrome_layout(self):
         # The title on top; the transcript, the prompt and the
@@ -1172,6 +1380,33 @@ class ConsoleBuildTestCase(unittest.TestCase):
         # ... and with nothing open, q submits the exit
         exit_calls = []
         session.submit = lambda line: exit_calls.append(line)
+        self._key_binding(app, 'q')(event)
+        self.assertEqual(exit_calls, ['exit'])
+
+    def test_q_steps_up_the_inventory_tree_before_exiting(self):
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        from debops.mcp import console
+        session, _client = make_session()
+        app = self.build_sized_app(session)
+        session._app = app
+        event = mock.MagicMock()
+        session._inventory = {
+                'all': {'children': ['webservers']},
+                'webservers': {'hosts': ['web1']}}
+        session._focus_area('inventory')
+        session._inventory_drill()
+        self.assertEqual(session._inventory_path,
+                         ['all', 'webservers'])
+        # Drilled in, q steps up instead of exiting
+        exit_calls = []
+        session.submit = lambda line: exit_calls.append(line)
+        self._key_binding(app, 'q')(event)
+        self.assertEqual(session._inventory_path, ['all'])
+        self.assertEqual(exit_calls, [])
+        # At the root, q is the exit again
         self._key_binding(app, 'q')(event)
         self.assertEqual(exit_calls, ['exit'])
 

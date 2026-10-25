@@ -18,6 +18,7 @@ prompt_toolkit the console degrades to the plain reader.
 """
 
 import collections
+import json
 import os
 import subprocess
 import threading
@@ -53,27 +54,32 @@ def _format_run_row(entry):
                                      verdict, duration)
 
 
-# The tabs of the console's area, in order; F2-F6 select them and
+# The tabs of the console's area, in order; F2-F7 select them and
 # F1 opens the help
-TABS = ('queue', 'runs', 'journal', 'docs', 'credits')
+TABS = ('queue', 'runs', 'inventory', 'docs', 'journal', 'credits')
 
 _TAB_KEYS = {'f1': 'help', 'f2': 'queue', 'f3': 'runs',
-             'f4': 'journal', 'f5': 'docs', 'f6': 'credits'}
+             'f4': 'inventory', 'f5': 'docs', 'f6': 'journal',
+             'f7': 'credits'}
 
 _TAB_TITLES = {'help': 'Help', 'queue': 'Queue', 'runs': 'Runs',
-               'journal': 'Journal', 'docs': 'Docs',
-               'credits': 'Credits'}
+               'inventory': 'Inventory', 'docs': 'Docs',
+               'journal': 'Journal', 'credits': 'Credits'}
 
 _HELP_TEXT = """\
 The console keys
 
   F1, ?       this help (again to close)
-  F2-F6       the tabs: Queue, Runs, Journal, Docs, Credits
-  q           close the detail; quit from the tab area
+  F2-F7       the tabs: Queue, Runs, Inventory, Docs, Journal, Credits
+  q           close the detail; up a level; quit from the tab area
   Tab, S-Tab  cycle the tabs (when the area has the focus)
   Esc         leave the prompt for the tab area; back again
   i           return to the prompt (the vim habit)
   C-x o       the other window, the Emacs habit
+  j/k, ↑/↓    move in the tab's list or feed
+  h/l, ←/→    up a level / drill into (the Inventory tree)
+  e           edit the selected variables file (the Inventory)
+  r           refresh the Inventory
   PgUp/PgDn   scroll the transcript; Home/End its ends
   Ctrl-C      decline a question; cancel the run; clear the line
   Ctrl-D      exit
@@ -225,12 +231,15 @@ class ConsoleRepl(Repl):
         self._journal_source = 'mcp'
         # The Credits tab: the package's credits file, scrolled
         self._credits_scroll = 0
-        # The Inventory tab: the groups tree from inventory.query's
-        # structured answer, the cursor, the open detail
+        # The Inventory tab: the parsed 'list' answer, the drill
+        # path of groups from 'all' with a cursor per level (the
+        # ranger habit of remembering), the previews by node
         self._inventory = None
-        self._inventory_rows = []
-        self._inventory_cursor = 0
-        self._inventory_detail = None
+        self._inventory_note = None
+        self._inventory_path = ['all']
+        self._inventory_cursors = {}
+        self._inventory_previews = {}
+        self._inventory_preview_pending = set()
         self._inventory_refreshing = threading.Lock()
 
     # -- the transcript plumbing -------------------------------------
@@ -699,6 +708,13 @@ class ConsoleRepl(Repl):
                          'arguments': {'action': 'list'}})
                 result = answer.get('result', {})
                 if result.get('isError'):
+                    text = ''.join(block.get('text', '') for block in
+                                   result.get('content', []))
+                    self._inventory_note = (
+                            text.strip().splitlines()[0]
+                            if text.strip() else 'inventory.query '
+                            'failed')
+                    self._invalidate()
                     return
                 structured = result.get('structuredContent') or {}
                 inventory = structured.get('inventory')
@@ -708,11 +724,11 @@ class ConsoleRepl(Repl):
             if not isinstance(inventory, dict):
                 return
             self._inventory = inventory
-            self._inventory_rows = self._inventory_build_rows()
-            self._inventory_cursor = min(
-                    self._inventory_cursor,
-                    max(0, len(self._inventory_rows) - 1))
+            self._inventory_note = None
+            # The tree may have shifted under the previews
+            self._inventory_previews.clear()
             self._invalidate()
+            self._inventory_want_preview()
         finally:
             self._inventory_refreshing.release()
 
@@ -730,66 +746,169 @@ class ConsoleRepl(Repl):
         thread = threading.Thread(target=refresh, daemon=True)
         thread.start()
 
-    def _inventory_build_rows(self):
-        """The selectable rows of the inventory tree: the groups
-        depth-first from 'all', their hosts under them; a group
-        cycle marks the loop instead of recursing forever."""
+    def _inventory_level_rows(self, path=None):
+        """The rows of one level of the tree: the subgroups of the
+        group at the path's end, then its hosts, sorted. A group
+        already on the path is a cycle — marked, and it cannot be
+        drilled."""
         inventory = self._inventory or {}
-        rows = []
-
-        def walk(group, depth, seen):
-            if group in seen:
-                rows.append(('cycle', group, depth))
-                return
-            seen.add(group)
-            rows.append(('group', group, depth))
-            body = inventory.get(group) or {}
-            for child in body.get('children') or []:
-                walk(child, depth + 1, seen)
-            for host in body.get('hosts') or []:
-                rows.append(('host', host, depth + 1))
-            seen.discard(group)
-
-        walk('all', 0, set())
+        if path is None:
+            path = self._inventory_path
+        body = inventory.get(path[-1]) or {}
+        rows = [('group', child, child in path)
+                for child in sorted(body.get('children') or [])]
+        rows.extend(('host', host, False)
+                    for host in sorted(body.get('hosts') or []))
         return rows
 
+    def _inventory_selected(self):
+        """The selected row of the current level: (kind, name,
+        cycle), or None when the level is empty."""
+        rows = self._inventory_level_rows()
+        if not rows:
+            return None
+        cursor = min(
+                self._inventory_cursors.get(tuple(self._inventory_path),
+                                            0), len(rows) - 1)
+        return rows[cursor]
+
     def _inventory_move(self, direction):
-        if not self._inventory_rows:
+        """j/k or the arrows: the cursor within the level; the
+        preview follows the selection."""
+        rows = self._inventory_level_rows()
+        if not rows:
             return
-        self._inventory_cursor = min(
-                len(self._inventory_rows) - 1,
-                max(0, self._inventory_cursor + direction))
+        key = tuple(self._inventory_path)
+        self._inventory_cursors[key] = min(
+                len(rows) - 1,
+                max(0, self._inventory_cursors.get(key, 0) + direction))
+        self._inventory_want_preview()
         self._invalidate()
 
-    def _inventory_open(self):
-        """Enter on a row: the group's or the host's detail."""
-        if not self._inventory_rows:
+    def _inventory_drill(self):
+        """l, Right or Enter on a group: into it (a cycle stays
+        put); the level's cursor is remembered for the way back."""
+        selected = self._inventory_selected()
+        if selected is None:
             return
-        kind, name, _depth = self._inventory_rows[
-                self._inventory_cursor]
-        if kind == 'cycle':
+        kind, name, cycle = selected
+        if kind != 'group' or cycle:
             return
-        self._inventory_detail = {'kind': kind, 'name': name}
+        self._inventory_path.append(name)
+        self._inventory_want_preview()
         self._invalidate()
+
+    def _inventory_up(self):
+        """h or Left: the level above, its cursor where it was left;
+        nothing at the root."""
+        if len(self._inventory_path) <= 1:
+            return
+        self._inventory_path.pop()
+        self._inventory_want_preview()
+        self._invalidate()
+
+    def _inventory_want_preview(self):
+        """Fetch the preview of the selected node unless cached or
+        in flight. The fetch rides its own thread and connection,
+        keyed by node — an answer for an old selection lands in its
+        own cache slot, never on the screen."""
+        selected = self._inventory_selected()
+        if selected is None:
+            return
+        kind, name, cycle = selected
+        if cycle:
+            return
+        key = (kind, name)
+        if key in self._inventory_previews \
+                or key in self._inventory_preview_pending:
+            return
+        self._inventory_preview_pending.add(key)
+
+        def fetch():
+            try:
+                side = self.client.clone()
+                try:
+                    preview = self._inventory_fetch_preview(
+                            side, kind, name)
+                finally:
+                    side.close()
+                self._inventory_previews[key] = preview
+            except (AttributeError, ConnectionError, EOFError,
+                    OSError, ReplError, TypeError):
+                pass
+            finally:
+                self._inventory_preview_pending.discard(key)
+                self._invalidate()
+
+        thread = threading.Thread(target=fetch, daemon=True)
+        thread.start()
+
+    def _inventory_fetch_preview(self, connection, kind, name):
+        """The preview of a node: the content of its backing
+        variables file, the listing when it is a directory, else the
+        composed variables of the inventory answer."""
+        root = os.path.join(self._view_root_rel or 'ansible',
+                            'inventory')
+        base = 'group_vars' if kind == 'group' else 'host_vars'
+        relative = os.path.join(root, base, name)
+
+        def call(tool, arguments):
+            answer = connection.request(
+                    'tools/call',
+                    {'name': tool, 'arguments': arguments})
+            return answer.get('result', {})
+
+        result = call('project.read', {'path': relative + '.yml'})
+        if not result.get('isError'):
+            content = (result.get('structuredContent') or {}
+                       ).get('content')
+            if content is not None:
+                return {'title': '{}/{}.yml'.format(base, name),
+                        'lines': content.splitlines()}
+        result = call('project.files', {'path': relative})
+        entries = result.get('structuredContent')
+        if not result.get('isError') and entries is not None:
+            return {'title': '{}/{}/'.format(base, name),
+                    'lines': [os.path.relpath(entry, relative)
+                              for entry in entries]
+                    or ['(empty)']}
+        # Nothing on disk: the composed variables still say what the
+        # node carries
+        inventory = self._inventory or {}
+        if kind == 'group':
+            variables = (inventory.get(name) or {}).get('vars') or {}
+        else:
+            hostvars = (inventory.get('_meta') or {}).get(
+                    'hostvars') or {}
+            variables = hostvars.get(name) or {}
+        if variables:
+            return {'title': '{} (composed)'.format(name),
+                    'lines': json.dumps(variables, indent=2,
+                                        sort_keys=True).splitlines()}
+        return {'title': name, 'lines': ['(no variables)']}
 
     def _inventory_edit(self):
         """'e' on a row: the group's or the host's variables file in
         the editor, through the daemon's tracked write path."""
-        if not self._inventory_rows:
+        selected = self._inventory_selected()
+        if selected is None:
             return
-        kind, name, _depth = self._inventory_rows[
-                self._inventory_cursor]
-        if kind == 'cycle':
+        kind, name, cycle = selected
+        if cycle:
             return
-        if kind == 'group':
-            relative = os.path.join('group_vars',
-                                    '{}.yml'.format(name))
-        else:
-            relative = os.path.join('host_vars',
-                                    '{}.yml'.format(name))
+        base = 'group_vars' if kind == 'group' else 'host_vars'
+        relative = os.path.join(base, '{}.yml'.format(name))
         inventory_root = os.path.join(self._view_root_rel
                                       or 'ansible', 'inventory')
-        self.submit('edit ' + os.path.join(inventory_root, relative))
+        # The project-anchored spelling: the session's working
+        # directory is the view root and may have moved since
+        self.submit('edit /' + os.path.join(inventory_root, relative))
+
+    def _post_edit(self, path):
+        # An edited inventory file freshens the tree and the previews
+        if self._inventory_write_path(path) is not None:
+            self._inventory_previews.clear()
+            self._inventory_refresh_async()
 
     # -- the focus dance -----------------------------------------------
 
@@ -809,6 +928,8 @@ class ConsoleRepl(Repl):
             self._queue_refresh_async()
         elif self.console_tab == 'runs':
             self._runs_refresh_async()
+        elif self.console_tab == 'inventory':
+            self._inventory_refresh_async()
         elif self.console_tab == 'journal':
             self._journal_start()
         self._invalidate()
@@ -842,6 +963,8 @@ class ConsoleRepl(Repl):
             self._queue_refresh_async()
         elif self.console_tab == 'runs':
             self._runs_refresh_async()
+        elif self.console_tab == 'inventory':
+            self._inventory_refresh_async()
         elif self.console_tab == 'journal':
             self._journal_start()
         self._invalidate()
@@ -976,6 +1099,95 @@ def _runs_detail_text(session):
     return header + '\n'.join(body)
 
 
+def _inventory_tab_text(session):
+    """The Inventory tab as miller columns, ranger-style: the parent
+    level with the current group highlighted, the current level with
+    its cursor, and the preview of the selected node — the content
+    of its variables file, the listing of its variables directory,
+    or the composed variables."""
+    if session._inventory is None:
+        note = session._inventory_note or 'loading…'
+        return [('class:tabs', '(inventory: {})\n'.format(note))]
+    from prompt_toolkit.application import get_app
+    width = get_app().output.get_size().columns
+    height = session._area_height()
+    # The two tree columns share the left half, the preview takes
+    # the rest; the separators are the bar's uprights
+    column = max(12, (width - 2) // 4)
+    preview_width = max(8, width - 2 * column - 2)
+
+    def cell(text, width, style='class:tabs'):
+        return (style, text[:width].ljust(width))
+
+    def row_text(row):
+        kind, name, cycle = row
+        if kind == 'group':
+            return '{}{}/'.format(name, ' ↩' if cycle else '')
+        return name
+
+    path = session._inventory_path
+    rows = session._inventory_level_rows()
+    cursor = min(session._inventory_cursors.get(tuple(path), 0),
+                 max(0, len(rows) - 1))
+    if len(path) > 1:
+        parent_path = path[:-1]
+        parent_rows = session._inventory_level_rows(parent_path)
+        parent_cursor = session._inventory_cursors.get(
+                tuple(parent_path), 0)
+        parent_title = parent_path[-1]
+    else:
+        # The root anchors the eye with itself in the left column
+        parent_rows = [('group', 'all', False)]
+        parent_cursor = 0
+        parent_title = ''
+    selected = session._inventory_selected()
+    preview = {'title': '', 'lines': []}
+    if selected is not None:
+        kind, name, cycle = selected
+        if cycle:
+            preview = {'title': name,
+                       'lines': ['(a cycle: the group is its own '
+                                 'ancestor)']}
+        else:
+            preview = session._inventory_previews.get(
+                    (kind, name)) or {'title': name + ' …',
+                                      'lines': []}
+    if not rows:
+        preview = {'title': '', 'lines': []}
+
+    fragments = []
+    header = (cell(parent_title, column, 'bold'),
+              cell(path[-1] + '/', column, 'bold'),
+              preview.get('title', ''))
+    fragments.extend([header[0], ('class:tabs', '│'), header[1],
+                      ('class:tabs', '│'),
+                      ('class:tabs', header[2][:preview_width]),
+                      ('', '\n')])
+    for index in range(height - 1):
+        if index < len(parent_rows):
+            style = 'bold' if index == parent_cursor else 'class:tabs'
+            fragments.append(cell(row_text(parent_rows[index]),
+                                  column, style))
+        else:
+            fragments.append(cell('', column))
+        fragments.append(('class:tabs', '│'))
+        if index < len(rows):
+            style = 'reverse' if index == cursor else 'class:tabs'
+            fragments.append(cell(row_text(rows[index]), column,
+                                  style))
+        elif not rows and index == 0:
+            fragments.append(cell('(empty)', column))
+        else:
+            fragments.append(cell('', column))
+        fragments.append(('class:tabs', '│'))
+        lines = preview.get('lines') or []
+        if index < len(lines):
+            fragments.append(('class:tabs',
+                              lines[index][:preview_width]))
+        fragments.append(('', '\n'))
+    return fragments
+
+
 def _journal_tab_text(session):
     """The Journal tab: the journalctl feed, live; the tail
     follows, a paged reader holds. 's' switches the source."""
@@ -1061,6 +1273,7 @@ def _build_app(session):
                              if session._runs_detail is not None
                              else _runs_tab_text(session)),
             'journal': lambda: _journal_tab_text(session),
+            'inventory': lambda: _inventory_tab_text(session),
             'docs': lambda: '(Docs: the browsable documentation '
                             'arrives here; until then the “doc” verb '
                             'answers it)',
@@ -1229,6 +1442,39 @@ def _build_app(session):
     def _log_pagedown(event):
         session._runs_scroll_by(session._area_height())
 
+    in_inventory = Condition(lambda: session.console_focus == 'area'
+                             and session.console_tab == 'inventory')
+
+    @bindings.add('j', filter=in_inventory)
+    @bindings.add('down', filter=in_inventory)
+    def _inventory_down(event):
+        session._inventory_move(1)
+
+    @bindings.add('k', filter=in_inventory)
+    @bindings.add('up', filter=in_inventory)
+    def _inventory_up_key(event):
+        session._inventory_move(-1)
+
+    @bindings.add('h', filter=in_inventory)
+    @bindings.add('left', filter=in_inventory)
+    def _inventory_left(event):
+        session._inventory_up()
+
+    @bindings.add('l', filter=in_inventory)
+    @bindings.add('right', filter=in_inventory)
+    @bindings.add('enter', filter=in_inventory)
+    def _inventory_right(event):
+        session._inventory_drill()
+
+    @bindings.add('e', filter=in_inventory)
+    def _inventory_edit_key(event):
+        session._inventory_edit()
+
+    @bindings.add('r', filter=in_inventory)
+    def _inventory_refresh_key(event):
+        session._inventory_previews.clear()
+        session._inventory_refresh_async()
+
     in_journal = Condition(lambda: session.console_focus == 'area'
                            and session.console_tab == 'journal')
 
@@ -1303,6 +1549,17 @@ def _build_app(session):
     @bindings.add('q', filter=area_live & ~detail_open & ~log_open)
     def _exit_key(event):
         session.submit('exit')
+
+    # Registered after the exit key so it matches first: drilled
+    # into the inventory tree, 'q' steps up a level instead
+    inventory_drilled = Condition(
+            lambda: session.console_focus == 'area'
+            and session.console_tab == 'inventory'
+            and len(session._inventory_path) > 1)
+
+    @bindings.add('q', filter=inventory_drilled)
+    def _inventory_up_q(event):
+        session._inventory_up()
 
     @bindings.add('pageup')
     @bindings.add('s-pageup')

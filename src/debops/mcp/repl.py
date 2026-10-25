@@ -2298,6 +2298,11 @@ class Repl(object):
         except OSError:
             pass
         self._render(result)
+        self._post_edit(path)
+
+    def _post_edit(self, path):
+        """A hook after the edit's write landed; the fullscreen
+        front end refreshes the views the file feeds."""
 
     def _run_editor(self, path):
         """Open the editor on the temporary file; the console
