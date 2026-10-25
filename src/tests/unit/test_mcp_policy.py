@@ -186,6 +186,17 @@ class ResourcePolicyTestCase(unittest.TestCase):
         self.assertEqual(policy.ansible_env,
                          {'ANSIBLE_DISPLAY_SKIPPED_HOSTS': 'true'})
 
+    def test_operator_level_defaults_to_trusted(self):
+        self.assertEqual(self._policy({}).operator_level, 'trusted')
+
+    def test_operator_level_elevated(self):
+        self.assertEqual(self._policy({'operator_level': 'elevated'})
+                         .operator_level, 'elevated')
+
+    def test_operator_level_bad_value_falls_back(self):
+        self.assertEqual(self._policy({'operator_level': 'bogus'})
+                         .operator_level, 'trusted')
+
     def test_min_free_default(self):
         self.assertEqual(self._policy({}).min_free_bytes,
                          64 * 1024 * 1024)

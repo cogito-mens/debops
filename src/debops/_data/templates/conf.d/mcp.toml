@@ -84,6 +84,16 @@ execute_diff = false
 #run_logs_keep = 10
 #run_logs_max_age = 604800
 
+# The operator-level tools (the ones which govern the trust
+# boundary itself — writing the inventory decides what runs where):
+# which clients may call them. 'trusted' (the default) is any client
+# authenticated with the project's passphrase; 'elevated' is the
+# operator at the wheel, re-proven by it. An untrusted caller is
+# refused with the pointer to hand the work to the operator (an
+# agent's way out: ask the human to run it in the MCP console or
+# repl).
+#operator_level = "trusted"
+
 # Glob allowlists of inventory host patterns the host-query and
 # the execution tools may touch; empty means every host is allowed.
 #ansible_hosts = []

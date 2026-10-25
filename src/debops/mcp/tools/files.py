@@ -295,6 +295,61 @@ def tool_config_get(project, arguments):
             structured={'key': key, 'value': node})
 
 
+def tool_inventory_write(project, policy, arguments):
+    """Write a file under the view's inventory directory, committed
+    with provenance like file.write — but operator-level: only a
+    client trusted with the project's passphrase may call it (the
+    inventory is the trust boundary's map)."""
+    relative = str(arguments.get('path') or '').strip('/')
+    content = arguments.get('content')
+    if not isinstance(content, str):
+        return error_result('the "content" argument is required')
+    size = len(content.encode('utf-8'))
+    if size > WRITE_SIZE_LIMIT:
+        return error_result('content is larger than {} bytes: {}'
+                            .format(WRITE_SIZE_LIMIT, relative))
+    try:
+        mode = _parse_write_mode(arguments)
+    except ValueError as errmsg:
+        return error_result(str(errmsg))
+    digest, problem = _parse_digest(arguments.get('digest'))
+    if problem is not None:
+        return error_result(problem)
+    if not relative:
+        return error_result('the "path" argument is required')
+
+    # Writes are recoverable and attributable only with git
+    refused = require_git_tracked(project)
+    if refused is not None:
+        return refused
+
+    if policy.view_root is None:
+        return error_result('no active view; the inventory lives '
+                            'under one')
+    inventory_root = os.path.join(policy.view_root, 'inventory')
+    try:
+        path = confine_under(inventory_root, relative)
+    except ValueError:
+        return error_result('path escapes its allowed directory: '
+                            + relative)
+    canonical_relative = os.path.relpath(
+            path, os.path.realpath(inventory_root))
+    # The deny list applies here as anywhere (a 'secret' directory
+    # of a group_vars tree stays out of it)
+    for part in canonical_relative.split('/'):
+        if is_denied_component(part):
+            return error_result('path is denied by policy: '
+                                + relative)
+    # The display path spells the project-relative one, like the
+    # read tools show it
+    display = '/' + os.path.relpath(path, os.path.realpath(
+            project.path))
+    return _write_committed(project, policy, path, display,
+                            content, mode,
+                            'inventory.write ' + display,
+                            expected_digest=digest)
+
+
 def tool_inventory_query(project, arguments):
     action = str(arguments.get('action') or 'graph')
     if action not in INVENTORY_QUERY_ACTIONS:

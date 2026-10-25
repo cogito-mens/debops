@@ -612,6 +612,66 @@ class CancellationTestCase(unittest.TestCase):
         self.assertEqual(server._active_requests, {})
 
 
+class OperatorToolsTestCase(unittest.TestCase):
+    """The operator-level tools answer to trusted clients only —
+    the refusal tells an agent to ask the operator."""
+
+    def _server(self, level='trusted'):
+        server = McpServer()
+        server.policy = mock.Mock(operator_level=level,
+                                  confirm=set())
+        server.register_tool(
+                'inventory.write', 'Write the inventory',
+                {'type': 'object'},
+                lambda arguments: {'content': [{'type': 'text',
+                                                'text': 'written'}],
+                                   'isError': False})
+        return server
+
+    def _call(self, server, trusted):
+        meta = {'io.modelcontextprotocol/protocolVersion':
+                PROTOCOL_VERSION,
+                'io.modelcontextprotocol/clientCapabilities': {}}
+        if trusted:
+            with server._bearers_lock:
+                server._bearers['tok'] = {
+                        'expires': time.monotonic() + 60,
+                        'elevated_until': (time.monotonic() + 60
+                                           if trusted == 'elevated'
+                                           else 0)}
+            meta['org.debops/token'] = 'tok'
+        server.policy.trust_ttl = 43200
+        server.policy.elevate_ttl = 900
+        return server.handle(make_request(
+                'tools/call',
+                params={'name': 'inventory.write',
+                        'arguments': {'path': 'group_vars/all.yml',
+                                      'content': 'x: 1'}},
+                meta=meta))
+
+    def test_an_untrusted_client_is_refused_with_guidance(self):
+        answer = self._call(self._server(), trusted=False)
+        result = answer['result']
+        self.assertTrue(result['isError'])
+        text = result['content'][0]['text']
+        self.assertIn('operator-level', text)
+        self.assertIn('Ask the operator', text)
+        self.assertIn('mcp console', text)
+
+    def test_a_trusted_client_runs_it(self):
+        answer = self._call(self._server(), trusted=True)
+        self.assertFalse(answer['result']['isError'])
+        self.assertEqual(answer['result']['content'][0]['text'],
+                         'written')
+
+    def test_the_elevated_knob_refuses_the_merely_trusted(self):
+        answer = self._call(self._server('elevated'), trusted=True)
+        self.assertTrue(answer['result']['isError'])
+        answer = self._call(self._server('elevated'),
+                            trusted='elevated')
+        self.assertFalse(answer['result']['isError'])
+
+
 class RunTaskCancelTrustTestCase(unittest.TestCase):
     """tasks/cancel on a run task: the owner cancels outright, a
     client which started nothing needs the trust."""

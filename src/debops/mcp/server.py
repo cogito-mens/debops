@@ -23,6 +23,7 @@ import time
 from . import rpc
 from . import runs
 from . import trust
+from .policy import OPERATOR_TOOLS
 from .present import make_path_presenter
 from .skills import SKILL_URI_PREFIX, SKILLS_EXTENSION
 from .tasks import TaskRegistry
@@ -344,6 +345,16 @@ _TOOL_RESULT_LEVELS = {
     # The foreign-run poller of every attached front end
     'project.status': logging.DEBUG,
 }
+
+
+def _operator_allowed(policy, context):
+    """Whether the caller may run an operator-level tool: the
+    policy's level is 'trusted' (any client authenticated with the
+    project's passphrase) or 'elevated' (the operator at the wheel)."""
+    level = policy.operator_level if policy is not None else 'trusted'
+    if level == 'elevated':
+        return bool(context.elevated)
+    return bool(context.trusted)
 
 
 def _tool_result_level(tool):
@@ -1230,6 +1241,24 @@ class McpServer(object):
                                 'the view is now {} — it moved while '
                                 'the client was working; re-check and '
                                 'retry'.format(current))}]}
+        # The operator-level tools answer to trusted clients only —
+        # the boundary runs before the confirmation's courtesy; an
+        # untrusted caller gets the pointer to hand the work to the
+        # operator (the LLM's way out: ask the human)
+        if name in OPERATOR_TOOLS and not _operator_allowed(
+                self.policy, context):
+            logger.notice('Tool %s(%s) -> refused: operator-level, '
+                          'the client is not trusted%s', name,
+                          ','.join(sorted(arguments)),
+                          _audit_tag(context))
+            return {'resultType': 'complete', 'isError': True,
+                    'content': [{'type': 'text', 'text': (
+                        '{} is an operator-level operation: this '
+                        'client is not trusted with the project\'s '
+                        'passphrase, so the daemon refuses. Ask the '
+                        'operator to run it in the MCP console or '
+                        'repl (debops mcp console / debops mcp shell)'
+                        .format(name))}]}
         gated = self._confirmation_gate(tool, arguments, params, context)
         if gated is not None:
             logger.notice('Tool %s(%s) -> gated%s', name,

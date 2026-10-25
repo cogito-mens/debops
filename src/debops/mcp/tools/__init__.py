@@ -29,7 +29,8 @@ from .executions import (tool_execution_list, tool_execution_output,
                          tool_execution_purge)
 from .executions import tool_log_reader
 from .files import (tool_config_get, tool_inventory_query,
-                    tool_inventory_spec, tool_project_files,
+                    tool_inventory_spec, tool_inventory_write,
+                    tool_project_files,
                     tool_project_list, tool_project_mkdir,
                     tool_project_read, tool_file_delete, tool_file_move,
                     tool_file_write)
@@ -54,6 +55,7 @@ from .views import (NO_ACTIVE_VIEW, tool_view_create, tool_view_list,
                     tool_view_switch)
 from .doc import PLUGIN_TYPES, tool_ansible_doc
 from ..policy import EXECUTE_OPTIONS
+from ..policy import OPERATOR_TOOLS
 from ..server import Tool
 
 # The schema shared by the execution tools, with options the project
@@ -429,6 +431,10 @@ TOOL_ANNOTATIONS = {
     # A specification can remove inventory paths
     'inventory.spec': {'destructiveHint': True, 'idempotentHint': True,
                        'openWorldHint': False},
+    # The inventory write is the operator-level tool
+    'inventory.write': {'destructiveHint': True,
+                        'idempotentHint': True,
+                        'openWorldHint': False},
     # The view is server-global state; listing it changes nothing, and
     # a switch is visible to every connected client
     'view.list': _READ_ONLY,
@@ -839,7 +845,7 @@ def _apply_aliases(server):
 VIEW_BOUND_TOOLS = frozenset((
     'file.write', 'file.delete', 'file.move', 'project.mkdir',
     'inventory.query',
-    'inventory.spec',
+    'inventory.spec', 'inventory.write',
     'secret.paths', 'check', 'run', 'ansible.ping', 'ansible.facts',
     'execution.list', 'execution.output', 'execution.purge',
     'log.reader',
@@ -921,6 +927,15 @@ def _register_entries(target, entries, policy, confirm=(), project=None):
                 description += (' The server asks the user to confirm '
                                 'before this runs.')
                 meta = {'org.debops/confirm': True}
+            if name in OPERATOR_TOOLS:
+                description += (' Operator-level operation: only a '
+                                'client trusted with the project\'s '
+                                'passphrase may call this; an '
+                                'untrusted agent should ask the '
+                                'operator to run it in the MCP console '
+                                'or repl.')
+                meta = dict(meta or {})
+                meta['org.debops/operator'] = True
             _register_tool(target, name, description, schema, handler,
                            output_schema=TOOL_OUTPUT_SCHEMAS.get(name),
                            needs_context=needs_context,
@@ -1144,6 +1159,33 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
           'required': ['spec']},
          lambda arguments: tool_inventory_spec(project, policy,
                                                arguments)),
+        ('inventory.write',
+         'Write a file under the inventory of the current view '
+         '(group_vars/, host_vars/, ...), committed to git '
+         'automatically. With the "digest" of a read the write is '
+         'refused when the file changed since the read.',
+         {'type': 'object',
+          'properties': {'path': {'type': 'string',
+                                  'description': 'File to write, '
+                                  'relative to the inventory '
+                                  'directory, e.g. '
+                                  '"group_vars/webservers.yml"'},
+                         'content': {'type': 'string',
+                                     'description': 'The complete file '
+                                     'content (UTF-8 text)'},
+                         'mode': {'type': 'string',
+                                  'description': 'Octal file mode, e.g. '
+                                  '"0755"; omit to keep an existing '
+                                  "file's mode, 0644 for a new one"},
+                         'digest': {'type': 'string',
+                                    'description': 'The sha256:… '
+                                    'digest of the last read; given, '
+                                    'the write is refused when the '
+                                    'file changed since'}},
+          'required': ['path', 'content'],
+          'additionalProperties': False},
+         lambda arguments: tool_inventory_write(project, policy,
+                                                arguments)),
         ('keyring.fetch',
          'Fetch a GPG key into the project keyring (ansible/keyring/), '
          'for debops.keyring to use with APT repositories and signed '
@@ -1708,7 +1750,8 @@ DOCS_STUB_TOOLS = frozenset((
     'execution.list', 'execution.output', 'execution.purge',
     'log.reader',
     'file.delete', 'file.move', 'file.write',
-    'inventory.query', 'inventory.spec', 'keyring.fetch',
+    'inventory.query', 'inventory.spec', 'inventory.write',
+    'keyring.fetch',
     'project.files', 'project.list', 'project.mkdir', 'project.pull',
     'project.push', 'project.read', 'project.status', 'run',
     'secret.paths', 'view.create', 'view.list', 'view.switch',

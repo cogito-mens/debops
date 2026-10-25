@@ -225,6 +225,13 @@ class ConsoleRepl(Repl):
         self._journal_source = 'mcp'
         # The Credits tab: the package's credits file, scrolled
         self._credits_scroll = 0
+        # The Inventory tab: the groups tree from inventory.query's
+        # structured answer, the cursor, the open detail
+        self._inventory = None
+        self._inventory_rows = []
+        self._inventory_cursor = 0
+        self._inventory_detail = None
+        self._inventory_refreshing = threading.Lock()
 
     # -- the transcript plumbing -------------------------------------
 
@@ -675,6 +682,114 @@ class ConsoleRepl(Repl):
         # so here the offset just stays non-negative
         self._credits_scroll = max(0, self._credits_scroll + lines)
         self._invalidate()
+
+    # -- the Inventory tab ---------------------------------------------
+
+    def _inventory_refresh(self, connection):
+        """Fetch the inventory tree for the tab on a side
+        connection: the 'list' action's parsed inventory. Skips
+        when a refresh is in flight."""
+        if not self._inventory_refreshing.acquire(blocking=False):
+            return
+        try:
+            try:
+                answer = connection.request(
+                        'tools/call',
+                        {'name': 'inventory.query',
+                         'arguments': {'action': 'list'}})
+                result = answer.get('result', {})
+                if result.get('isError'):
+                    return
+                structured = result.get('structuredContent') or {}
+                inventory = structured.get('inventory')
+            except (AttributeError, ConnectionError, EOFError,
+                    KeyError, OSError, ReplError, TypeError):
+                return
+            if not isinstance(inventory, dict):
+                return
+            self._inventory = inventory
+            self._inventory_rows = self._inventory_build_rows()
+            self._inventory_cursor = min(
+                    self._inventory_cursor,
+                    max(0, len(self._inventory_rows) - 1))
+            self._invalidate()
+        finally:
+            self._inventory_refreshing.release()
+
+    def _inventory_refresh_async(self):
+        """A one-shot refresh of the Inventory tab on its own
+        thread."""
+        def refresh():
+            try:
+                side = self.client.clone()
+                self._inventory_refresh(side)
+                side.close()
+            except (AttributeError, ConnectionError, EOFError,
+                    OSError):
+                pass
+        thread = threading.Thread(target=refresh, daemon=True)
+        thread.start()
+
+    def _inventory_build_rows(self):
+        """The selectable rows of the inventory tree: the groups
+        depth-first from 'all', their hosts under them; a group
+        cycle marks the loop instead of recursing forever."""
+        inventory = self._inventory or {}
+        rows = []
+
+        def walk(group, depth, seen):
+            if group in seen:
+                rows.append(('cycle', group, depth))
+                return
+            seen.add(group)
+            rows.append(('group', group, depth))
+            body = inventory.get(group) or {}
+            for child in body.get('children') or []:
+                walk(child, depth + 1, seen)
+            for host in body.get('hosts') or []:
+                rows.append(('host', host, depth + 1))
+            seen.discard(group)
+
+        walk('all', 0, set())
+        return rows
+
+    def _inventory_move(self, direction):
+        if not self._inventory_rows:
+            return
+        self._inventory_cursor = min(
+                len(self._inventory_rows) - 1,
+                max(0, self._inventory_cursor + direction))
+        self._invalidate()
+
+    def _inventory_open(self):
+        """Enter on a row: the group's or the host's detail."""
+        if not self._inventory_rows:
+            return
+        kind, name, _depth = self._inventory_rows[
+                self._inventory_cursor]
+        if kind == 'cycle':
+            return
+        self._inventory_detail = {'kind': kind, 'name': name}
+        self._invalidate()
+
+    def _inventory_edit(self):
+        """'e' on a row: the group's or the host's variables file in
+        the editor, through the daemon's tracked write path."""
+        if not self._inventory_rows:
+            return
+        kind, name, _depth = self._inventory_rows[
+                self._inventory_cursor]
+        if kind == 'cycle':
+            return
+        if kind == 'group':
+            relative = os.path.join('group_vars',
+                                    '{}.yml'.format(name))
+        else:
+            relative = os.path.join('host_vars',
+                                    '{}.yml'.format(name))
+        inventory_root = os.path.join(self._view_root_rel
+                                      or 'ansible', 'inventory')
+        self.submit('edit ' + os.path.join(inventory_root, relative))
 
     # -- the focus dance -----------------------------------------------
 

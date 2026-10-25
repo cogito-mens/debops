@@ -2247,14 +2247,21 @@ class Repl(object):
                 pass
             self._note('unchanged: ' + path)
             return
-        write_args = {'path': write_path, 'content': new}
+        inventory_relative = self._inventory_write_path(path)
+        if inventory_relative is not None:
+            # Inventory paths write through the operator-level tool
+            write_tool = 'inventory.write'
+            write_args = {'path': inventory_relative, 'content': new}
+        else:
+            write_tool = 'file.write'
+            write_args = {'path': write_path, 'content': new}
         if digest is not None:
             # The write precondition: the file must not have changed
             # since the read, or the save would silently revert
             # whoever wrote it while the editor was open
             write_args['digest'] = digest
         try:
-            result = self._call_tool('file.write', write_args)
+            result = self._call_tool(write_tool, write_args)
         except ReplError:
             self._note('the write did not land; your edits are kept '
                        'as the local copy ' + tmp)
@@ -2606,6 +2613,20 @@ class Repl(object):
                 raise ReplError("the view's edge; elevate to go "
                                 "further")
         return resolved
+
+    def _inventory_write_path(self, project_relative):
+        """The path's inventory-relative spelling when it lands
+        under the inventory directory of the view, else None — such
+        paths write through the operator-level inventory.write."""
+        if self._view_root_rel is not None:
+            root = self._view_root_rel + '/inventory'
+        elif self.project_type == 'legacy':
+            root = 'ansible/inventory'
+        else:
+            return None
+        if project_relative.startswith(root + '/'):
+            return project_relative[len(root) + 1:]
+        return None
 
     def _resolve_write(self, argument):
         """Resolve for a write tool: the view-relative spelling inside

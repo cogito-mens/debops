@@ -93,6 +93,16 @@ def is_denied_component(part):
     return part in READ_DENY_COMPONENTS or part.startswith('.env.')
 
 
+# The operator-level tools: they govern the trust boundary's own
+# map (the inventory decides what runs where), so the daemon answers
+# them only for clients trusted with the project's passphrase — or,
+# with 'project.mcp.operator_level: elevated', only at the wheel.
+# The set grows deliberately; the refusals tell an agent to ask the
+# operator to run them in the console or the repl
+OPERATOR_TOOLS = frozenset((
+    'inventory.write',
+))
+
 # ansible-playbook options the execution tools may pass through;
 # 'project.mcp.execute_options' restricts the set
 # The ansible-playbook options an execution may carry. The default
@@ -172,6 +182,7 @@ class McpPolicy(object):
         policy.execute_options = []
         policy.execute_user_override = {}
         policy.ansible_env = {}
+        policy.operator_level = 'trusted'
         return policy
 
     @staticmethod
@@ -511,6 +522,19 @@ class McpPolicy(object):
                           'secrets included, reach the model)')
 
         self.ansible_env = self._ansible_env(mcp_config)
+
+        # The operator-level tools: which clients may call them.
+        # 'trusted' (the default) is any client authenticated with
+        # the project's passphrase; 'elevated' is the operator at
+        # the wheel, re-proven by it
+        level = mcp_config.get('operator_level', 'trusted')
+        if isinstance(level, str):
+            level = level.strip().lower()
+        if level not in ('trusted', 'elevated'):
+            logger.warning('Unknown project.mcp.operator_level %r, '
+                           'using "trusted"', level)
+            level = 'trusted'
+        self.operator_level = level
 
         options = mcp_config.get('execute_options')
         if options is None:

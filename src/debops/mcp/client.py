@@ -367,6 +367,8 @@ TOOL_CALL_EXAMPLES = {
     'environment.unset': ['name=REGION'],
     'inventory.query': ['action=graph',
                         'action=host host=web1.example.com'],
+    'inventory.write': ['path=group_vars/webservers.yml '
+                        'content="---\nkey: value\n"'],
     'inventory.spec': ['spec="version: 0\\nfiles:\\n  hosts.yml: ..." '
                        'dry_run=true'],
     'secret.paths': ['pattern=**/password'],

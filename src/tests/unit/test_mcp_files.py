@@ -26,6 +26,81 @@ REQUEST_META = {
 }
 
 
+def _record_noop_commit(instance, message=None, paths=None):
+    """The commit stub: the write contract calls it; nothing to
+    record here (the file landing is the assertion)."""
+
+
+class InventoryWriteTestCase(unittest.TestCase):
+    """The inventory.write tool: files land under the view's
+    inventory directory, committed with provenance; the digest
+    preconditions."""
+
+    def setUp(self):
+        if shutil.which('git') is None:
+            self.skipTest('git is not installed')
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-invwrite-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        subprocess.run(['git', 'init', '-q'], cwd=self.tmpdir,
+                       check=True)
+        os.makedirs(os.path.join(self.tmpdir, 'ansible', 'inventory',
+                                 'group_vars'))
+        self.commits = []
+
+        def _record_commit(instance, message=None, paths=None):
+            self.commits.append(message)
+
+        self.project = type('Project', (), {
+            'path': self.tmpdir,
+            'name': 'project',
+            'project_type': 'legacy',
+            'view': 'system',
+            'auto_commit': _record_commit,
+            'commit': _record_commit,
+            'config': type('Config', (), {'_env_vars': {},
+                                          'raw': {}})(),
+        })()
+        self.policy = McpPolicy(self.project)
+
+    def write(self, arguments):
+        from debops.mcp.tools.files import tool_inventory_write
+        return tool_inventory_write(self.project, self.policy,
+                                    arguments)
+
+    def text(self, result):
+        return result['content'][0]['text']
+
+    def test_writes_under_the_inventory(self):
+        result = self.write({'path': 'group_vars/web.yml',
+                             'content': '---\nkey: value\n'})
+        self.assertFalse(result['isError'], self.text(result))
+        with open(os.path.join(self.tmpdir, 'ansible', 'inventory',
+                               'group_vars', 'web.yml')) as fp:
+            self.assertEqual(fp.read(), '---\nkey: value\n')
+        # The write is committed with the tool's provenance (the
+        # stub records the contract's call)
+        self.assertTrue(self.commits)
+        self.assertIn('inventory.write', self.commits[0])
+
+    def test_the_digest_preconditions_the_write(self):
+        self.write({'path': 'group_vars/web.yml',
+                    'content': '---\none\n'})
+        # A digest matching nothing current: the write is refused
+        result = self.write({'path': 'group_vars/web.yml',
+                             'content': '---\ntwo\n',
+                             'digest': 'sha256:' + '0' * 64})
+        self.assertTrue(result['isError'])
+        with open(os.path.join(self.tmpdir, 'ansible', 'inventory',
+                               'group_vars', 'web.yml')) as fp:
+            self.assertEqual(fp.read(), '---\none\n')
+
+    def test_refuses_an_escape(self):
+        result = self.write({'path': '../outside.yml',
+                             'content': '---\nx\n'})
+        self.assertTrue(result['isError'])
+        self.assertIn('escapes', self.text(result))
+
+
 class FilesTestCase(unittest.TestCase):
 
     def setUp(self):

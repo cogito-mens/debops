@@ -1704,7 +1704,7 @@ class ToolsTestCase(unittest.TestCase):
                           'execution.purge',
                           'file.delete', 'file.move', 'file.write',
                           'inventory.query',
-                          'inventory.spec', 'keyring.fetch',
+                          'inventory.spec', 'inventory.write', 'keyring.fetch',
                           'log.reader',
                           'playbook.info',
                           'playbook.list', 'project.files', 'project.list',
@@ -1792,7 +1792,8 @@ class ToolsTestCase(unittest.TestCase):
     def test_confirm_disabled_marks_nothing(self):
         tools = self._tools_by_name({'execute': 'all', 'confirm': []})
         for tool in tools.values():
-            self.assertNotIn('_meta', tool, tool['name'])
+            self.assertNotIn('org.debops/confirm',
+                             tool.get('_meta') or {}, tool['name'])
             self.assertNotIn('asks the user to confirm',
                              tool['description'], tool['name'])
 
@@ -1816,7 +1817,9 @@ class ToolsTestCase(unittest.TestCase):
         self.assertNotIn('asks the user to confirm',
                          tools['run']['description'])
         for tool in tools.values():
-            self.assertNotIn('_meta', tool, tool['name'])
+            # The operator tier's marker is not the confirmation
+            self.assertNotIn('org.debops/confirm',
+                             tool.get('_meta') or {}, tool['name'])
 
     def test_denied_tool_is_not_registered(self):
         self.project.config.raw['project'] = {'mcp': {'deny': ['role.info']}}

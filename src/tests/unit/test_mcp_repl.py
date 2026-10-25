@@ -495,7 +495,8 @@ class EditTestCase(unittest.TestCase):
         session, out, err = make_repl(client, interactive=True)
         return client, session, out, err
 
-    def edit_with(self, session, append='new\n'):
+    def edit_with(self, session, append='new\n',
+                  line='edit playbooks/site.yml'):
         """Run 'edit' with a scripted editor; the tmp path out."""
         written = []
 
@@ -507,7 +508,7 @@ class EditTestCase(unittest.TestCase):
             return 0
 
         session._run_editor = fake_editor
-        session.execute('edit playbooks/site.yml')
+        session.execute(line)
         return written[0]
 
     def test_the_digest_preconditions_the_write(self):
@@ -521,6 +522,24 @@ class EditTestCase(unittest.TestCase):
         self.assertEqual(arguments['content'], 'old\nnew\n')
         # The scratch file is cleaned up on success
         self.assertFalse(os.path.exists(tmp))
+
+    def test_inventory_paths_write_through_the_operator_tool(self):
+        # An edit under the view's inventory directory routes the
+        # write to inventory.write, the operator-level tool
+        client, session, _out, _err = self.make_session(
+                {'resultType': 'complete', 'isError': False,
+                 'content': [{'type': 'text', 'text': 'written'}]})
+        # A legacy project's inventory lives at ansible/inventory
+        session.project_type = 'legacy'
+        session._view_root_rel = 'ansible'
+        self.edit_with(session,
+                       line='edit ansible/inventory/group_vars/'
+                            'all.yml')
+        call = client.calls[1][1]
+        self.assertEqual(call['name'], 'inventory.write')
+        # The path is spelled inventory-relative for the tool
+        self.assertEqual(call['arguments']['path'],
+                         'group_vars/all.yml')
 
     def test_a_refusal_keeps_the_local_copy(self):
         # The file moved while the editor was open: the write is
