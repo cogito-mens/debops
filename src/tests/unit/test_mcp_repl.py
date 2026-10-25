@@ -3113,6 +3113,23 @@ class ToolHatchTestCase(unittest.TestCase):
         self.assertEqual([call[0] for call in client.calls],
                          ['tools/list', 'tools/list'])
 
+    def test_tools_fetches_on_the_busy_worker(self):
+        # The app front ends run commands on a worker thread — the
+        # session is busy when the verb runs, and the completer's
+        # implicit-fetch guard would otherwise answer empty forever
+        client, session, _out, err = self.make_listed_repl()
+        session._busy = True   # as the worker sets it
+        session.execute('tools')
+        self.assertIn('listed (2)', err.getvalue())
+        self.assertEqual(sorted(session._server_tools),
+                         ['playbook.list', 'project.status'])
+        # ... while the completer's implicit fetch still waits the
+        # command out
+        client2, session2, _out2, _err2 = self.make_listed_repl()
+        session2._busy = True
+        self.assertEqual(session2._server_tool_list(), {})
+        self.assertEqual(client2.calls, [])
+
     def test_help_lists_the_tools_sorted_when_visible(self):
         client, session, out, _err = self.make_listed_repl()
         session.execute('tools')

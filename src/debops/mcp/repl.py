@@ -1790,12 +1790,14 @@ class Repl(object):
 
     # -- the server tool surface (the 'tool/<name>' hatch) -----------
 
-    def _fetch_tools(self):
+    def _fetch_tools(self, force=False):
         """The server's tools/list as {name: summary}; empty when the
         daemon cannot answer. The summary is the first sentence, cut
         to a help line."""
-        if self._busy:
-            # A command is holding the one connection
+        if self._busy and not force:
+            # A command is holding the one connection; the
+            # completer's implicit fetch waits it out. The 'tools'
+            # verb is the command itself — it forces
             return {}
         try:
             result = self._request('tools/list', {})
@@ -1834,7 +1836,9 @@ class Repl(object):
             raise ReplError('tools takes no arguments')
         self._tools_visible = not self._tools_visible
         if self._tools_visible:
-            self._server_tools = self._fetch_tools()
+            # The fetch runs on the worker (this command IS the
+            # busy one); force it past the completer's guard
+            self._server_tools = self._fetch_tools(force=True)
             self._note('the server tools are listed ({}) — call one '
                        "as tool/<name>, 'tools' again hides them"
                        .format(len(self._server_tools)))
