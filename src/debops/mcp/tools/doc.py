@@ -93,13 +93,13 @@ def _doc_environ(project, policy):
     return env
 
 
-def _ansible_doc_json(env, cwd, plugin, plugin_type, entry_point,
-                      roles_paths):
+def _ansible_doc_json(env, cwd, binary, plugin, plugin_type,
+                      entry_point, roles_paths):
     """The plugin's documentation as the parsed data, via
     'ansible-doc --json'; None when it cannot answer (the structured
     content of an answer is best-effort — the text is the
     contract)."""
-    command = ['ansible-doc', '--json']
+    command = [binary, '--json']
     if plugin_type != 'module':
         command += ['--type', plugin_type]
     if entry_point:
@@ -224,8 +224,8 @@ def tool_ansible_doc(project, policy, arguments, roles_paths=None):
         document = _ansible_doc_json(env, (project.path
                                            if project is not None
                                            else None),
-                                     plugin, plugin_type, entry_point,
-                                     roles_paths)
+                                     command[0], plugin, plugin_type,
+                                     entry_point, roles_paths)
         if document is not None:
             structured = {'plugin': plugin, 'type': plugin_type,
                           'doc': document.get('doc') or {},

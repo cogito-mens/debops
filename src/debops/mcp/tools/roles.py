@@ -528,8 +528,7 @@ def _tool_role_tasklist(roles_paths, arguments, subdir,
     # module, the tags — parsed from the YAML
     structured = {'role': 'debops.{}'.format(name),
                   'file': task_file,
-                  'tasks': [{'name': str(task.get('name',
-                                                 '(unnamed)')),
+                  'tasks': [{'name': str(task.get('name', '(unnamed)')),
                              'module': task_module(task),
                              'tags': task.get('tags') or []}
                             for task in tasks

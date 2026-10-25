@@ -41,6 +41,7 @@ class AnsibleDocTestCase(unittest.TestCase):
         command = run.call_args[0][0]
         # The documentation mode resolves the account's own
         # ansible-doc to an absolute path when one exists
+        command = run.call_args_list[0][0][0]
         self.assertTrue(command[0].endswith('ansible-doc'), command[0])
         self.assertEqual(command[1], 'ansible.builtin.service')
         self.assertNotIn('--json', command)
@@ -248,7 +249,9 @@ class AnsibleDocTestCase(unittest.TestCase):
         with mock.patch('debops.mcp.tools.doc.account_ansible_doc',
                         return_value='/home/x/.local/bin/ansible-doc'):
             _result, run = self.run_doc({'plugin': 'x'})
-        self.assertEqual(run.call_args[0][0][0],
+        # The first call is the text render; the structured
+        # content's --json follow-up rides the same binary
+        self.assertEqual(run.call_args_list[0][0][0][0],
                          '/home/x/.local/bin/ansible-doc')
 
     def test_docs_mode_falls_back_to_the_plain_name(self):
