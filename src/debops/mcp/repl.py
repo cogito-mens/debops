@@ -1457,6 +1457,19 @@ class Repl(object):
             self._pending_lines = []
         self._print_output_text(''.join(line + '\n' for line in lines))
 
+    def _print_log_text(self, text):
+        """The log text of a run on the output channel; colored
+        like the live tail on a terminal, plain in a pipe."""
+        if not self._color_output():
+            print(text, file=self._out)
+            return
+        colorizer = AnsibleColorizer(self.theme or ANSI_THEME,
+                                     width=self._output_columns)
+        colored = '\n'.join(
+                colorizer.colorize(line) for line in
+                text.splitlines())
+        self._print_output_text(colored + '\n')
+
     def _print_output_text(self, text):
         """A block of the run's output through the live app's
         printer."""
@@ -2383,8 +2396,14 @@ class Repl(object):
             raise ReplError('the execution id is a number: {!r}'
                             .format(rest[0]))
         if not follow:
-            return self._call_tool('execution.output',
-                                   {'id': execution_id})
+            result = self._call_tool('execution.output',
+                                     {'id': execution_id})
+            if result.get('isError'):
+                return result
+            for block in result.get('content', []):
+                if block.get('type') == 'text':
+                    self._print_log_text(block.get('text', ''))
+            return None
         if self.client.legacy:
             raise ReplError('the 2025-era protocol has no '
                             'subscription streams')
@@ -2393,13 +2412,18 @@ class Repl(object):
         # the run itself is untouched
         watcher = self.client.clone()
         self._follow_client = watcher
+        colorizer = (AnsibleColorizer(self.theme or ANSI_THEME,
+                                      width=self._output_columns)
+                     if self._color_output() else None)
         try:
             for message in watcher.request_streaming(
                     'subscriptions/listen',
                     {'notifications': {'runLog': execution_id}}):
                 if message.get('method') == 'notifications/runs/log':
-                    print(message.get('params', {}).get('line', ''),
-                          file=self._out)
+                    line = message.get('params', {}).get('line', '')
+                    if colorizer is not None:
+                        line = colorizer.colorize(line)
+                    self._print_output_line(line)
         except KeyboardInterrupt:
             self._note('the tail ends; the run is untouched')
         except (EOFError, ConnectionError, OSError, RuntimeError) \

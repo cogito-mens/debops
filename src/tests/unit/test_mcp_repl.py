@@ -923,6 +923,57 @@ class TaskFlowTestCase(unittest.TestCase):
         self.assertEqual(client.tail.subscriptions, [{'runLog': 7}])
         self.assertTrue(client.tail.closed)
 
+    def test_log_follow_colors_each_line_on_a_terminal(self):
+        client = FakeClient()
+        client.tail = FakeTailConnection(
+                ['ok: [localhost]', 'changed: [x]'])
+        session, out, _err = make_repl(client, interactive=True)
+        out.isatty = lambda: True
+        session.execute('log 7 --follow')
+        text = out.getvalue()
+        self.assertIn('\x1b[0;32mok: [localhost]\x1b[0m', text)
+        self.assertIn('\x1b[0;33mchanged: [x]\x1b[0m', text)
+
+    def test_the_log_dump_is_colored_on_a_terminal(self):
+        client = FakeClient()
+        client.queue('tools/call', {
+                'resultType': 'complete', 'isError': False,
+                'content': [{'type': 'text',
+                             'text': 'ok: [localhost]\n'
+                                     'fatal: [x]: FAILED!'}]})
+        session, out, _err = make_repl(client, interactive=True)
+        out.isatty = lambda: True
+        session.execute('log 3')
+        text = out.getvalue()
+        self.assertIn('\x1b[0;32mok: [localhost]\x1b[0m', text)
+        self.assertIn('\x1b[0;31mfatal: [x]: FAILED!\x1b[0m', text)
+        # The answer came from the excerpt tool
+        self.assertEqual(client.calls[0][0], 'tools/call')
+        self.assertEqual(client.calls[0][1]['name'],
+                         'execution.output')
+
+    def test_the_log_dump_stays_plain_in_a_pipe(self):
+        client = FakeClient()
+        client.queue('tools/call', {
+                'resultType': 'complete', 'isError': False,
+                'content': [{'type': 'text',
+                             'text': 'ok: [localhost]'}]})
+        session, out, _err = make_repl(client)
+        session.execute('log 3')
+        self.assertNotIn('\x1b[', out.getvalue())
+        self.assertIn('ok: [localhost]', out.getvalue())
+
+    def test_the_log_dump_errors_reach_the_error_channel(self):
+        client = FakeClient()
+        client.queue('tools/call', {
+                'resultType': 'complete', 'isError': True,
+                'content': [{'type': 'text',
+                             'text': 'no such execution: 99'}]})
+        session, _out, err = make_repl(client)
+        session.execute('log 99')
+        self.assertIn('no such execution: 99', err.getvalue())
+        self.assertTrue(session.had_error)
+
     def test_log_follow_ctrl_c_keeps_the_run(self):
         class Interrupting(FakeTailConnection):
             def request_streaming(self, method, params):
