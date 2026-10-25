@@ -1176,7 +1176,10 @@ class Interpreter(object):
             print('Error:', errmsg, file=sys.stderr)
             sys.exit(1)
         with client:
-            if not args.legacy:
+            if not args.legacy and not getattr(
+                    args, 'untrusted', False):
+                # '--untrusted' leaves the session to prove itself at
+                # the prompt (debugging the untrusted paths)
                 repl_mod.bootstrap_trust(client, project)
             # The view root relative to the project directory scopes
             # the interpreter's navigation; None when no view is
@@ -1215,7 +1218,8 @@ class Interpreter(object):
                     frontend=frontend,
                     command=getattr(args, 'command', None),
                     confined=confined, history_max=history_max,
-                    plain=getattr(args, 'plain', False))
+                    plain=getattr(args, 'plain', False),
+                    untrusted=getattr(args, 'untrusted', False))
         sys.exit(code)
 
     def do_autostart(self):

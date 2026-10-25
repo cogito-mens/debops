@@ -724,6 +724,11 @@ Commands:
                                  '(no editor, no local shell escape), '
                                  'whatever the account configuration '
                                  'says — for testing the confined UI')
+        parser.add_argument('--untrusted', action='store_true',
+                            help='do not read the trust passphrase '
+                                 'file; the session proves itself at '
+                                 'the prompt instead (debugging the '
+                                 'untrusted paths)')
         spawn = parser.add_mutually_exclusive_group()
         spawn.add_argument('--spawn', dest='spawn',
                            action='store_true', default=None,
@@ -789,6 +794,11 @@ Commands:
                                  '(no editor, no local shell escape), '
                                  'whatever the account configuration '
                                  'says — for testing the confined UI')
+        parser.add_argument('--untrusted', action='store_true',
+                            help='do not read the trust passphrase '
+                                 'file; the session proves itself at '
+                                 'the prompt instead (debugging the '
+                                 'untrusted paths)')
         spawn = parser.add_mutually_exclusive_group()
         spawn.add_argument('--spawn', dest='spawn',
                            action='store_true', default=None,
@@ -832,6 +842,11 @@ Commands:
                                  '(no editor, no local shell escape), '
                                  'whatever the account configuration '
                                  'says — for testing the confined UI')
+        parser.add_argument('--untrusted', action='store_true',
+                            help='do not read the trust passphrase '
+                                 'file; the session proves itself at '
+                                 'the prompt instead (debugging the '
+                                 'untrusted paths)')
         spawn = parser.add_mutually_exclusive_group()
         spawn.add_argument('--spawn', dest='spawn',
                            action='store_true', default=None,

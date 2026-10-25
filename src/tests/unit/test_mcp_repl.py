@@ -1376,6 +1376,23 @@ class TrustVerbsTestCase(unittest.TestCase):
                           {'passphrase': 'correct horse battery '
                            'staple'}))
 
+    def test_the_untrusted_session_asks_despite_the_file(self):
+        # '--untrusted': the readable passphrase file stays unread
+        # on purpose; the prompt is the only way in
+        self._write_passphrase()
+        session, _out, _err = make_repl(FakeClient(),
+                                        interactive=True)
+        session.project_path = self.tmpdir
+        session.untrusted = True
+        with mock.patch.object(session, '_ask_passphrase',
+                               return_value='typed in') as prompt:
+            self.assertEqual(session._passphrase(), 'typed in')
+        prompt.assert_called_once_with()
+        # ... and without the flag the file answers silently
+        session.untrusted = False
+        self.assertEqual(session._passphrase(),
+                         'correct horse battery staple')
+
     def test_elevate_twice_is_a_clean_error(self):
         client = FakeClient()
         client.legacy = False

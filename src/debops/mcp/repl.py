@@ -943,7 +943,7 @@ class Repl(object):
                  out=sys.stdout, err=sys.stderr, interactive=False,
                  project_path=None, project_type=None,
                  view_root_rel=None, confined=False,
-                 history_max=0):
+                 history_max=0, untrusted=False):
         self.client = client
         self.project_name = project_name
         self.view = view
@@ -953,6 +953,10 @@ class Repl(object):
         # The ambient confinement of the account: the escape hatches
         # of the session (the editor) stay closed
         self.confined = confined
+        # '--untrusted': the trust passphrase file stays unread on
+        # purpose — the prompt is the only way in (debugging the
+        # untrusted paths)
+        self.untrusted = untrusted
         # The bound of the history files (0: unbounded)
         self.history_max = history_max
         self.had_error = False
@@ -2226,7 +2230,7 @@ class Repl(object):
         a prompt when it exists but is unreadable (the cross-account
         case), a clean refusal when it is absent — a daemon without
         the file has nothing to check an answer against."""
-        if self.project_path is not None:
+        if self.project_path is not None and not self.untrusted:
             try:
                 with open(os.path.join(self.project_path,
                                        TRUST_PATH)) as fp:
@@ -3398,7 +3402,7 @@ def _execute_line(repl, line):
 def run(client, project_name=None, view=None, interactive=None,
         project_path=None, project_type=None, view_root_rel=None,
         frontend=None, command=None, confined=False, history_max=0,
-        plain=False):
+        plain=False, untrusted=False):
     """Build and run an interpreter session against the connected
     daemon. 'frontend' selects the chrome: None for the plain
     interpreter, 'shell' for the status-bar interface, 'console' for
@@ -3428,7 +3432,8 @@ def run(client, project_name=None, view=None, interactive=None,
                             project_path=project_path,
                             project_type=project_type,
                             view_root_rel=view_root_rel,
-                            confined=confined, history_max=history_max)
+                            confined=confined, history_max=history_max,
+                            untrusted=untrusted)
     if runner is not None:
         return runner(session)
     if interactive:
