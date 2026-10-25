@@ -27,6 +27,7 @@ from .environment import (tool_environment_list, tool_environment_set,
 from .execute import tool_check, tool_run
 from .executions import (tool_execution_list, tool_execution_output,
                          tool_execution_purge)
+from .executions import tool_log_reader
 from .files import (tool_config_get, tool_inventory_query,
                     tool_inventory_spec, tool_project_files,
                     tool_project_list, tool_project_mkdir,
@@ -343,6 +344,10 @@ TOOL_OUTPUT_SCHEMAS = {
         'skipped': {'type': 'integer'},
         'cutoffSeconds': {'type': 'integer'}},
         'required': ['removed', 'skipped', 'cutoffSeconds']},
+    'log.reader': {'type': 'object', 'properties': {
+        'executionId': {'type': 'integer'},
+        'logBytes': {'type': 'integer'}},
+        'required': ['executionId', 'logBytes']},
 }
 
 
@@ -379,6 +384,7 @@ TOOL_ANNOTATIONS = {
     # The run logs are read from the cache; the project is untouched
     'execution.list': _READ_ONLY,
     'execution.output': _READ_ONLY,
+    'log.reader': _READ_ONLY,
     # Deleting cache logs is recoverable by re-running
     'execution.purge': {'destructiveHint': True, 'idempotentHint': True,
                         'openWorldHint': False},
@@ -836,6 +842,7 @@ VIEW_BOUND_TOOLS = frozenset((
     'inventory.spec',
     'secret.paths', 'check', 'run', 'ansible.ping', 'ansible.facts',
     'execution.list', 'execution.output', 'execution.purge',
+    'log.reader',
 ))
 
 
@@ -1379,7 +1386,22 @@ def register_project_tools(server, roles_path=COLLECTION_ROLES,
           'required': ['older_than'],
           'additionalProperties': False},
          lambda arguments: tool_execution_purge(project, policy,
-                                                arguments))])
+                                                arguments)),
+        ('log.reader',
+         'Read the full run log of one playbook execution, raw, by '
+         'id ("id", or "last" for the newest run). execution.list '
+         'names the runs; execution.output answers focused questions '
+         'about a log; this tool serves the whole file — mind that a '
+         'diff or debug run renders secrets into its log. Intended '
+         'for the human front ends (the console’s Runs tab).',
+         {'type': 'object', 'properties': {
+             'id': {'type': ['integer', 'string'],
+                    'description': 'The execution id, from '
+                    'execution.list; "last" (the default) for the '
+                    'newest run'}},
+          'additionalProperties': False},
+         lambda arguments: tool_log_reader(project, policy,
+                                           arguments))])
 
     # Host queries change nothing, so they are registered wherever
     # execution is allowed at all

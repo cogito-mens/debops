@@ -423,6 +423,108 @@ class ConsoleQueueTabTestCase(unittest.TestCase):
         self.assertTrue(wait_for(lambda: not session._queue_batches))
 
 
+class ConsoleRunsTabTestCase(unittest.TestCase):
+    """The Runs tab: the finished executions listed; a run's log
+    read whole and colored through the daemon's log.reader."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-conruns-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        patcher = mock.patch.dict(os.environ,
+                                  {'XDG_DATA_HOME': self.tmpdir})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _entry(self, execution_id, mode='check', playbooks=('slow',),
+               exit_code=0):
+        return {'id': execution_id, 'mode': mode,
+                'playbooks': list(playbooks), 'hosts': ['web1'],
+                'startedAt': '2026-10-25T00:00:00Z',
+                'finishedAt': '2026-10-25T00:00:11Z',
+                'exitCode': exit_code, 'status': 'done',
+                'log': '/nonexistent/execution-{}.log'.format(
+                        execution_id),
+                'logBytes': 100}
+
+    def _runs_session(self):
+        """A console session with the Runs tab scripted: two
+        finished executions."""
+        session, _client = make_session()
+        attach_transcript(session)
+        client = FakeClient()
+        session.client = client
+        client.tail = client   # the side connections clone into it
+        client.queue(
+                'tools/call',  # execution.list
+                {'resultType': 'complete', 'isError': False,
+                 'structuredContent': [self._entry(4),
+                                       self._entry(5, mode='run',
+                                                   playbooks=('site',),
+                                                   exit_code=2)]})
+        session._focus_area('runs')
+        self.assertTrue(wait_for(lambda: session._runs_entries))
+        return session, client
+
+    def test_the_tab_lists_the_runs(self):
+        from debops.mcp import console
+        session, _client = self._runs_session()
+        fragments = console._runs_tab_text(session)
+        text = ''.join(t for _s, t in fragments)
+        self.assertIn('4: check slow — exit 0, 11 s', text)
+        self.assertIn('5: run site — exit 2, 11 s', text)
+
+    def test_the_log_opens_colorized_and_closes(self):
+        from debops.mcp import console
+        session, client = self._runs_session()
+        client.queue(
+                'tools/call',  # log.reader
+                {'resultType': 'complete', 'isError': False,
+                 'content': [{'type': 'text',
+                              'text': 'PLAY [x]\n'
+                                      'changed: [web1]\n'
+                                      'ok: [web1]'}]})
+        session._runs_cursor = 1
+        session._runs_open()
+        self.assertTrue(wait_for(
+                lambda: session._runs_detail is not None))
+        # The log rode the socket, not the cache file
+        self.assertIn(('tools/call',
+                       {'name': 'log.reader', 'arguments': {'id': 5}}),
+                      client.calls)
+        detail = session._runs_detail
+        self.assertEqual(detail['id'], 5)
+        # The colorizer applied (ANSI codes ride the lines)
+        self.assertIn('\x1b[', ''.join(detail['lines']))
+        text = console._runs_detail_text(session)
+        self.assertIn('execution 5 — 3 lines', text)
+        # Three lines fit the area: scrolling is a no-op
+        session._runs_scroll_by(1)
+        self.assertEqual(session._runs_scroll, 0)
+        # A longer log scrolls (the area's height is the
+        # environment's own headless; pin it for the test)
+        session._runs_detail['lines'] = detail['lines'] * 8
+        with mock.patch.object(session, '_area_height',
+                               return_value=5):
+            session._runs_scroll_by(3)
+            self.assertEqual(session._runs_scroll, 3)
+        session._runs_close()
+        self.assertIsNone(session._runs_detail)
+        self.assertEqual(session._runs_scroll, 0)
+
+    def test_the_log_read_failure_lands_as_a_note(self):
+        session, client = self._runs_session()
+        client.queue(
+                'tools/call',  # log.reader errors
+                {'resultType': 'complete', 'isError': True,
+                 'content': [{'type': 'text',
+                              'text': 'no such execution: 99'}]})
+        session._runs_cursor = 0
+        session._runs_open()
+        self.assertTrue(wait_for(lambda: 'no such execution'
+                                 in transcript_text(session)))
+        self.assertIsNone(session._runs_detail)
+
+
 class ConsoleBuildTestCase(unittest.TestCase):
 
     def setUp(self):
@@ -469,8 +571,20 @@ class ConsoleBuildTestCase(unittest.TestCase):
         return lines, screen.visible_windows_to_write_positions
 
     def _key_binding(self, app, *keys):
-        return [b.handler for b in app.key_bindings.bindings
-                if b.keys == keys][0]
+        # The key processor's own rule: the first binding whose
+        # filter passes, most recently registered first
+        matches = [b for b in app.key_bindings.bindings
+                   if b.keys == keys]
+        for binding in matches:
+            filter_ = binding.filter
+            try:
+                passes = filter_() if callable(filter_) else bool(
+                        filter_)
+            except Exception:
+                passes = False
+            if passes:
+                return binding.handler
+        return matches[0].handler
 
     def test_the_application_builds_headless(self):
         try:

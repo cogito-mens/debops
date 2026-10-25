@@ -88,6 +88,36 @@ class ExecutionsTestCase(unittest.TestCase):
 
     # -- execution.list -------------------------------------------------
 
+    # -- log.reader -------------------------------------------------------
+
+    def test_log_reader_serves_the_whole_log(self):
+        from debops.mcp.tools.executions import tool_log_reader
+        self.write_log(1, metadata={'executionId': 1,
+                                    'mode': 'check'})
+        result = tool_log_reader(self.project, self.policy,
+                                 {'id': 1})
+        self.assertFalse(result['isError'])
+        self.assertEqual(result['content'][0]['text'], SAMPLE_LOG)
+        self.assertEqual(result['structuredContent']['executionId'], 1)
+        self.assertGreater(result['structuredContent']['logBytes'], 0)
+        # The default is the newest run
+        self.write_log(2, content='PLAY [second]\n',
+                       metadata={'executionId': 2, 'mode': 'run'})
+        result = tool_log_reader(self.project, self.policy, {})
+        self.assertEqual(result['content'][0]['text'],
+                         'PLAY [second]\n')
+
+    def test_log_reader_refuses_an_unknown_id(self):
+        from debops.mcp.tools.executions import tool_log_reader
+        result = tool_log_reader(self.project, self.policy,
+                                 {'id': 99})
+        self.assertTrue(result['isError'])
+        self.assertIn('no executions recorded',
+                      result['content'][0]['text'])
+        result = tool_log_reader(self.project, self.policy,
+                                 {'id': 'bogus'})
+        self.assertTrue(result['isError'])
+
     def test_list_empty(self):
         result = tool_execution_list(self.project, self.policy, {})
         self.assertFalse(result['isError'])

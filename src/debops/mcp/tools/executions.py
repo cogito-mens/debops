@@ -321,6 +321,35 @@ def tool_execution_list(project, policy, arguments):
     return text_result('\n'.join(lines), structured=entries)
 
 
+def tool_log_reader(project, policy, arguments):
+    """The full run log of one execution, raw — the console's Runs
+    tab reads it whole. execution.output answers the questions about
+    a log; this one serves it."""
+    execution_id = arguments.get('id', 'last')
+    if execution_id != 'last':
+        try:
+            execution_id = int(execution_id)
+        except (TypeError, ValueError):
+            return error_result("'id' must be an integer, or 'last'")
+    execution_id, log = runs.execution_log(project, execution_id)
+    if execution_id is None:
+        known = [entry_id for entry_id, _path in runs.list_logs(
+                project)]
+        hint = ('known executions: {}'
+                .format(', '.join(str(entry) for entry in known))
+                if known else 'no executions recorded in this view')
+        return error_result('no such execution: {} ({})'
+                            .format(arguments.get('id', 'last'), hint))
+    try:
+        with open(log, 'r', encoding='utf-8', errors='replace') as fp:
+            text = fp.read()
+    except OSError as errmsg:
+        return error_result('the log of execution {} cannot be read: '
+                            '{}'.format(execution_id, errmsg))
+    return text_result(text, structured={
+            'executionId': execution_id, 'logBytes': len(text)})
+
+
 def tool_execution_output(project, policy, arguments):
     kind = arguments.get('kind')
     pattern = arguments.get('pattern')

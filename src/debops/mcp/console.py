@@ -18,11 +18,39 @@ prompt_toolkit the console degrades to the plain reader.
 """
 
 import collections
+import os
 import threading
 import time
 
 from .repl import (Repl, ReplError, _banner, _run_verb_of,
                    run_interactive_plain)
+
+
+def _format_run_row(entry):
+    """One run in the Runs tab: the id, the mode and the playbooks,
+    the exit and the duration."""
+    mode = entry.get('mode', '?')
+    playbooks = ' '.join(entry.get('playbooks') or ['?'])
+    exit_code = entry.get('exitCode')
+    verdict = ('exit {}'.format(exit_code)
+               if exit_code is not None else
+               entry.get('status', '?'))
+    duration = ''
+    started, finished = entry.get('startedAt'), entry.get('finishedAt')
+    if started and finished:
+        try:
+            from datetime import datetime
+            began = datetime.fromisoformat(
+                    started.replace('Z', '+00:00'))
+            ended = datetime.fromisoformat(
+                    finished.replace('Z', '+00:00'))
+            duration = ', {} s'.format(max(0, int(
+                    (ended - began).total_seconds())))
+        except ValueError:
+            pass
+    return '{}: {} {} — {}{}'.format(entry.get('id'), mode, playbooks,
+                                     verdict, duration)
+
 
 # The tabs of the console's area, in order; F2-F6 select them and
 # F1 opens the help
@@ -179,6 +207,12 @@ class ConsoleRepl(Repl):
         self._queue_detail = None
         self._queue_collapsed = set()
         self._queue_refreshing = threading.Lock()
+        # The Runs tab: the finished executions and the open log
+        self._runs_entries = []
+        self._runs_cursor = 0
+        self._runs_detail = None   # {'id': N, 'lines': [...]}
+        self._runs_scroll = 0
+        self._runs_refreshing = threading.Lock()
 
     # -- the transcript plumbing -------------------------------------
 
@@ -269,6 +303,8 @@ class ConsoleRepl(Repl):
         super()._poll_foreign_run_once(watcher)
         if self.console_tab == 'queue':
             self._queue_refresh(watcher)
+        elif self.console_tab == 'runs':
+            self._runs_refresh(watcher)
 
     def _queue_refresh(self, connection):
         """Fetch the queue state for the Queue tab on a side
@@ -400,6 +436,121 @@ class ConsoleRepl(Repl):
         thread = threading.Thread(target=call, daemon=True)
         thread.start()
 
+    # -- the Runs tab --------------------------------------------------
+
+    def _runs_refresh(self, connection):
+        """Fetch the finished executions for the Runs tab on a side
+        connection. Skips when a refresh is in flight."""
+        if not self._runs_refreshing.acquire(blocking=False):
+            return
+        try:
+            try:
+                answer = connection.request(
+                        'tools/call',
+                        {'name': 'execution.list', 'arguments': {}})
+                result = answer.get('result', {})
+                if result.get('isError'):
+                    return
+                entries = result.get('structuredContent') or []
+            except (AttributeError, ConnectionError, EOFError,
+                    KeyError, OSError, ReplError, TypeError):
+                return
+            if isinstance(entries, dict):
+                entries = entries.get('executions') or []
+            self._runs_entries = entries
+            self._runs_cursor = min(self._runs_cursor,
+                                    max(0, len(entries) - 1))
+            self._invalidate()
+        finally:
+            self._runs_refreshing.release()
+
+    def _runs_refresh_async(self):
+        """A one-shot refresh of the Runs tab on its own thread."""
+        def refresh():
+            try:
+                side = self.client.clone()
+                self._runs_refresh(side)
+                side.close()
+            except (AttributeError, ConnectionError, EOFError,
+                    OSError):
+                pass
+        thread = threading.Thread(target=refresh, daemon=True)
+        thread.start()
+
+    def _runs_move(self, direction):
+        if not self._runs_entries:
+            return
+        self._runs_cursor = min(
+                len(self._runs_entries) - 1,
+                max(0, self._runs_cursor + direction))
+        self._invalidate()
+
+    def _runs_open(self):
+        """Enter on a run: the log, colorized, in the area's whole
+        height. The log arrives through the daemon's log.reader —
+        the cache file's path stays the server's business."""
+        if not self._runs_entries:
+            return
+        entry = self._runs_entries[self._runs_cursor]
+        from .repl import ANSI_THEME, AnsibleColorizer
+
+        def fetch():
+            try:
+                side = self.client.clone()
+                answer = side.request(
+                        'tools/call',
+                        {'name': 'log.reader',
+                         'arguments': {'id': entry['id']}})
+                side.close()
+            except (AttributeError, ConnectionError, EOFError,
+                    OSError) as errmsg:
+                self._note('the log cannot be read: {}'.format(errmsg))
+                return
+            result = answer.get('result', {})
+            content = result.get('content') or []
+            if result.get('isError') or not content:
+                self._note(content[0].get('text', 'cannot read the '
+                                          'log') if content else
+                           'cannot read the log')
+                return
+            colorizer = AnsibleColorizer(self.theme or ANSI_THEME)
+            raw = content[0].get('text', '')
+            lines = [colorizer.colorize(line)
+                     for line in raw.splitlines()]
+            self._runs_detail = {'id': entry.get('id'),
+                                 'lines': lines}
+            self._runs_scroll = 0
+            self._invalidate()
+
+        thread = threading.Thread(target=fetch, daemon=True)
+        thread.start()
+
+    def _runs_close(self):
+        self._runs_detail = None
+        self._runs_scroll = 0
+        self._invalidate()
+
+    def _runs_scroll_by(self, lines):
+        """Scroll the open log by whole lines, from its top."""
+        if self._runs_detail is None:
+            return
+        height = self._area_height()
+        limit = max(0, len(self._runs_detail['lines']) - height)
+        self._runs_scroll = min(limit,
+                                max(0, self._runs_scroll + lines))
+        self._invalidate()
+
+    def _area_height(self):
+        """The tab area's height in rows: the terminal less the
+        chrome (the title, the tab bar, the transcript, the prompt,
+        the status line)."""
+        try:
+            from prompt_toolkit.application import get_app
+            rows = get_app().output.get_size().rows
+        except Exception:
+            return 10
+        return max(1, rows - self.console_repl_lines - 4)
+
     # -- the focus dance -----------------------------------------------
 
     def _focus_area(self, tab=None):
@@ -416,6 +567,8 @@ class ConsoleRepl(Repl):
         if self.console_tab == 'queue':
             # The open is fresh data
             self._queue_refresh_async()
+        elif self.console_tab == 'runs':
+            self._runs_refresh_async()
         self._invalidate()
 
     def _focus_prompt(self):
@@ -445,6 +598,8 @@ class ConsoleRepl(Repl):
             app.layout.focus(self._tab_controls[self.console_tab])
         if self.console_tab == 'queue':
             self._queue_refresh_async()
+        elif self.console_tab == 'runs':
+            self._runs_refresh_async()
         self._invalidate()
 
 
@@ -550,6 +705,33 @@ def _queue_detail_text(session):
     return '\n'.join(lines)
 
 
+def _runs_tab_text(session):
+    """The Runs tab: the finished executions, newest at the bottom;
+    the cursor's row stands out."""
+    fragments = []
+    if not session._runs_entries:
+        return [('class:tabs', '(no executions recorded)\n')]
+    for index, entry in enumerate(session._runs_entries):
+        style = 'reverse' if index == session._runs_cursor \
+                else 'class:tabs'
+        fragments.append((style, _format_run_row(entry) + '\n'))
+    return fragments
+
+
+def _runs_detail_text(session):
+    """The open run's log: the area's whole height of it, read
+    top-down; the colorizer's ANSI lands as it ran."""
+    detail = session._runs_detail
+    lines = detail['lines']
+    height = session._area_height()
+    start = min(session._runs_scroll, max(0, len(lines) - height))
+    body = list(lines[start:start + height])
+    header = ('execution {} — {} lines │ j/k: scroll │ '
+              'PgUp/PgDn: pages │ q/Esc: back\n'
+              .format(detail['id'], len(lines)))
+    return header + '\n'.join(body)
+
+
 def _build_app(session):
     """The console's prompt_toolkit application, headless-buildable
     for the tests."""
@@ -584,7 +766,9 @@ def _build_app(session):
             'queue': lambda: (_queue_detail_text(session)
                               if session._queue_detail is not None
                               else _queue_tab_text(session)),
-            'runs': lambda: '(Runs: soon)',
+            'runs': lambda: (ANSI(_runs_detail_text(session))
+                             if session._runs_detail is not None
+                             else _runs_tab_text(session)),
             'journal': lambda: '(Journal: soon)',
             'docs': lambda: '(Docs: soon)',
             'credits': lambda: '(Credits: soon)',
@@ -650,12 +834,14 @@ def _build_app(session):
                 event.app.current_buffer.reset()
             return
         # The focus dance: the prompt leaves for the tab area and
-        # back; an open job's detail closes first
+        # back; an open detail (a job, a run's log) closes first
         if session.console_focus == 'prompt':
             session._focus_area()
         elif session._queue_detail is not None:
             session._queue_detail = None
             session._invalidate()
+        elif session._runs_detail is not None:
+            session._runs_close()
         else:
             session._focus_prompt()
 
@@ -714,6 +900,50 @@ def _build_app(session):
     @bindings.add('d', 'd', filter=in_queue & ~detail_open)
     def _queue_remove_key(event):
         session._queue_remove()
+
+    in_runs = Condition(lambda: session.console_focus == 'area'
+                        and session.console_tab == 'runs')
+    log_open = Condition(lambda: session._runs_detail is not None)
+
+    @bindings.add('j', filter=in_runs & ~log_open)
+    @bindings.add('down', filter=in_runs & ~log_open)
+    def _runs_down(event):
+        session._runs_move(1)
+
+    @bindings.add('k', filter=in_runs & ~log_open)
+    @bindings.add('up', filter=in_runs & ~log_open)
+    def _runs_up(event):
+        session._runs_move(-1)
+
+    @bindings.add('enter', filter=in_runs & ~log_open)
+    def _runs_enter(event):
+        session._runs_open()
+
+    @bindings.add('q', filter=in_runs & log_open)
+    def _runs_close_key(event):
+        session._runs_close()
+
+    # The open log scrolls; the detail's keys shadow the
+    # transcript's paging while it is open
+    @bindings.add('j', filter=in_runs & log_open)
+    @bindings.add('down', filter=in_runs & log_open)
+    def _log_down(event):
+        session._runs_scroll_by(1)
+
+    @bindings.add('k', filter=in_runs & log_open)
+    @bindings.add('up', filter=in_runs & log_open)
+    def _log_up(event):
+        session._runs_scroll_by(-1)
+
+    @bindings.add('pageup', filter=in_runs & log_open)
+    @bindings.add('s-pageup', filter=in_runs & log_open)
+    def _log_pageup(event):
+        session._runs_scroll_by(-session._area_height())
+
+    @bindings.add('pagedown', filter=in_runs & log_open)
+    @bindings.add('s-pagedown', filter=in_runs & log_open)
+    def _log_pagedown(event):
+        session._runs_scroll_by(session._area_height())
 
     @bindings.add('pageup')
     @bindings.add('s-pageup')
