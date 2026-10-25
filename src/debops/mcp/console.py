@@ -19,6 +19,7 @@ prompt_toolkit the console degrades to the plain reader.
 
 import collections
 import os
+import subprocess
 import threading
 import time
 
@@ -213,6 +214,14 @@ class ConsoleRepl(Repl):
         self._runs_detail = None   # {'id': N, 'lines': [...]}
         self._runs_scroll = 0
         self._runs_refreshing = threading.Lock()
+        # The Journal tab: the journalctl feed, a bounded
+        # scrollback, the source switch ('mcp': the client and the
+        # daemon, 'user', 'system')
+        self._journal_lines = collections.deque(maxlen=2000)
+        self._journal_scroll = 0
+        self._journal_proc = None
+        self._journal_note = None
+        self._journal_source = 'mcp'
 
     # -- the transcript plumbing -------------------------------------
 
@@ -551,6 +560,111 @@ class ConsoleRepl(Repl):
             return 10
         return max(1, rows - self.console_repl_lines - 4)
 
+    # -- the Journal tab ----------------------------------------------
+
+    # The feed's sources: the MCP processes (the client and the
+    # daemon, matched by pid), the local user's journal, the system
+    # journal
+    _JOURNAL_SOURCES = ('mcp', 'user', 'system')
+
+    def _journal_command(self):
+        """The journalctl invocation of the current source."""
+        command = ['journalctl', '--follow', '--lines', '50',
+                   '--output=short']
+        if self._journal_source != 'system':
+            command.append('--user')
+        if self._journal_source == 'mcp':
+            pids = [os.getpid()]
+            socket_path = getattr(self.client, '_path', None)
+            if socket_path is not None:
+                from .client import socket_pid_path
+                try:
+                    with open(socket_pid_path(socket_path)) as fp:
+                        pids.append(int(fp.read().strip()))
+                except (OSError, ValueError):
+                    pass
+            command.extend('_PID={}'.format(pid) for pid in pids)
+        return command
+
+    def _journal_start(self):
+        """Stream the journal into the Journal tab; journalctl
+        missing or a dead feed lands as a note in the tab, not a
+        crash."""
+        if self._journal_proc is not None:
+            return
+        self._journal_note = None
+        try:
+            proc = subprocess.Popen(self._journal_command(),
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT,
+                                    text=True, errors='replace')
+        except OSError as errmsg:
+            self._journal_note = ('the journal feed needs '
+                                  'journalctl: {}'.format(errmsg))
+            self._invalidate()
+            return
+        self._journal_proc = proc
+        thread = threading.Thread(target=self._journal_loop,
+                                  args=(proc,), daemon=True)
+        thread.start()
+
+    def _journal_loop(self, proc):
+        """The feed's reader thread: the lines land in the tab's
+        scrollback; a reader paged up holds the viewport."""
+        try:
+            for line in proc.stdout:
+                with self._transcript_lock:
+                    self._journal_lines.append(line.rstrip('\n'))
+                    if self._journal_scroll:
+                        self._journal_scroll += 1
+                self._invalidate()
+        except (OSError, ValueError):
+            pass
+        proc.wait()
+        if self._journal_proc is proc:
+            # A spontaneous death; a deliberate stop or a source
+            # switch replaced this feed already and stays quiet
+            self._journal_proc = None
+            self._journal_note = ('the journal feed ended (the '
+                                  'process died; the scrollback '
+                                  'stays)')
+            self._invalidate()
+
+    def _journal_stop(self):
+        """End the feed: the console exits, the follower dies
+        with it."""
+        proc = self._journal_proc
+        if proc is not None:
+            self._journal_proc = None
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+
+    def _journal_switch(self, direction=1):
+        """Cycle the feed's source: the MCP processes, the user's
+        journal, the system's. The feed restarts, the scrollback
+        clears."""
+        sources = self._JOURNAL_SOURCES
+        index = sources.index(self._journal_source)
+        self._journal_source = sources[
+                (index + direction) % len(sources)]
+        self._journal_stop()
+        with self._transcript_lock:
+            self._journal_lines.clear()
+            self._journal_scroll = 0
+        self._journal_start()
+
+    def _journal_scroll_by(self, lines):
+        """Scroll the journal view by whole lines; zero is the
+        live tail."""
+        height = self._area_height()
+        with self._transcript_lock:
+            limit = max(0, len(self._journal_lines) - height)
+            self._journal_scroll = min(
+                    limit, max(0, self._journal_scroll + lines))
+        self._invalidate()
+
     # -- the focus dance -----------------------------------------------
 
     def _focus_area(self, tab=None):
@@ -569,6 +683,8 @@ class ConsoleRepl(Repl):
             self._queue_refresh_async()
         elif self.console_tab == 'runs':
             self._runs_refresh_async()
+        elif self.console_tab == 'journal':
+            self._journal_start()
         self._invalidate()
 
     def _focus_prompt(self):
@@ -600,6 +716,8 @@ class ConsoleRepl(Repl):
             self._queue_refresh_async()
         elif self.console_tab == 'runs':
             self._runs_refresh_async()
+        elif self.console_tab == 'journal':
+            self._journal_start()
         self._invalidate()
 
 
@@ -732,6 +850,26 @@ def _runs_detail_text(session):
     return header + '\n'.join(body)
 
 
+def _journal_tab_text(session):
+    """The Journal tab: the journalctl feed, live; the tail
+    follows, a paged reader holds. 's' switches the source."""
+    height = session._area_height()
+    with session._transcript_lock:
+        total = len(session._journal_lines)
+        end = total - session._journal_scroll
+        start = max(0, end - height)
+        body = list(session._journal_lines)[start:end]
+    lines = ['journal: {} (s switches: mcp/user/system) │ '
+             'j/k, PgUp/PgDn: scroll'.format(session._journal_source)]
+    note = session._journal_note
+    if note is not None:
+        lines.append('({})'.format(note))
+    if not body and note is None:
+        lines.append('(the journal is quiet)')
+    lines.extend(body)
+    return '\n'.join(lines)
+
+
 def _build_app(session):
     """The console's prompt_toolkit application, headless-buildable
     for the tests."""
@@ -769,7 +907,7 @@ def _build_app(session):
             'runs': lambda: (ANSI(_runs_detail_text(session))
                              if session._runs_detail is not None
                              else _runs_tab_text(session)),
-            'journal': lambda: '(Journal: soon)',
+            'journal': lambda: _journal_tab_text(session),
             'docs': lambda: '(Docs: soon)',
             'credits': lambda: '(Credits: soon)',
     }
@@ -945,6 +1083,33 @@ def _build_app(session):
     def _log_pagedown(event):
         session._runs_scroll_by(session._area_height())
 
+    in_journal = Condition(lambda: session.console_focus == 'area'
+                           and session.console_tab == 'journal')
+
+    @bindings.add('j', filter=in_journal)
+    @bindings.add('down', filter=in_journal)
+    def _journal_down(event):
+        session._journal_scroll_by(-1)
+
+    @bindings.add('k', filter=in_journal)
+    @bindings.add('up', filter=in_journal)
+    def _journal_up(event):
+        session._journal_scroll_by(1)
+
+    @bindings.add('pageup', filter=in_journal)
+    @bindings.add('s-pageup', filter=in_journal)
+    def _journal_pageup(event):
+        session._journal_scroll_by(session._area_height())
+
+    @bindings.add('pagedown', filter=in_journal)
+    @bindings.add('s-pagedown', filter=in_journal)
+    def _journal_pagedown(event):
+        session._journal_scroll_by(-session._area_height())
+
+    @bindings.add('s', filter=in_journal)
+    def _journal_switch_source(event):
+        session._journal_switch()
+
     @bindings.add('pageup')
     @bindings.add('s-pageup')
     def _pageup(event):
@@ -1085,5 +1250,6 @@ def run_console(session):
     finally:
         stop.set()
         watcher.close()
+        session._journal_stop()
         session._app = None
     return 0

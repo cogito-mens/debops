@@ -423,6 +423,114 @@ class ConsoleQueueTabTestCase(unittest.TestCase):
         self.assertTrue(wait_for(lambda: not session._queue_batches))
 
 
+class ConsoleJournalTabTestCase(unittest.TestCase):
+    """The Journal tab: the journalctl feed of the console's
+    processes, switchable between the MCP pair, the user's journal
+    and the system's."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-conjour-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        patcher = mock.patch.dict(os.environ,
+                                  {'XDG_DATA_HOME': self.tmpdir})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _session(self, feed_lines=()):
+        session, _client = make_session()
+        attach_transcript(session)
+        return session
+
+    def _fake_proc(self, lines):
+        proc = mock.MagicMock()
+        proc.stdout = iter(list(lines))
+        proc.wait.return_value = 0
+        return proc
+
+    def test_the_feed_lands_in_the_tab(self):
+        session = self._session()
+        proc = self._fake_proc(['paź 25 03:00 host debops-mcp[9]: '
+                                'Tool check() -> task',
+                                'paź 25 03:01 host debops-mcp[9]: done'])
+        with mock.patch('debops.mcp.console.subprocess.Popen',
+                        return_value=proc) as popen:
+            session._journal_start()
+            self.assertTrue(wait_for(
+                    lambda: session._journal_note is not None
+                    or len(session._journal_lines) >= 2))
+        from debops.mcp import console
+        text = console._journal_tab_text(session)
+        self.assertIn('journal: mcp', text)
+        self.assertIn('Tool check() -> task', text)
+        # The MCP source follows both processes by pid
+        command = popen.call_args[0][0]
+        self.assertIn('--user', command)
+        self.assertIn('--follow', command)
+        self.assertIn('_PID={}'.format(os.getpid()), command)
+
+    def test_the_daemon_pid_rides_the_socket_sidecar(self):
+        session = self._session()
+        socket_path = os.path.join(self.tmpdir, 'daemon.sock')
+        with open(socket_path[:-5] + '.pid', 'w') as fp:
+            fp.write('4321\n')
+        session.client._path = socket_path
+        proc = self._fake_proc([])
+        with mock.patch('debops.mcp.console.subprocess.Popen',
+                        return_value=proc) as popen:
+            session._journal_start()
+            self.assertTrue(wait_for(
+                    lambda: session._journal_note is not None))
+        command = popen.call_args[0][0]
+        self.assertIn('_PID=4321', command)
+
+    def test_the_source_switches(self):
+        session = self._session()
+        proc = self._fake_proc([])
+        with mock.patch('debops.mcp.console.subprocess.Popen',
+                        return_value=proc):
+            session._journal_start()
+            session._journal_switch()
+            # The user's journal: no pid filter, still the user one
+            command = session._journal_command()
+            self.assertIn('--user', command)
+            self.assertNotIn('_PID=', command)
+            self.assertEqual(session._journal_source, 'user')
+            session._journal_switch()
+            command = session._journal_command()
+            self.assertNotIn('--user', command)
+            self.assertEqual(session._journal_source, 'system')
+            session._journal_switch()
+            self.assertEqual(session._journal_source, 'mcp')
+
+    def test_a_missing_journalctl_is_a_note_not_a_crash(self):
+        session = self._session()
+        with mock.patch('debops.mcp.console.subprocess.Popen',
+                        side_effect=FileNotFoundError('no journalctl')):
+            session._journal_start()
+        self.assertIn('journalctl', session._journal_note)
+        self.assertIsNone(session._journal_proc)
+
+    def test_the_feed_dies_with_the_session(self):
+        session = self._session()
+        # A live feed blocks its reader mid-stream
+        gate = threading.Event()
+        self.addCleanup(gate.set)
+
+        def feed():
+            yield 'a line'
+            gate.wait(10)
+
+        proc = self._fake_proc([])
+        proc.stdout = feed()
+        with mock.patch('debops.mcp.console.subprocess.Popen',
+                        return_value=proc):
+            session._journal_start()
+        self.assertTrue(wait_for(lambda: session._journal_lines))
+        self.assertIsNotNone(session._journal_proc)
+        session._journal_stop()
+        proc.terminate.assert_called_once_with()
+
+
 class ConsoleRunsTabTestCase(unittest.TestCase):
     """The Runs tab: the finished executions listed; a run's log
     read whole and colored through the daemon's log.reader."""
