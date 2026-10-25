@@ -49,7 +49,8 @@ FOOTERS = (
 ANSIBLE_SCOPES = ('src/debops/_data/ansible', 'ansible',
                   'ansible_collections')
 
-# How many names a main list carries before the tail folds
+# How many names a main list carries; the contributors list the
+# rest in full
 MAIN_AUTHORS = 10
 
 
@@ -100,13 +101,11 @@ def author_counts(paths, cwd):
                                                     item[0].lower()))
 
 
-def section(title, pairs, folded_from=None):
+def section(title, pairs):
     """One section of the file: its title, then 'Name (N)' lines."""
     lines = [title, '-' * len(title), '']
     lines.extend('{} ({})'.format(name, count)
                  for name, count in pairs)
-    if folded_from:
-        lines.append('… and {} more'.format(folded_from))
     lines.append('')
     return lines
 
@@ -120,18 +119,18 @@ def main():
     everyone = author_counts([], cwd=root)
     ansible_paths = [path for path in ANSIBLE_SCOPES
                      if os.path.isdir(os.path.join(root, path))]
-    # The Ansible section counts the scoped commits; the
-    # contributors fold whoever no main list named
+    # The Ansible section counts the scoped commits
     ansible_authors = (author_counts(ansible_paths, cwd=root)
                        if ansible_paths else [])
-    ansible_names = set(name for name, _count in ansible_authors)
 
     main_authors = everyone[:MAIN_AUTHORS]
-    folded = len(everyone) - len(main_authors)
     ansible_authors = ansible_authors[:MAIN_AUTHORS]
+    # The cuts never lose anyone: the contributors carry whoever the
+    # two main lists did not show
+    shown = set(name for name, _count in main_authors) | set(
+            name for name, _count in ansible_authors)
     contributors = [(name, count) for name, count in everyone
-                    if name not in ansible_names
-                    and name not in dict(main_authors)]
+                    if name not in shown]
 
     # The header: the name, the tagline, the years, the version
     lines = ['DebOps', TAGLINE]
@@ -151,8 +150,7 @@ def main():
                   '{}.'.format(LLM_CREDIT),
                   ''])
     lines.extend(section('The project’s main authors',
-                         main_authors,
-                         folded_from=folded if folded > 0 else None))
+                         main_authors))
     lines.extend(section('The Ansible content’s main authors',
                          ansible_authors))
     lines.extend(section('Contributors', contributors))

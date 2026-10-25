@@ -49,13 +49,19 @@ class MakeCreditsTestCase(unittest.TestCase):
                  'user.email=tests@test', 'commit', '-m', name,
                  author=author)
 
-    def test_the_credits_file_sections(self):
+    def build_repo(self):
+        """A synthetic history: two commits by one author, one by
+        another, the root by the test suite."""
         self.git('init', '-q')
         self.git('-c', 'user.name=Tests', '-c', 'user.email=tests@test',
                  'commit', '-q', '--allow-empty', '-m', 'root')
         self.commit('one', 'Jane Hacker')
         self.commit('two', 'Jane Hacker')
         self.commit('three', 'John Doe')
+
+    def generate(self):
+        """Run the generator on the synthetic repo; return the
+        file's text."""
         result = subprocess.run(
                 [os.path.join(self.repo, 'lib', 'make-credits')],
                 capture_output=True, text=True)
@@ -63,7 +69,11 @@ class MakeCreditsTestCase(unittest.TestCase):
         target = os.path.join(self.repo, 'src', 'debops', '_data',
                               'debops', 'credits')
         with open(target) as fp:
-            text = fp.read()
+            return fp.read()
+
+    def test_the_credits_file_sections(self):
+        self.build_repo()
+        text = self.generate()
         self.assertIn('The project’s main authors', text)
         self.assertIn('Jane Hacker (2)', text)
         self.assertIn('John Doe (1)', text)
@@ -88,5 +98,13 @@ class MakeCreditsTestCase(unittest.TestCase):
         self.assertIn(text.rstrip().splitlines()[-1].strip(),
                       module.FOOTERS)
         # The project's tooling ignores the generated file
-        self.assertIn('credits', open(os.path.join(
-                REPO_ROOT, '.gitignore')).read())
+        with open(os.path.join(REPO_ROOT, '.gitignore')) as fp:
+            self.assertIn('credits', fp.read())
+
+    def test_nobody_is_lost_to_the_cuts(self):
+        # The main lists cut at ten; whoever misses the cuts stands
+        # in the Contributors — the file's names are the history's
+        self.build_repo()
+        text = self.generate()
+        for name in ('Jane Hacker', 'John Doe', 'Tests'):
+            self.assertIn(name, text)
