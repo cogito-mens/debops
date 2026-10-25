@@ -67,8 +67,9 @@ _TAB_TITLES = {'help': 'Help', 'queue': 'Queue', 'runs': 'Runs',
 _HELP_TEXT = """\
 The console keys
 
-  F1          this help (again to close)
+  F1, ?       this help (again to close)
   F2-F6       the tabs: Queue, Runs, Journal, Docs, Credits
+  q           close the detail; quit from the tab area
   Tab, S-Tab  cycle the tabs (when the area has the focus)
   Esc         leave the prompt for the tab area; back again
   i           return to the prompt (the vim habit)
@@ -1066,11 +1067,6 @@ def _build_app(session):
     def _queue_enter(event):
         session._queue_open()
 
-    @bindings.add('q', filter=in_queue & detail_open)
-    def _queue_close_detail(event):
-        session._queue_detail = None
-        session._invalidate()
-
     # The removal: vim's x and dd, Emacs' kill-line
     @bindings.add('x', filter=in_queue & ~detail_open)
     @bindings.add('c-k', filter=in_queue & ~detail_open)
@@ -1095,10 +1091,6 @@ def _build_app(session):
     @bindings.add('enter', filter=in_runs & ~log_open)
     def _runs_enter(event):
         session._runs_open()
-
-    @bindings.add('q', filter=in_runs & log_open)
-    def _runs_close_key(event):
-        session._runs_close()
 
     # The open log scrolls; the detail's keys shadow the
     # transcript's paging while it is open
@@ -1171,6 +1163,31 @@ def _build_app(session):
     @bindings.add('s-pagedown', filter=in_credits)
     def _credits_pagedown(event):
         session._credits_scroll_by(session._area_height())
+
+    # '?' opens the help wherever it is not text: the tab area, or
+    # an empty input line
+    question_ok = Condition(
+            lambda: session.console_focus == 'area'
+            or not session._input_buffer.text)
+
+    @bindings.add('?', filter=question_ok)
+    def _help_key(event):
+        session._toggle_tab('help')
+
+    # 'q' exits from the tab area (an open detail closes first);
+    # the prompt keeps it as text
+    @bindings.add('q', filter=area_live & detail_open)
+    def _queue_close_key(event):
+        session._queue_detail = None
+        session._invalidate()
+
+    @bindings.add('q', filter=area_live & log_open)
+    def _runs_close_key(event):
+        session._runs_close()
+
+    @bindings.add('q', filter=area_live & ~detail_open & ~log_open)
+    def _exit_key(event):
+        session.submit('exit')
 
     @bindings.add('pageup')
     @bindings.add('s-pageup')

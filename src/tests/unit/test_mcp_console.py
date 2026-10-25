@@ -1093,6 +1093,88 @@ class ConsoleBuildTestCase(unittest.TestCase):
         self.assertIn('a confined session does not background',
                       transcript_text(session))
 
+    def _run_app_with_keys(self, session, keystrokes):
+        """Run the console headless, feed it the keystrokes, wait
+        for it to settle, exit it."""
+        from prompt_toolkit.application import create_app_session
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        from debops.mcp import console
+        with create_pipe_input() as pipe:
+            with create_app_session(input=pipe,
+                                    output=DummyOutput()):
+                app = console._build_app(session)
+                session._app = app
+                pipe.send_text(keystrokes)
+                pipe.send_text('\x04q\r')   # failsafe exit paths
+                thread = threading.Thread(target=app.run,
+                                          daemon=True)
+                thread.start()
+                self.assertTrue(wait_for(
+                        lambda: session.console_tab is not None
+                        or not thread.is_alive(), timeout=10))
+                time.sleep(0.3)
+                if thread.is_alive():
+                    app.exit()
+                    thread.join(timeout=5)
+                return app
+
+    def test_the_question_mark_is_the_help_key(self):
+        # '?' opens the help wherever it is not text: an empty
+        # prompt line or the tab area
+        try:
+            from prompt_toolkit.application import create_app_session
+            from prompt_toolkit.input import create_pipe_input
+            from prompt_toolkit.output import DummyOutput
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        session, _client = make_session()
+        app = self._run_app_with_keys(session, '?')
+        self.assertEqual(session.console_tab, 'help')
+        # ... and F1 closes it again
+        from debops.mcp import console
+        event = mock.MagicMock()
+        self._key_binding(app, 'f1')(event)
+        self.assertIsNone(session.console_tab)
+
+    def test_the_question_mark_types_into_a_command(self):
+        # A half-typed line keeps the '?' as text
+        session, _client = make_session()
+        app = self.build_sized_app(session)
+        session._app = app
+        buffer = session._input_buffer
+        buffer.text = 'show ?'
+        buffer.cursor_position = 6
+        # The binding's filter is off with text on the line
+        bindings = [b for b in app.key_bindings.bindings
+                    if b.keys == ('?',)]
+        self.assertEqual(len(bindings), 1)
+        self.assertFalse(bindings[0].filter())
+
+    def test_q_exits_from_the_area_and_closes_a_detail_first(self):
+        try:
+            import prompt_toolkit  # noqa: F401
+        except ImportError:
+            self.skipTest('prompt_toolkit is not installed')
+        from debops.mcp import console
+        session, _client = make_session()
+        app = self.build_sized_app(session)
+        session._app = app
+        event = mock.MagicMock()
+        session._focus_area('queue')
+        # An open detail closes first
+        session._queue_detail = {'id': 'job-1', 'batch': 'work',
+                                 'mode': 'check', 'targets': ['slow'],
+                                 'state': 'queued'}
+        self._key_binding(app, 'q')(event)
+        self.assertIsNone(session._queue_detail)
+        self.assertEqual(session.console_focus, 'area')
+        # ... and with nothing open, q submits the exit
+        exit_calls = []
+        session.submit = lambda line: exit_calls.append(line)
+        self._key_binding(app, 'q')(event)
+        self.assertEqual(exit_calls, ['exit'])
+
     def test_the_console_falls_back_without_prompt_toolkit(self):
         from debops.mcp import console
         session, _client = make_session()
