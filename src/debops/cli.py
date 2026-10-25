@@ -623,15 +623,16 @@ class Interpreter(object):
                                transport='unix' if socket_path
                                else 'stdio',
                                legacy=args.legacy)
-            # The execution queue: the default is on for a daemon
-            # started by hand, off for a spawned one; --queue and
-            # --no-queue override. Never in the legacy era or the
-            # documentation mode. Created before the registration so
-            # the queue tools join the first surface
+            # The execution queue: on for any non-legacy, non-docs
+            # daemon — the console drives it as a first-class
+            # surface, and a spawned daemon serves the project like
+            # any other. --queue and --no-queue override. Created
+            # before the registration so the queue tools join the
+            # first surface
             if args.queue is not None:
                 queue_wanted = args.queue
             else:
-                queue_wanted = not spawned
+                queue_wanted = True
             if queue_wanted and not args.legacy and not docs_mode:
                 from .mcp.jobs import JobQueue
                 server.job_queue = JobQueue(server)

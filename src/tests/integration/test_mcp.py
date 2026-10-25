@@ -772,7 +772,7 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
                              "inventory.query",
                              "inventory.spec", "job.add", "job.del",
                              "job.prune", "keyring.fetch",
-                             "playbook.info",
+                             "log.reader", "playbook.info",
                              "playbook.list", "project.files",
                              "project.list", "project.mkdir",
                              "project.pull", "project.push", "project.read",
@@ -788,8 +788,7 @@ def test_tools_list_via_stdio(run_debops, mcp_env, project_dir):
 
 def test_tools_list_without_the_queue(run_debops, mcp_env,
                                       project_dir):
-    """A spawned daemon carries no queue; --no-queue pins the same
-    for a hand-started one."""
+    """--no-queue takes the queue family out of the surface."""
     request = (json.dumps({"jsonrpc": "2.0",
                            "id": 1, "method": "tools/list",
                            "params": {"_meta": REQUEST_META}}) + "\n")
@@ -3213,6 +3212,28 @@ def test_bare_debops_autospawn_false_never_spawns(run_debops, mcp_env,
     assert result.returncode == 1
     assert "no MCP daemon is running" in result.stderr
     assert not list((runtime / "debops" / "mcp").glob("*.sock"))
+
+
+def test_autospawn_carries_the_queue(run_debops, mcp_env,
+                                     project_dir, tmp_path):
+    """A client-spawned daemon registers the queue family too —
+    the console drives the queue from any session."""
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    env = dict(mcp_env, XDG_RUNTIME_DIR=str(runtime))
+    confd = project_dir / ".debops" / "conf.d"
+    confd.mkdir(parents=True)
+    (confd / "00-autostart.toml").write_text(
+            "[project]\n"
+            'autostart = "repl"\n')
+    try:
+        result = run_debops(env=env, cwd=str(project_dir),
+                            input_text="tool/queue.list\nexit\n")
+        assert result.returncode == 0
+        assert "Queue:" in result.stdout
+        assert "unknown tool" not in result.stderr + result.stdout
+    finally:
+        run_debops("mcp", "stop", env=env, cwd=str(project_dir))
 
 
 def test_bare_debops_autospawn_legacy_drives_both_sides(
