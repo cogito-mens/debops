@@ -296,6 +296,133 @@ class EditorSuspensionTestCase(unittest.TestCase):
                       str(context.exception))
 
 
+class ConsoleQueueTabTestCase(unittest.TestCase):
+    """The Queue tab: the queue's state rendered, the cursor, the
+    job details, the removals."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-conqueue-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        patcher = mock.patch.dict(os.environ,
+                                  {'XDG_DATA_HOME': self.tmpdir})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _job(self, job_id, state='queued'):
+        return {'id': job_id, 'batch': 'work', 'mode': 'check',
+                'targets': ['slow'], 'options': {}, 'view': 'system',
+                'createdAt': '2026-10-25T00:00:00Z', 'state': state,
+                'tally': {'taskCount': 3, 'hostCount': 1,
+                          'estimateSeconds': 11},
+                'executionId': 56 if state == 'running' else None,
+                'error': None, 'position': 1, 'etaSeconds': 0}
+
+    def _queue_session(self):
+        """A console session with the queue scripted: one batch, a
+        running job and a queued one."""
+        from debops.mcp import console
+        session, _client = make_session()
+        attach_transcript(session)
+        client = FakeClient()
+        session.client = client
+        # The refresh rides a side connection; the scripted client
+        # clones into itself
+        client.tail = client
+        # The refresh asks queue.list, then batch.info per batch —
+        # the scripted answers ride one call in order
+        client.queue(
+                'tools/call',
+                {'resultType': 'complete', 'isError': False,
+                 'structuredContent': {
+                         'started': True,
+                         'batches': [{'name': 'work', 'jobs': 2,
+                                      'estimateSeconds': 22,
+                                      'pending': False,
+                                      'state': 'running'}],
+                         'activeJob': None, 'lastFailure': None}},
+                {'resultType': 'complete', 'isError': False,
+                 'structuredContent': {'batch': {
+                         'name': 'work', 'state': 'running',
+                         'pending': False,
+                         'createdAt': '2026-10-25T00:00:00Z',
+                         'jobs': [self._job('job-1', 'running'),
+                                  self._job('job-2')],
+                         'estimateSeconds': 11}}})
+        session._focus_area('queue')
+        self.assertTrue(wait_for(lambda: session._queue_batches))
+        return session, client
+
+    def _rendered(self, session):
+        from debops.mcp import console
+        fragments = console._queue_tab_text(session)
+        return ''.join(text for _style, text in fragments)
+
+    def test_the_tab_renders_the_queue(self):
+        session, _client = self._queue_session()
+        text = self._rendered(session)
+        self.assertIn('Queue: dispatching', text)
+        self.assertIn('▾ work — 2 job(s)', text)
+        self.assertIn('job-1: check slow [running]', text)
+        self.assertIn('job-2: check slow [queued]', text)
+
+    def test_the_tab_renders_the_active_run(self):
+        session, _client = self._queue_session()
+        session.active_run = {
+                'run': {'mode': 'run', 'playbooks': ['site'],
+                        'taskIndex': 2, 'taskCount': 50,
+                        'currentTask': 'TASK [nginx : Install]'},
+                'started': time.monotonic(), 'task_id': 't1'}
+        text = self._rendered(session)
+        self.assertIn('Running: running site │ 2/50', text)
+        self.assertIn('TASK [nginx : Install]', text)
+
+    def test_the_cursor_moves_and_the_detail_opens(self):
+        session, _client = self._queue_session()
+        self.assertEqual(session._queue_cursor, 0)
+        session._queue_move(1)
+        self.assertEqual(session._queue_cursor, 1)
+        session._queue_move(5)  # clamped at the last row
+        self.assertEqual(session._queue_cursor, 2)
+        session._queue_open()
+        self.assertIsNotNone(session._queue_detail)
+        self.assertEqual(session._queue_detail['id'], 'job-2')
+        from debops.mcp import console
+        text = console._queue_detail_text(session)
+        self.assertIn('job-2: check slow', text)
+        self.assertIn('tally: 3 tasks x 1 hosts, ~11 s', text)
+        session._queue_detail = None
+
+    def test_a_batch_row_collapses(self):
+        session, _client = self._queue_session()
+        session._queue_open()   # the batch row: toggle
+        text = self._rendered(session)
+        self.assertIn('▸ work', text)
+        self.assertNotIn('job-1', text)
+
+    def test_the_removal_calls_and_refreshes(self):
+        session, client = self._queue_session()
+        client.tail = client   # the removal's side connection
+        client.queue(
+                # job.prune, then the refresh's queue.list
+                'tools/call',
+                {'resultType': 'complete', 'isError': False,
+                 'content': [{'type': 'text',
+                              'text': 'removed: job-2'}]},
+                {'resultType': 'complete', 'isError': False,
+                 'structuredContent': {
+                         'started': True, 'batches': [],
+                         'activeJob': None, 'lastFailure': None}})
+        session._queue_cursor = 2   # job-2
+        session._queue_remove()
+        self.assertTrue(wait_for(lambda: 'removed: job-2'
+                                 in transcript_text(session)))
+        self.assertIn(('tools/call',
+                       {'name': 'job.prune',
+                        'arguments': {'id': 'job-2'}}),
+                      client.calls)
+        self.assertTrue(wait_for(lambda: not session._queue_batches))
+
+
 class ConsoleBuildTestCase(unittest.TestCase):
 
     def setUp(self):
@@ -358,7 +485,7 @@ class ConsoleBuildTestCase(unittest.TestCase):
         self.assertIsInstance(app, Application)
         self.assertIsInstance(app.layout.container, FloatContainer)
         self.assertIsNotNone(session._input_buffer)
-        self.assertEqual(len(session._tab_buffers), 6)
+        self.assertEqual(len(session._tab_controls), 6)
 
     def test_the_chrome_layout(self):
         # The title on top; the transcript, the prompt and the
@@ -404,7 +531,8 @@ class ConsoleBuildTestCase(unittest.TestCase):
         self.assertEqual(session.console_tab, 'queue')
         lines, _positions = self.render_app(app, rows=16, cols=40)
         self.assertIn('Queue', lines[1])
-        self.assertIn('(Queue: soon)', lines[2])
+        # The Queue tab renders its state (nothing fetched headless)
+        self.assertIn('Queue: …', lines[2])
         # Tab cycles the tabs, Shift-Tab back
         self._key_binding(app, 'c-i')(event)
         self.assertEqual(session.console_tab, 'runs')
@@ -441,8 +569,8 @@ class ConsoleBuildTestCase(unittest.TestCase):
         app = self.build_sized_app(session, rows=16, cols=40)
         # The area opens on the Queue and holds the focus
         self.assertEqual(session.console_tab, 'queue')
-        self.assertIs(app.layout.current_buffer,
-                      session._tab_buffers['queue'])
+        self.assertIs(app.layout.current_control,
+                      session._tab_controls['queue'])
         lines, _positions = self.render_app(app, rows=16, cols=40)
         self.assertIn('Queue', lines[1])
 

@@ -21,7 +21,8 @@ import collections
 import threading
 import time
 
-from .repl import (Repl, ReplError, _banner, run_interactive_plain)
+from .repl import (Repl, ReplError, _banner, _run_verb_of,
+                   run_interactive_plain)
 
 # The tabs of the console's area, in order; F2-F6 select them and
 # F1 opens the help
@@ -167,7 +168,17 @@ class ConsoleRepl(Repl):
         self._transcript_scroll = 0
         # The tab contents and the prompt buffer attach at build
         self._input_buffer = None
-        self._tab_buffers = {}
+        self._tab_controls = {}
+        self._tab_containers = {}
+        # The Queue tab: the last fetched state, the selectable rows
+        # of the render, the cursor, the open job's detail
+        self._queue_batches = []
+        self._queue_started = None
+        self._queue_rows = []
+        self._queue_cursor = 0
+        self._queue_detail = None
+        self._queue_collapsed = set()
+        self._queue_refreshing = threading.Lock()
 
     # -- the transcript plumbing -------------------------------------
 
@@ -252,6 +263,143 @@ class ConsoleRepl(Repl):
             raise ReplError('the editor never ran')
         return outcome['returncode']
 
+    # -- the Queue tab ------------------------------------------------
+
+    def _poll_foreign_run_once(self, watcher):
+        super()._poll_foreign_run_once(watcher)
+        if self.console_tab == 'queue':
+            self._queue_refresh(watcher)
+
+    def _queue_refresh(self, connection):
+        """Fetch the queue state for the Queue tab on a side
+        connection (the poller's, or a one-shot one): the batches
+        with their jobs. Skips when a refresh is in flight."""
+        if not self._queue_refreshing.acquire(blocking=False):
+            return
+        try:
+            data = {}
+            batches = []
+            try:
+                answer = connection.request(
+                        'tools/call',
+                        {'name': 'queue.list', 'arguments': {}})
+                result = answer.get('result', {})
+                if result.get('isError'):
+                    return
+                data = result.get('structuredContent') or {}
+                for entry in data.get('batches') or []:
+                    detail = connection.request(
+                            'tools/call',
+                            {'name': 'batch.info',
+                             'arguments': {'name': entry['name']}})
+                    batch = (detail.get('result', {})
+                             .get('structuredContent')
+                             or {}).get('batch')
+                    if batch is not None:
+                        batches.append(batch)
+            except (AttributeError, ConnectionError, EOFError,
+                    KeyError, OSError, ReplError, TypeError):
+                # A dead daemon or a malformed answer: the tab keeps
+                # the last good state
+                return
+            self._queue_started = data.get('started')
+            self._queue_batches = batches
+            self._queue_rows = self._queue_build_rows()
+            self._queue_cursor = min(self._queue_cursor,
+                                     max(0, len(self._queue_rows) - 1))
+            self._invalidate()
+        finally:
+            self._queue_refreshing.release()
+
+    def _queue_refresh_async(self):
+        """A one-shot refresh of the Queue tab on its own thread
+        (the open, a removal) — the interface never blocks on it."""
+        def refresh():
+            try:
+                side = self.client.clone()
+                self._queue_refresh(side)
+                side.close()
+            except (AttributeError, ConnectionError, EOFError,
+                    OSError):
+                pass
+        thread = threading.Thread(target=refresh, daemon=True)
+        thread.start()
+
+    def _queue_build_rows(self):
+        """The selectable rows of the Queue tab: each batch, then
+        its jobs (a collapsed batch hides them)."""
+        rows = []
+        for batch in self._queue_batches:
+            rows.append(('batch', batch))
+            if batch['name'] in self._queue_collapsed:
+                continue
+            for job in batch.get('jobs') or []:
+                rows.append(('job', job))
+        return rows
+
+    def _queue_move(self, direction):
+        """The cursor through the selectable rows."""
+        if not self._queue_rows:
+            return
+        self._queue_cursor = min(
+                len(self._queue_rows) - 1,
+                max(0, self._queue_cursor + direction))
+        self._invalidate()
+
+    def _queue_open(self):
+        """Enter on a row: the job's details; a batch toggles its
+        jobs away."""
+        if not self._queue_rows:
+            return
+        kind, payload = self._queue_rows[self._queue_cursor]
+        if kind == 'job':
+            self._queue_detail = payload
+        else:
+            name = payload['name']
+            if name in self._queue_collapsed:
+                self._queue_collapsed.discard(name)
+            else:
+                self._queue_collapsed.add(name)
+            self._queue_rows = self._queue_build_rows()
+            self._queue_cursor = min(self._queue_cursor,
+                                     max(0, len(self._queue_rows) - 1))
+        self._invalidate()
+
+    def _queue_remove(self):
+        """Remove the selected entry on a worker thread: a job
+        prunes from itself onward, a batch drops with its queued
+        jobs (a running job finishes); the daemon's refusals land
+        as notes."""
+        if not self._queue_rows:
+            return
+        kind, payload = self._queue_rows[self._queue_cursor]
+        if kind == 'job':
+            tool, arguments = 'job.prune', {'id': payload['id']}
+        else:
+            tool, arguments = 'batch.remove', {'name': payload['name']}
+
+        def call():
+            try:
+                side = self.client.clone()
+                try:
+                    answer = side.request(
+                            'tools/call',
+                            {'name': tool, 'arguments': arguments})
+                    result = answer.get('result', {})
+                    content = result.get('content') or []
+                    if content:
+                        self._note(content[0].get('text', ''))
+                    # The tab reflects the change at once
+                    self._queue_refresh(side)
+                finally:
+                    side.close()
+            except (AttributeError, ConnectionError, EOFError,
+                    OSError) as errmsg:
+                self._note('the removal failed: {}'.format(errmsg))
+
+        thread = threading.Thread(target=call, daemon=True)
+        thread.start()
+
     # -- the focus dance -----------------------------------------------
 
     def _focus_area(self, tab=None):
@@ -264,7 +412,10 @@ class ConsoleRepl(Repl):
         self.console_focus = 'area'
         app = self._app
         if app is not None:
-            app.layout.focus(self._tab_buffers[self.console_tab])
+            app.layout.focus(self._tab_controls[self.console_tab])
+        if self.console_tab == 'queue':
+            # The open is fresh data
+            self._queue_refresh_async()
         self._invalidate()
 
     def _focus_prompt(self):
@@ -291,7 +442,9 @@ class ConsoleRepl(Repl):
         self.console_tab = order[(index + direction) % len(order)]
         app = self._app
         if app is not None:
-            app.layout.focus(self._tab_buffers[self.console_tab])
+            app.layout.focus(self._tab_controls[self.console_tab])
+        if self.console_tab == 'queue':
+            self._queue_refresh_async()
         self._invalidate()
 
 
@@ -307,6 +460,94 @@ def _bind_suspend(bindings, session):
             session._note('a confined session does not background')
         else:
             event.app.suspend_to_background()
+
+
+# -- the Queue tab ---------------------------------------------------
+
+
+def _queue_tab_text(session):
+    """The Queue tab: the dispatch state, the active run with its
+    tally and its current line, then the batches and their jobs.
+    The cursor's row stands out."""
+    fragments = []
+
+    def line(text, style='class:tabs'):
+        fragments.append((style, text + '\n'))
+
+    started = session._queue_started
+    line('Queue: {}'.format('dispatching' if started else 'parked'
+                            if started is not None else '…'))
+    # The active run — ours or one watched from elsewhere
+    run_line = None
+    task_line = None
+    if session.active_run is not None:
+        run = session.active_run['run']
+        run_line = session._run_segment(
+                _run_verb_of(run).lower(), run.get('playbooks'),
+                run.get('taskIndex'), run.get('taskCount'),
+                run.get('taskCounts'))
+        task_line = run.get('currentTask')
+    elif session._foreign_run is not None:
+        foreign = session._foreign_run
+        run_line = session._run_segment(
+                _run_verb_of(foreign).lower(), foreign.get('playbooks'),
+                foreign.get('tasksDone'), foreign.get('tasksTotal'),
+                foreign.get('taskCounts'))
+        task_line = foreign.get('currentPlaybook')
+    if run_line is not None:
+        line('Running: {}'.format(run_line))
+        if task_line:
+            line('    {}'.format(task_line))
+    if not session._queue_batches:
+        line('(no batches)')
+    for index, (kind, payload) in enumerate(session._queue_rows):
+        style = 'reverse' if index == session._queue_cursor \
+                else 'class:tabs'
+        if kind == 'batch':
+            marker = ('▸' if payload['name'] in session._queue_collapsed
+                      else '▾')
+            line('{} {} — {} job(s), ~{} s ({}{})'.format(
+                    marker, payload['name'], len(payload.get('jobs')
+                                                 or []),
+                    payload.get('estimateSeconds', 0),
+                    payload.get('state', '?'),
+                    ', pending review' if payload.get('pending')
+                    else ''), style)
+        else:
+            line('    {}: {} {} [{}]{}'.format(
+                    payload['id'], payload['mode'],
+                    ' '.join(payload['targets']), payload['state'],
+                    ' — {}'.format(payload['error'])
+                    if payload.get('error') else ''), style)
+    return fragments
+
+
+def _queue_detail_text(session):
+    """The open job's details, filling the Queue tab."""
+    job = session._queue_detail
+    lines = ['{}: {} {}'.format(job['id'], job['mode'],
+                                ' '.join(job['targets'])),
+             'batch: {}    state: {}    position: {}'.format(
+                     job['batch'], job['state'],
+                     job.get('position', '—')),
+             'created: {}'.format(job.get('createdAt', '—'))]
+    options = job.get('options') or {}
+    if options:
+        lines.append('options: {}'.format(' '.join(
+                '{}={}'.format(key, value)
+                for key, value in sorted(options.items()))))
+    tally = job.get('tally')
+    if tally:
+        lines.append('tally: {} tasks x {} hosts, ~{} s'.format(
+                tally.get('taskCount'), tally.get('hostCount'),
+                tally.get('estimateSeconds')))
+    if job.get('executionId') is not None:
+        lines.append('execution: {}'.format(job['executionId']))
+    if job.get('error'):
+        lines.append('error: {}'.format(job['error']))
+    lines.append('')
+    lines.append('q/Esc: back to the queue')
+    return '\n'.join(lines)
 
 
 def _build_app(session):
@@ -336,19 +577,24 @@ def _build_app(session):
     session._out = writer
     session._err = writer
 
-    # The tab contents: the placeholders for now, each its own
-    # buffer so the area's focus has somewhere to sit
-    tab_buffers = {}
-    tab_containers = {}
+    # The tab contents, each a focusable control (the area's focus
+    # target); the Queue tab renders the queue's state
+    tab_texts = {
+            'help': lambda: _HELP_TEXT,
+            'queue': lambda: (_queue_detail_text(session)
+                              if session._queue_detail is not None
+                              else _queue_tab_text(session)),
+            'runs': lambda: '(Runs: soon)',
+            'journal': lambda: '(Journal: soon)',
+            'docs': lambda: '(Docs: soon)',
+            'credits': lambda: '(Credits: soon)',
+    }
     for name in ('help',) + TABS:
-        buffer = Buffer()
-        buffer.text = (_HELP_TEXT if name == 'help'
-                       else '({}: soon)'.format(_TAB_TITLES[name]))
-        tab_buffers[name] = buffer
-        tab_containers[name] = Window(
-                BufferControl(buffer=buffer, focusable=True),
-                wrap_lines=True)
-    session._tab_buffers = tab_buffers
+        control = FormattedTextControl(tab_texts[name],
+                                       focusable=True)
+        session._tab_controls[name] = control
+        session._tab_containers[name] = Window(control,
+                                               wrap_lines=True)
     if not session.console_prompt_active and session.console_tab is None:
         # The configurable default: the console starts on the Queue
         session.console_tab = 'queue'
@@ -388,7 +634,7 @@ def _build_app(session):
         # the container regardless
         if session.console_tab is None:
             return Window()
-        return tab_containers[session.console_tab]
+        return session._tab_containers[session.console_tab]
 
     bindings = KeyBindings()
     _bind_suspend(bindings, session)
@@ -404,9 +650,12 @@ def _build_app(session):
                 event.app.current_buffer.reset()
             return
         # The focus dance: the prompt leaves for the tab area and
-        # back
+        # back; an open job's detail closes first
         if session.console_focus == 'prompt':
             session._focus_area()
+        elif session._queue_detail is not None:
+            session._queue_detail = None
+            session._invalidate()
         else:
             session._focus_prompt()
 
@@ -435,6 +684,36 @@ def _build_app(session):
     @bindings.add('s-tab', filter=area_live)
     def _tab_prev(event):
         session._cycle_tab(-1)
+
+    in_queue = Condition(lambda: session.console_focus == 'area'
+                         and session.console_tab == 'queue')
+    detail_open = Condition(lambda: session._queue_detail is not None)
+
+    @bindings.add('j', filter=in_queue & ~detail_open)
+    @bindings.add('down', filter=in_queue & ~detail_open)
+    def _queue_down(event):
+        session._queue_move(1)
+
+    @bindings.add('k', filter=in_queue & ~detail_open)
+    @bindings.add('up', filter=in_queue & ~detail_open)
+    def _queue_up(event):
+        session._queue_move(-1)
+
+    @bindings.add('enter', filter=in_queue)
+    def _queue_enter(event):
+        session._queue_open()
+
+    @bindings.add('q', filter=in_queue & detail_open)
+    def _queue_close_detail(event):
+        session._queue_detail = None
+        session._invalidate()
+
+    # The removal: vim's x and dd, Emacs' kill-line
+    @bindings.add('x', filter=in_queue & ~detail_open)
+    @bindings.add('c-k', filter=in_queue & ~detail_open)
+    @bindings.add('d', 'd', filter=in_queue & ~detail_open)
+    def _queue_remove_key(event):
+        session._queue_remove()
 
     @bindings.add('pageup')
     @bindings.add('s-pageup')
@@ -542,7 +821,8 @@ def _build_app(session):
                                   content=CompletionsMenu())]),
             focused_element=(input_buffer
                              if session.console_prompt_active
-                             else tab_buffers[session.console_tab]))
+                             else session._tab_controls[
+                                     session.console_tab]))
     return Application(
             layout=layout, key_bindings=bindings, full_screen=True,
             style=Style.from_dict({'status': 'reverse',
