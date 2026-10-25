@@ -71,11 +71,12 @@ class FakeTailConnection(object):
         self.closed = True
 
 
-def make_repl(client, interactive=False):
+def make_repl(client, interactive=False, editor=None):
     out = io.StringIO()
     err = io.StringIO()
     session = Repl(client, project_name='project', view='system',
-                   out=out, err=err, interactive=interactive)
+                   out=out, err=err, interactive=interactive,
+                   editor=editor)
     return session, out, err
 
 
@@ -540,6 +541,60 @@ class EditTestCase(unittest.TestCase):
         # The path is spelled inventory-relative for the tool
         self.assertEqual(call['arguments']['path'],
                          'group_vars/all.yml')
+
+    def test_the_editor_basename_aliases_the_verb(self):
+        # The ambient editor's basename is the edit verb's alias
+        client = FakeClient()
+        client.queue('tools/call', dict(self.READ),
+                     {'resultType': 'complete', 'isError': False,
+                      'content': [{'type': 'text',
+                                   'text': 'written'}]})
+        session, _out, _err = make_repl(client, interactive=True,
+                                        editor='/usr/bin/vim')
+        self.assertEqual(session.verbs()['vim'],
+                         session.cmd_edit)
+        self.edit_with(session, line='vim playbooks/site.yml')
+        self.assertEqual(client.calls[1][1]['name'], 'file.write')
+
+    def test_an_unknown_editor_falls_back_to_vi(self):
+        # The environment and the configuration are inherited
+        # input; the editor is bounded to the known ones
+        session, _out, err = make_repl(FakeClient(),
+                                       editor='/usr/bin/subl')
+        self.assertEqual(session._editor_command(), ['vi'])
+        self.assertIn('not a known editor', err.getvalue())
+        # ... and the fallback's alias registers like any other
+        self.assertEqual(session.verbs()['vi'], session.cmd_edit)
+
+    def test_a_colliding_alias_yields(self):
+        # A basename taken by a real verb or a builtin keeps its
+        # meaning — no 'run' alias to cmd_edit
+        session, _out, _err = make_repl(FakeClient(),
+                                        editor='/usr/bin/run')
+        self.assertEqual(session.verbs()['run'],
+                         session.cmd_run)
+
+    def test_the_editor_resolution_order(self):
+        # The configured setting, then VISUAL, then EDITOR, then vi
+        session, _out, _err = make_repl(FakeClient(),
+                                        editor='nano')
+        self.assertEqual(session._editor_command(), ['nano'])
+        with mock.patch.dict(os.environ, {'VISUAL': '/usr/bin/vim',
+                                          'EDITOR': '/usr/bin/ex'}):
+            session, _out, _err = make_repl(FakeClient())
+            self.assertEqual(session._editor_command(),
+                             ['/usr/bin/vim'])
+            session, _out, _err = make_repl(FakeClient(),
+                                            editor='nano')
+            self.assertEqual(session._editor_command(), ['nano'])
+        with mock.patch.dict(os.environ, {'EDITOR': '/usr/bin/ex'}):
+            # No VISUAL: EDITOR answers
+            env = os.environ.copy()
+            env.pop('VISUAL', None)
+            with mock.patch.dict(os.environ, env, clear=True):
+                session, _out, _err = make_repl(FakeClient())
+                self.assertEqual(session._editor_command(),
+                                 ['/usr/bin/ex'])
 
     def test_a_refusal_keeps_the_local_copy(self):
         # The file moved while the editor was open: the write is

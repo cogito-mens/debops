@@ -208,3 +208,11 @@ external_content = true
 # Note: the global kill switch, 'mcp.enabled', is deliberately not read
 # from the project configuration; it lives in the system or account
 # configuration, written by 'debops mcp disable'.
+
+# Note: the front ends' own knobs live in the system or account
+# configuration too, under 'mcp.repl.*' — a project is not the place
+# for the account's preferences. 'mcp.repl.editor' picks the editor
+# of the 'edit' verb (its basename is the verb's alias, so
+# 'editor = "vim"' makes 'vim playbooks/site.yml' work); the value
+# is bounded to the known terminal editors and defaults to the
+# environment's VISUAL or EDITOR, else vi.

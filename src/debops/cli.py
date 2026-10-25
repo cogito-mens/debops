@@ -1136,6 +1136,12 @@ class Interpreter(object):
                 'login', {}).get('confined', False))
         confined = confined or bool(getattr(args, 'confined', False))
         history_max = repl_mod.history_max_entries(self.config.raw)
+        # The ambient client settings ('mcp.repl.*'): the editor the
+        # 'edit' verb runs, its basename the verb's alias. Captured
+        # before the project layer merges in — the editor runs with
+        # the account, the knob is the account's
+        editor = self.config.raw.get('mcp', {}).get(
+                'repl', {}).get('editor')
         project = None
         if not args.docs:
             # A login-shell session (the 'debops-shell' program
@@ -1222,6 +1228,7 @@ class Interpreter(object):
                     plain=getattr(args, 'plain', False),
                     untrusted=getattr(args, 'untrusted', False),
                     elevated=getattr(args, 'elevated', False),
+                    editor=editor,
                     console_config=(
                             project.config.raw.get('project', {})
                             .get('mcp', {}).get('console')

@@ -350,6 +350,14 @@ def ask(message, default=False):
     return reply in ('y', 'yes')
 
 
+# The known editors: the environment and the ambient
+# configuration are inherited input, so the editor choice is bounded
+# to real terminal editors — an unknown name falls back to vi
+_KNOWN_EDITORS = ('vi', 'vim', 'nvim', 'gvim', 'nano', 'ed', 'ex',
+                  'emacs', 'emacsclient', 'joe', 'jed', 'micro',
+                  'mcedit', 'hx', 'kak', 'vis')
+
+
 # The daemon options a project may preset for an autospawned daemon
 # ('project.autospawn_options'); the dropped keys belong to the spawn
 # machinery (the transport, the identity) or carry knobs of their own
@@ -943,15 +951,28 @@ class Repl(object):
                  out=sys.stdout, err=sys.stderr, interactive=False,
                  project_path=None, project_type=None,
                  view_root_rel=None, confined=False,
-                 history_max=0, untrusted=False, console_config=None):
+                 history_max=0, untrusted=False, console_config=None,
+                 editor=None):
         self.client = client
+        self._out = out
+        self._err = err
         # The console's interface preferences
         # (project.mcp.console.*), read by the console front end
         self.console_config = dict(console_config or {})
+        # The editor of the session: the ambient 'mcp.repl.editor'
+        # setting passed in by the CLI, else the environment, else
+        # vi. Its basename is the 'edit' verb's alias ('vim', 'nano',
+        # ...)
+        self._editor = editor
+        self._editor_alias = None
+        self._editor_cmd = None
+        program = self._editor_command()
+        if program:
+            basename = os.path.basename(program[0])
+            if basename and basename != 'edit':
+                self._editor_alias = basename
         self.project_name = project_name
         self.view = view
-        self._out = out
-        self._err = err
         self.interactive = interactive
         # The ambient confinement of the account: the escape hatches
         # of the session (the editor) stay closed
@@ -2281,9 +2302,7 @@ class Repl(object):
     def _run_editor(self, path):
         """Open the editor on the temporary file; the console
         suspends its own interface for it."""
-        editor = (os.environ.get('VISUAL') or
-                  os.environ.get('EDITOR') or 'vi')
-        return subprocess.call(shlex.split(editor) + [path])
+        return subprocess.call(self._editor_command() + [path])
 
     # -- the local shell (the '!' escape) ----------------------------
 
@@ -2729,8 +2748,43 @@ class Repl(object):
     # -- the loop ---------------------------------------------------
 
     def verbs(self):
-        return dict((name[4:], getattr(self, name))
-                    for name in dir(self) if name.startswith('cmd_'))
+        table = dict((name[4:], getattr(self, name))
+                     for name in dir(self) if name.startswith('cmd_'))
+        # The editor's basename aliases the edit verb ('vim
+        # playbooks/x.yml' is the operator's habit); a name taken by
+        # a real verb or the builtins keeps its meaning
+        alias = self._editor_alias
+        if alias and alias not in table and alias not in (
+                'help', 'exit', 'quit'):
+            table[alias] = self.cmd_edit
+        return table
+
+    def _editor_command(self):
+        """The editor command of the session as an argument list:
+        the ambient 'mcp.repl.editor' setting first, then the
+        environment's VISUAL and EDITOR, then vi. The choice is
+        bounded to the known editors — the environment and the
+        configuration are inherited input, and the editor runs with
+        the account. Resolved once per session (the refusal note is
+        the session's to print once, not every call's)."""
+        if self._editor_cmd is not None:
+            return self._editor_cmd
+        chosen = self._editor or (os.environ.get('VISUAL')
+                                  or os.environ.get('EDITOR') or 'vi')
+        parts = shlex.split(chosen)
+        if not parts:
+            self._editor_cmd = ['vi']
+            return self._editor_cmd
+        program = os.path.basename(parts[0])
+        if program not in _KNOWN_EDITORS:
+            print('note: {!r} is not a known editor; using vi '
+                  '(the known editors: {})'.format(
+                          chosen, ', '.join(_KNOWN_EDITORS)),
+                  file=self._err)
+            self._editor_cmd = ['vi']
+            return self._editor_cmd
+        self._editor_cmd = parts
+        return self._editor_cmd
 
     def execute(self, line):
         """Run one command line; the result prints on the channels."""
@@ -2803,6 +2857,10 @@ class Repl(object):
               file=self._out)
         entries = dict(HELP)
         entries.update(self.HELP_EXTRA)
+        if self._editor_alias:
+            entries['{} <path>'.format(self._editor_alias)] = (
+                    'edit the file with {}'.format(
+                            ' '.join(self._editor_command())))
         for verb, synopsis in sorted(entries.items()):
             print('  {:24s} {}'.format(verb, synopsis), file=self._out)
         if self._tools_visible:
@@ -3541,7 +3599,7 @@ def run(client, project_name=None, view=None, interactive=None,
         project_path=None, project_type=None, view_root_rel=None,
         frontend=None, command=None, confined=False, history_max=0,
         plain=False, untrusted=False, elevated=False,
-        console_config=None):
+        console_config=None, editor=None):
     """Build and run an interpreter session against the connected
     daemon. 'frontend' selects the chrome: None for the plain
     interpreter, 'shell' for the status-bar interface, 'console' for
@@ -3573,7 +3631,8 @@ def run(client, project_name=None, view=None, interactive=None,
                             view_root_rel=view_root_rel,
                             confined=confined, history_max=history_max,
                             untrusted=untrusted,
-                            console_config=console_config)
+                            console_config=console_config,
+                            editor=editor)
     if elevated:
         # '--elevated': trusted, then elevated for the session's
         # duration; a session which cannot prove itself runs
