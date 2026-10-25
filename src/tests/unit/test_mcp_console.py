@@ -531,6 +531,74 @@ class ConsoleJournalTabTestCase(unittest.TestCase):
         proc.terminate.assert_called_once_with()
 
 
+class ConsoleCreditsTabTestCase(unittest.TestCase):
+    """The Credits tab: the build-time credits file, centered on
+    the area; the Docs placeholder meanwhile."""
+
+    CONTENT = ('DebOps — the people\n'
+               '===================\n'
+               '\n'
+               'Jane Hacker (12)\n'
+               'John Doe (3)\n')
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='debops-mcp-concred-')
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        patcher = mock.patch.dict(os.environ,
+                                  {'XDG_DATA_HOME': self.tmpdir})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_credits_render_centered(self):
+        from debops.mcp import console
+        session, _client = make_session()
+        attach_transcript(session)
+        with mock.patch('pkgutil.get_data',
+                        return_value=self.CONTENT.encode()):
+            text = console._credits_tab_text(session)
+        lines = text.splitlines()
+        title = [line for line in lines if 'Jane Hacker' in line][0]
+        # Centered on the area's width: the line is padded from the
+        # left by half the slack
+        from prompt_toolkit.application.current import get_app
+        width = get_app().output.get_size().columns
+        padding = (width - len('Jane Hacker (12)')) // 2
+        self.assertEqual(title, ' ' * padding + 'Jane Hacker (12)')
+
+    def test_a_missing_credits_file_says_so(self):
+        from debops.mcp import console
+        session, _client = make_session()
+        attach_transcript(session)
+        with mock.patch('pkgutil.get_data', return_value=None):
+            text = console._credits_tab_text(session)
+        self.assertIn('make credits', text)
+
+    def test_the_credits_scroll(self):
+        from debops.mcp import console
+        session, _client = make_session()
+        attach_transcript(session)
+        with mock.patch('pkgutil.get_data',
+                        return_value=self.CONTENT.encode()):
+            with mock.patch.object(session, '_area_height',
+                                   return_value=2):
+                text = console._credits_tab_text(session)
+                first = text.splitlines()
+                session._credits_scroll_by(1)
+                text = console._credits_tab_text(session)
+                self.assertNotEqual(first, text.splitlines())
+                session._credits_scroll_by(-10)
+                self.assertEqual(session._credits_scroll, 0)
+
+    def test_the_docs_placeholder_points_at_the_verb(self):
+        from debops.mcp import console
+        session, _client = make_session()
+        session._build = None
+        app = console._build_app(session)
+        text = session._tab_controls['docs'].text
+        text = text() if callable(text) else text
+        self.assertIn('doc', text)
+
+
 class ConsoleRunsTabTestCase(unittest.TestCase):
     """The Runs tab: the finished executions listed; a run's log
     read whole and colored through the daemon's log.reader."""

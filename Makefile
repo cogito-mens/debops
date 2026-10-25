@@ -103,9 +103,13 @@ integration: test-integration
 coverage:       ## Run all tests with a combined coverage report
 coverage: test-coverage
 
+.PHONY: credits
+credits:        ## Generate the credits file from the git history
+	@lib/make-credits
+
 .PHONY: sdist
 sdist:          ## Create Python sdist package
-sdist: clean-sdist man
+sdist: clean-sdist man credits
 	@python3 setup.py sdist
 
 .PHONY: sdist-quiet
@@ -119,6 +123,7 @@ sdist-sign: sdist
 
 .PHONY: make-collection
 make-collection: clean clean-git
+	@lib/make-credits
 	@lib/ansible-galaxy/make-collection
 
 .PHONY: clean-sdist
@@ -127,7 +132,7 @@ clean-sdist:
 
 .PHONY: wheel
 wheel:          ## Create Python wheel package
-wheel: clean-wheel man
+wheel: clean-wheel man credits
 	@python3 setup.py bdist_wheel
 
 .PHONY: wheel-quiet

@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+# Copyright (C) 2026 Maciej Delmanowski <drybjed@gmail.com>
+# Copyright (C) 2026 DebOps <https://debops.org/>
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Generate the credits file from the git history.
+
+The file ('src/debops/_data/debops/credits') is written at package
+build time ('make credits'; the wheel, sdist and collection builds
+call it) and gitignored — the git history is its source of truth.
+The sections are a first cut, to be fleshed out: the project's main
+authors by commit count, the Ansible content's, and the
+contributors at large.
+"""
+
+import os
+import subprocess
+import sys
+
+from collections import Counter
+
+# The tagline, as the package metadata carries it
+TAGLINE = 'Your Debian-based data center in a box'
+
+# The LLM assistance credit, curated: the model which wrote code
+# for the project, under the identity it worked as (the git
+# history records the identity; the model is named here)
+LLM_CREDIT = 'Kimi K3 as Cogito Mens'
+
+# The special thanks: the projects DebOps builds on, with their
+# main authors — a curated list, one topic per section, more to
+# come. Editorial, not generated; extend it here.
+SPECIAL_THANKS = (
+        ('Debian', ('Ian Murdock',)),
+        ('Ansible', ('Michael DeHaan',)),
+        ('Free Software', ('Richard M. Stallman',)),
+        ('Linux', ('Linus Torvalds',)),
+        ('Open Source', ('Bruce Perens', 'Eric S. Raymond')),
+)
+
+# The path scopes of the sections; each existing one counts
+ANSIBLE_SCOPES = ('src/debops/_data/ansible', 'ansible',
+                  'ansible_collections')
+
+# How many names a main list carries before the tail folds
+MAIN_AUTHORS = 10
+
+
+def project_version(root):
+    """The package version, computed the way setup.py does it:
+    'git describe', the development form when past a tag."""
+    try:
+        with open(os.devnull, 'w') as devnull:
+            release = subprocess.check_output(
+                    ['git', 'describe'], stderr=devnull,
+                    cwd=root).strip().lstrip(b'v').decode(
+                            'utf-8').split('-')
+        if len(release) > 1:
+            return release[0] + '.dev' + release[1] \
+                    + '+' + release[2]
+        return release[0]
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def start_year(root):
+    """The year of the project's first commit."""
+    output = subprocess.run(
+            ['git', 'log', '--format=%ad', '--date=format:%Y'],
+            capture_output=True, text=True, cwd=root).stdout
+    years = output.split()
+    return years[-1] if years else None
+
+
+def author_counts(paths, cwd):
+    """The (name, count) pairs of the git history under the paths,
+    mailmap-aware, the count descending."""
+    command = ['git', 'log', '--format=%aN']
+    if paths:
+        command.append('--')
+        command.extend(paths)
+    try:
+        output = subprocess.run(command, capture_output=True,
+                                text=True, check=True,
+                                cwd=cwd).stdout
+    except (OSError, subprocess.CalledProcessError) as errmsg:
+        print('make-credits: git log failed: {}'.format(errmsg),
+              file=sys.stderr)
+        sys.exit(1)
+    counts = Counter(line.strip() for line in output.splitlines()
+                     if line.strip())
+    return sorted(counts.items(), key=lambda item: (-item[1],
+                                                    item[0].lower()))
+
+
+def section(title, pairs, folded_from=None):
+    """One section of the file: its title, then 'Name (N)' lines."""
+    lines = [title, '-' * len(title), '']
+    lines.extend('{} ({})'.format(name, count)
+                 for name, count in pairs)
+    if folded_from:
+        lines.append('… and {} more'.format(folded_from))
+    lines.append('')
+    return lines
+
+
+def main():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.dirname(script_dir)
+    target = os.path.join(root, 'src', 'debops', '_data', 'debops',
+                          'credits')
+
+    everyone = author_counts([], cwd=root)
+    ansible_paths = [path for path in ANSIBLE_SCOPES
+                     if os.path.isdir(os.path.join(root, path))]
+    # The Ansible section counts the scoped commits; the
+    # contributors fold whoever no main list named
+    ansible_authors = (author_counts(ansible_paths, cwd=root)
+                       if ansible_paths else [])
+    ansible_names = set(name for name, _count in ansible_authors)
+
+    main_authors = everyone[:MAIN_AUTHORS]
+    folded = len(everyone) - len(main_authors)
+    ansible_authors = ansible_authors[:MAIN_AUTHORS]
+    contributors = [(name, count) for name, count in everyone
+                    if name not in ansible_names
+                    and name not in dict(main_authors)]
+
+    # The header: the name, the tagline, the years, the version
+    lines = ['DebOps', TAGLINE]
+    year = start_year(root)
+    if year is not None:
+        lines.append('{}-present'.format(year))
+    version = project_version(root)
+    if version is not None:
+        lines.append(version)
+    lines.extend(['',
+                  "Generated at package build time from the git "
+                  "history ('make "
+                  "credits'); the git history is the source of "
+                  "truth.",
+                  '',
+                  'Written with LLM assistance: '
+                  '{}.'.format(LLM_CREDIT),
+                  ''])
+    lines.extend(section('The project’s main authors',
+                         main_authors,
+                         folded_from=folded if folded > 0 else None))
+    lines.extend(section('The Ansible content’s main authors',
+                         ansible_authors))
+    lines.extend(section('Contributors', contributors))
+
+    # The special thanks follow the main credits, one topic per
+    # section
+    lines.extend(['Special thanks', '==============', ''])
+    for topic, names in SPECIAL_THANKS:
+        lines.extend([topic, '-' * len(topic), ''])
+        lines.extend(names)
+        lines.append('')
+
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, 'w', encoding='utf-8') as fp:
+        fp.write('\n'.join(lines).rstrip() + '\n')
+    print('credits: {} written ({} authors)'.format(
+            target, len(everyone)))
+
+
+if __name__ == '__main__':
+    main()

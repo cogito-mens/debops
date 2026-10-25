@@ -73,3 +73,6 @@ tags
 
 ### JetBrains IDE ###
 .idea
+
+# Generated at package build time ('make credits')
+src/debops/_data/debops/credits

@@ -222,6 +222,8 @@ class ConsoleRepl(Repl):
         self._journal_proc = None
         self._journal_note = None
         self._journal_source = 'mcp'
+        # The Credits tab: the package's credits file, scrolled
+        self._credits_scroll = 0
 
     # -- the transcript plumbing -------------------------------------
 
@@ -665,6 +667,14 @@ class ConsoleRepl(Repl):
                     limit, max(0, self._journal_scroll + lines))
         self._invalidate()
 
+    def _credits_scroll_by(self, lines):
+        """Scroll the credits by whole lines, from their top."""
+        # The render re-reads the file's lines; the scroll only
+        # needs a clamp against the current content at render time,
+        # so here the offset just stays non-negative
+        self._credits_scroll = max(0, self._credits_scroll + lines)
+        self._invalidate()
+
     # -- the focus dance -----------------------------------------------
 
     def _focus_area(self, tab=None):
@@ -870,6 +880,33 @@ def _journal_tab_text(session):
     return '\n'.join(lines)
 
 
+def _credits_tab_text(session):
+    """The Credits tab: the package's credits file, centered on the
+    area like a credits roll, scrolled top-down. Generated at
+    package build time ('make credits'); a dev checkout without it
+    says so."""
+    import pkgutil
+    try:
+        data = pkgutil.get_data('debops', os.path.join(
+                '_data', 'debops', 'credits'))
+    except OSError:
+        data = None
+    if data is None:
+        return ('(no credits file yet — it is generated at package '
+                'build time: make credits)')
+    text = data.decode('utf-8', 'replace').rstrip()
+    lines = text.splitlines()
+    # Centered on the area, like a credits roll
+    from prompt_toolkit.application import get_app
+    width = get_app().output.get_size().columns
+    centered = [' ' * max(0, (width - len(line)) // 2) + line
+                for line in lines]
+    height = session._area_height()
+    start = min(session._credits_scroll,
+                max(0, len(centered) - height))
+    return '\n'.join(centered[start:start + height])
+
+
 def _build_app(session):
     """The console's prompt_toolkit application, headless-buildable
     for the tests."""
@@ -908,8 +945,10 @@ def _build_app(session):
                              if session._runs_detail is not None
                              else _runs_tab_text(session)),
             'journal': lambda: _journal_tab_text(session),
-            'docs': lambda: '(Docs: soon)',
-            'credits': lambda: '(Credits: soon)',
+            'docs': lambda: '(Docs: the browsable documentation '
+                            'arrives here; until then the “doc” verb '
+                            'answers it)',
+            'credits': lambda: _credits_tab_text(session),
     }
     for name in ('help',) + TABS:
         control = FormattedTextControl(tab_texts[name],
@@ -1109,6 +1148,29 @@ def _build_app(session):
     @bindings.add('s', filter=in_journal)
     def _journal_switch_source(event):
         session._journal_switch()
+
+    in_credits = Condition(lambda: session.console_focus == 'area'
+                           and session.console_tab == 'credits')
+
+    @bindings.add('j', filter=in_credits)
+    @bindings.add('down', filter=in_credits)
+    def _credits_down(event):
+        session._credits_scroll_by(1)
+
+    @bindings.add('k', filter=in_credits)
+    @bindings.add('up', filter=in_credits)
+    def _credits_up(event):
+        session._credits_scroll_by(-1)
+
+    @bindings.add('pageup', filter=in_credits)
+    @bindings.add('s-pageup', filter=in_credits)
+    def _credits_pageup(event):
+        session._credits_scroll_by(-session._area_height())
+
+    @bindings.add('pagedown', filter=in_credits)
+    @bindings.add('s-pagedown', filter=in_credits)
+    def _credits_pagedown(event):
+        session._credits_scroll_by(session._area_height())
 
     @bindings.add('pageup')
     @bindings.add('s-pageup')
