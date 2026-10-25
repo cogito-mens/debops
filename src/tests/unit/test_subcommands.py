@@ -149,6 +149,14 @@ def test_mcp_front_ends_take_untrusted():
         assert flagged.args.untrusted is True, argv
 
 
+def test_mcp_front_ends_take_elevated():
+    # The session-long elevation is a flag away
+    for argv in (("mcp", "repl"), ("mcp", "shell"), ("mcp", "console")):
+        assert parse_cli(*argv).args.elevated is False, argv
+        flagged = parse_cli(*argv, "--elevated")
+        assert flagged.args.elevated is True, argv
+
+
 def test_mcp_front_ends_take_confined():
     # The confined UI is testable without account configuration
     for argv in (("mcp", "repl"), ("mcp", "shell"), ("mcp", "console")):

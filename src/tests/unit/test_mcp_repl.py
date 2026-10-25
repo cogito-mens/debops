@@ -1393,6 +1393,90 @@ class TrustVerbsTestCase(unittest.TestCase):
         self.assertEqual(session._passphrase(),
                          'correct horse battery staple')
 
+    def test_elevate_for_session_authenticates_then_keeps(self):
+        self._write_passphrase()
+        client = FakeClient()
+        client.legacy = False
+        client.bearer = None
+        session, _out, err = make_repl(client, interactive=False)
+        session.project_path = self.tmpdir
+        client.queue('server/authenticate',
+                     {'token': 'the-token', 'tokenType': 'bearer'})
+        client.queue('server/elevate', {'elevated': True,
+                                        'expiresIn': 900})
+        session.elevate_for_session()
+        self.addCleanup(session._end_session_elevation)
+        self.assertEqual(client.bearer, 'the-token')
+        self.assertTrue(session.elevated)
+        self.assertIn('for the session', err.getvalue())
+        # The renewals re-check the passphrase, so it stays cached
+        self.assertEqual(session._elevate_phrase,
+                         'correct horse battery staple')
+        self.assertIsNotNone(session._elevate_stop)
+
+    def test_elevate_for_session_reuses_the_bearer(self):
+        self._write_passphrase()
+        client = FakeClient()
+        client.legacy = False
+        client.bearer = 'the-token'
+        session, _out, _err = make_repl(client, interactive=False)
+        session.project_path = self.tmpdir
+        client.queue('server/elevate', {'elevated': True,
+                                        'expiresIn': 900})
+        session.elevate_for_session()
+        self.addCleanup(session._end_session_elevation)
+        self.assertEqual([call[0] for call in client.calls],
+                         ['server/elevate'])
+
+    def test_the_keeper_renews_only_near_the_lapse(self):
+        client = FakeClient()
+        session, _out, _err = make_repl(client)
+        session.elevated = True
+        session._elevate_phrase = 'the-phrase'
+        session._elevated_until = time.monotonic() + 900
+        # Fresh: no renewal
+        self.assertTrue(session._maybe_renew())
+        self.assertEqual(client.calls, [])
+        # Near the lapse: the renewal rides a side connection
+        side = mock.Mock()
+        side.request.return_value = {'elevated': True,
+                                     'expiresIn': 900}
+        client.clone = mock.Mock(return_value=side)
+        session._elevated_until = time.monotonic() + 30
+        self.assertTrue(session._maybe_renew())
+        side.request.assert_called_once_with(
+                'server/elevate', {'passphrase': 'the-phrase'})
+        self.assertGreater(session._elevated_until,
+                           time.monotonic() + 600)
+
+    def test_the_keeper_ends_on_a_refusal(self):
+        client = FakeClient()
+        session, _out, err = make_repl(client)
+        session.elevated = True
+        session._elevate_phrase = 'the-phrase'
+        session._elevated_until = time.monotonic() + 30
+        side = mock.Mock()
+        side.request.side_effect = ReplError('the passphrase did '
+                                             'not match')
+        client.clone = mock.Mock(return_value=side)
+        self.assertFalse(session._maybe_renew())
+        self.assertIn('the elevation lapsed', err.getvalue())
+
+    def test_drop_forgets_the_session_elevation(self):
+        client = FakeClient()
+        client.legacy = False
+        client.bearer = 'the-token'
+        session, _out, _err = make_repl(client)
+        session.elevated = True
+        session._elevated_until = time.monotonic() + 900
+        session._elevate_phrase = 'the-phrase'
+        session._elevate_stop = threading.Event()
+        client.queue('server/drop', {})
+        session.execute('drop')
+        self.assertFalse(session.elevated)
+        self.assertIsNone(session._elevate_phrase)
+        self.assertIsNone(session._elevate_stop)
+
     def test_elevate_twice_is_a_clean_error(self):
         client = FakeClient()
         client.legacy = False

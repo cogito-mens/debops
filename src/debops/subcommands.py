@@ -729,6 +729,11 @@ Commands:
                                  'file; the session proves itself at '
                                  'the prompt instead (debugging the '
                                  'untrusted paths)')
+        parser.add_argument('--elevated', action='store_true',
+                            help='become trusted and elevate for the '
+                                 "session's duration; the elevation "
+                                 'renews before it lapses '
+                                 '(debugging the elevated state)')
         spawn = parser.add_mutually_exclusive_group()
         spawn.add_argument('--spawn', dest='spawn',
                            action='store_true', default=None,
@@ -799,6 +804,11 @@ Commands:
                                  'file; the session proves itself at '
                                  'the prompt instead (debugging the '
                                  'untrusted paths)')
+        parser.add_argument('--elevated', action='store_true',
+                            help='become trusted and elevate for the '
+                                 "session's duration; the elevation "
+                                 'renews before it lapses '
+                                 '(debugging the elevated state)')
         spawn = parser.add_mutually_exclusive_group()
         spawn.add_argument('--spawn', dest='spawn',
                            action='store_true', default=None,
@@ -847,6 +857,11 @@ Commands:
                                  'file; the session proves itself at '
                                  'the prompt instead (debugging the '
                                  'untrusted paths)')
+        parser.add_argument('--elevated', action='store_true',
+                            help='become trusted and elevate for the '
+                                 "session's duration; the elevation "
+                                 'renews before it lapses '
+                                 '(debugging the elevated state)')
         spawn = parser.add_mutually_exclusive_group()
         spawn.add_argument('--spawn', dest='spawn',
                            action='store_true', default=None,

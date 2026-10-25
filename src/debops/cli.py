@@ -1219,7 +1219,8 @@ class Interpreter(object):
                     command=getattr(args, 'command', None),
                     confined=confined, history_max=history_max,
                     plain=getattr(args, 'plain', False),
-                    untrusted=getattr(args, 'untrusted', False))
+                    untrusted=getattr(args, 'untrusted', False),
+                    elevated=getattr(args, 'elevated', False))
         sys.exit(code)
 
     def do_autostart(self):

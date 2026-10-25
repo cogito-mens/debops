@@ -972,6 +972,10 @@ class Repl(object):
         self.cwd = view_root_rel or ''
         self._previous_cwd = None
         self.elevated = False
+        # The '--elevated' session: the renewal event and the cached
+        # passphrase (the daemon re-checks it on every renewal)
+        self._elevate_stop = None
+        self._elevate_phrase = None
         # The elevation TTL, for the status display (the server
         # enforces its own; this is the client's mirror of it)
         self._elevated_until = None
@@ -1971,12 +1975,94 @@ class Repl(object):
         self._note('elevated; the confirmation gates answer themselves '
                    'for a while of active use')
 
+    def elevate_for_session(self):
+        """The '--elevated' session: trusted, then elevated, and the
+        elevation renewed before it lapses — the gates answer
+        themselves for the session's duration. The daemon re-checks
+        the passphrase on every renewal (sudo-style), so the phrase
+        stays in the session's memory meanwhile; 'drop' forgets it
+        and ends the renewals."""
+        if self.client.legacy:
+            raise ReplError('trust needs the {} revision; this daemon '
+                            'speaks the 2025-era protocol'
+                            .format(_server.PROTOCOL_VERSION))
+        if self.elevated:
+            return
+        phrase = self._passphrase()
+        if self.client.bearer is None:
+            answer = self._request('server/authenticate',
+                                   {'passphrase': phrase})
+            self.client.bearer = answer['token']
+        answer = self._request('server/elevate',
+                               {'passphrase': phrase})
+        self.elevated = True
+        expires_in = answer.get('expiresIn')
+        self._elevated_until = (time.monotonic() + expires_in
+                                if isinstance(expires_in,
+                                              (int, float)) else None)
+        self._elevate_phrase = phrase
+        self._elevate_stop = threading.Event()
+        thread = threading.Thread(target=self._elevate_keeper,
+                                  daemon=True)
+        thread.start()
+        self._note('elevated for the session; the confirmation gates '
+                   'answer themselves')
+
+    def _end_session_elevation(self):
+        """End the '--elevated' renewals and forget the cached
+        phrase."""
+        if self._elevate_stop is not None:
+            self._elevate_stop.set()
+            self._elevate_stop = None
+        self._elevate_phrase = None
+
+    def _elevate_keeper(self):
+        """Renew the session elevation before it lapses, on a slow
+        cadence; a lapse the daemon refuses ends the renewals with
+        a note."""
+        while not self._elevate_stop.wait(30):
+            if not self._maybe_renew():
+                return
+
+    def _maybe_renew(self):
+        """One renewal check of the keeper; False ends it. The
+        renewal rides a side connection — the main one may be
+        mid-request."""
+        if not self.elevated:
+            return False
+        until = self._elevated_until
+        if until is None or until - time.monotonic() > 120:
+            return True
+        try:
+            side = self.client.clone()
+            answer = side.request('server/elevate',
+                                  {'passphrase': self._elevate_phrase})
+            side.close()
+        except (AttributeError, ConnectionError, EOFError, OSError):
+            # The side connection failed; the main one may still
+            # answer
+            try:
+                answer = self._request(
+                        'server/elevate',
+                        {'passphrase': self._elevate_phrase})
+            except ReplError as errmsg:
+                self._note('the elevation lapsed: {}'.format(errmsg))
+                return False
+        except ReplError as errmsg:
+            self._note('the elevation lapsed: {}'.format(errmsg))
+            return False
+        expires_in = answer.get('expiresIn')
+        if isinstance(expires_in, (int, float)):
+            self._elevated_until = time.monotonic() + expires_in
+        return True
+
     def cmd_drop(self, args):
         """End the elevation ahead of its timeout."""
         if args:
             raise ReplError('drop takes no arguments')
         if not self.elevated:
             raise ReplError('not elevated')
+        self._end_session_elevation()
         if self.client.bearer is not None and not self.client.legacy:
             self._request('server/drop', {})
         self.elevated = False
@@ -3402,7 +3488,7 @@ def _execute_line(repl, line):
 def run(client, project_name=None, view=None, interactive=None,
         project_path=None, project_type=None, view_root_rel=None,
         frontend=None, command=None, confined=False, history_max=0,
-        plain=False, untrusted=False):
+        plain=False, untrusted=False, elevated=False):
     """Build and run an interpreter session against the connected
     daemon. 'frontend' selects the chrome: None for the plain
     interpreter, 'shell' for the status-bar interface, 'console' for
@@ -3434,6 +3520,15 @@ def run(client, project_name=None, view=None, interactive=None,
                             view_root_rel=view_root_rel,
                             confined=confined, history_max=history_max,
                             untrusted=untrusted)
+    if elevated:
+        # '--elevated': trusted, then elevated for the session's
+        # duration; a session which cannot prove itself runs
+        # untrusted, the note says why
+        try:
+            session.elevate_for_session()
+        except ReplError as errmsg:
+            print('note: the elevation failed: {}'.format(errmsg),
+                  file=session._err)
     if runner is not None:
         return runner(session)
     if interactive:
