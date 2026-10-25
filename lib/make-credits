@@ -13,6 +13,7 @@ contributors at large.
 """
 
 import os
+import random
 import subprocess
 import sys
 
@@ -35,6 +36,13 @@ SPECIAL_THANKS = (
         ('Free Software', ('Richard M. Stallman',)),
         ('Linux', ('Linus Torvalds',)),
         ('Open Source', ('Bruce Perens', 'Eric S. Raymond')),
+)
+
+# The footer's easter eggs: one rides each build, picked at
+# random. More to come.
+FOOTERS = (
+        'May the Force be with you',
+        'Live long and prosper',
 )
 
 # The path scopes of the sections; each existing one counts
@@ -156,6 +164,9 @@ def main():
         lines.extend([topic, '-' * len(topic), ''])
         lines.extend(names)
         lines.append('')
+
+    # The easter egg closes the roll, a random one per build
+    lines.extend(['', random.choice(FOOTERS), ''])
 
     os.makedirs(os.path.dirname(target), exist_ok=True)
     with open(target, 'w', encoding='utf-8') as fp:

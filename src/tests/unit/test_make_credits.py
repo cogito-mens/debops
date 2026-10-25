@@ -69,12 +69,24 @@ class MakeCreditsTestCase(unittest.TestCase):
         self.assertIn('John Doe (1)', text)
         self.assertIn('Contributors', text)
         # The header and the special thanks ride along
-        self.assertTrue(text.startswith('DebOps\n'
+        self.assertTrue(text.startswith(
+                'DebOps\n'
                 'Your Debian-based data center in a box\n'))
         self.assertIn('-present', text)
         self.assertIn('Kimi K3 as Cogito Mens', text)
         self.assertIn('Special thanks', text)
         self.assertIn('Debian', text)
+        # The easter egg closes the roll, one of the footers
+        import importlib.machinery
+        import importlib.util
+        loader = importlib.machinery.SourceFileLoader(
+                'mc', GENERATOR)
+        spec = importlib.util.spec_from_file_location(
+                'mc', GENERATOR, loader=loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        self.assertIn(text.rstrip().splitlines()[-1].strip(),
+                      module.FOOTERS)
         # The project's tooling ignores the generated file
         self.assertIn('credits', open(os.path.join(
                 REPO_ROOT, '.gitignore')).read())
