@@ -352,7 +352,7 @@ def confirmation_flow(context, message, required=False):
             },
         },
     }
-    if context.task is not None:
+    if context.task is not None and not context.unattended:
         answer = context.task.ask('confirmation', request)
         content = answer.get('content') or {}
         return (answer.get('action') == 'accept'

@@ -711,6 +711,21 @@ class ExecuteTestCase(unittest.TestCase):
         self.assertEqual(outcome, [None])
         self.assertEqual(task.status, 'working')
 
+    def test_an_unattended_task_is_refused_the_gate(self):
+        # The job queue has nobody to answer: the gate refuses the
+        # run instead of parking the task on a question
+        from debops.mcp.tasks import Task
+        from debops.mcp.tools.execute import _check_local_confirmation
+        task = Task(ttl_ms=60000)
+        context = ToolContext(1, threading.Event(), task=task,
+                              unattended=True)
+        result = _check_local_confirmation(['probe.yml'], context,
+                                           self.policy)
+        # The refusal is a clean tool error, not a hanging question
+        self.assertTrue(result['isError'])
+        self.assertIn('confirmation', result['content'][0]['text'])
+        self.assertEqual(task.status, 'working')
+
     def test_log_lines_identify_the_client(self):
         self.context = ToolContext(9, threading.Event(), peer_pid=4321)
         with self.assertLogs('debops.mcp.tools.execute',

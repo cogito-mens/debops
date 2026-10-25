@@ -284,7 +284,12 @@ class ToolContext(object):
     def __init__(self, request_id, cancelled, progress_token=None,
                  notify=None, peer_pid=None, client_capabilities=None,
                  client_info=None, input_responses=None, task=None,
-                 trusted=False, elevated=False, server=None):
+                 trusted=False, elevated=False, server=None,
+                 unattended=False):
+        # 'unattended': the context has nobody to answer a question
+        # (the job queue) — a confirmation gate refuses instead of
+        # waiting forever
+        self.unattended = unattended
         self.request_id = request_id
         self.cancelled = cancelled
         self.progress_token = progress_token
@@ -1619,12 +1624,20 @@ class McpServer(object):
                     request_id=context.request_id)
         if task is not None and task.run_info:
             # The audit trail names the cancelling client and its
-            # relation to the run
-            logger.notice('The run task %s is cancelled by pid %s '
-                          '(%s)', task.task_id, context.peer_pid,
-                          'the owner'
-                          if context.peer_pid == task.owner_pid
-                          else 'a trusted client')
+            # relation to the run; a cancel landing after the end
+            # says so instead of claiming a stop
+            if task.status in ('completed', 'failed', 'cancelled'):
+                logger.notice('The run task %s was already %s when '
+                              'pid %s asked to cancel',
+                              task.task_id, task.status,
+                              context.peer_pid)
+            else:
+                logger.notice('The run task %s is cancelled by pid '
+                              '%s (%s)', task.task_id,
+                              context.peer_pid,
+                              'the owner'
+                              if context.peer_pid == task.owner_pid
+                              else 'a trusted client')
         return {}
 
     # -- subscriptions -----------------------------------------------------

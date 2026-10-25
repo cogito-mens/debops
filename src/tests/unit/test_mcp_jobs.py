@@ -8,6 +8,8 @@ Written with 'unittest' so that the suite runs under pytest without extra
 dependencies.
 """
 
+import os
+import threading
 import unittest
 
 from unittest import mock
@@ -22,6 +24,7 @@ def make_server(with_queue=True):
     server.legacy = False
     server.project.view = 'system'
     server.policy.execute_debug = True
+    server.policy.execute_timeout = 3600
     server.killswitch = None
     server.job_queue = JobQueue(server, interval=0.01) \
         if with_queue else None
@@ -236,6 +239,46 @@ class SchedulerTestCase(unittest.TestCase):
     def tick(self, times=1):
         for _ in range(times):
             self.queue._dispatch_once()
+
+    def test_a_job_run_is_a_real_cancellable_task(self):
+        # The queue's job registers in the server's task registry:
+        # the clients track it, a trusted one cancels it; the daemon
+        # itself owns it
+        from debops.mcp.tasks import TaskRegistry
+        self.server._tasks = TaskRegistry()
+        self.server._active_lock = threading.Lock()
+        self.server._active_requests = {}
+        started = threading.Event()
+
+        def blocking_execute(project, policy, arguments, context,
+                             check=None, enabled_check=None,
+                             on_disabled=None):
+            started.set()
+            context.cancelled.wait(10)
+            return {'isError': True,
+                    'content': [{'type': 'text',
+                                 'text': 'cancelled by the client'}]}
+
+        with mock.patch.object(jobs_module, '_execute_playbook',
+                               blocking_execute):
+            self.queue.batch_create('work')
+            add_job(self.server, 'work')
+            self.queue.queue_start()
+            runner = threading.Thread(target=self.tick)
+            runner.start()
+            self.assertTrue(started.wait(5))
+            job = self.queue._find_batch('work')['jobs'][0]
+            task_id = job['taskId']
+            task = self.server._tasks.get(task_id)
+            self.assertIsNotNone(task)
+            self.assertEqual(task.owner_pid, os.getpid())
+            self.assertEqual(task.status, 'working')
+            self.assertTrue(self.server._tasks.cancel(task_id))
+            runner.join(timeout=5)
+            self.assertFalse(runner.is_alive())
+            self.assertEqual(task.status, 'cancelled')
+            # The queue unwinds the cancelled run as a failed job
+            self.assertEqual(job['state'], 'failed')
 
     def test_nothing_dispatches_while_parked(self):
         self.queue.batch_create('work')

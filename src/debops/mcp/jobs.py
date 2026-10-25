@@ -16,6 +16,7 @@ drops the queue; the run logs keep the record of what ran.
 
 import itertools
 import logging
+import os
 import re
 import threading
 import time
@@ -329,17 +330,57 @@ class JobQueue(object):
         arguments['_job'] = {'id': job['id'], 'batch': batch['name'],
                              'mode': job['mode'],
                              'createdAt': job['createdAt']}
+        # The queue's job runs as a normal execution task: the
+        # clients track it through the registry, a trusted one
+        # cancels it (its owner is the daemon itself), and the run
+        # metadata carries the task id
+        task = server._tasks.create(
+                ttl_ms=max(3600000, (policy.execute_timeout
+                                     if policy.execute_timeout > 0
+                                     else 43200) * 2000))
+        task.owner_pid = os.getpid()
+        job['taskId'] = task.task_id
+        logger.notice('Task %s started: %s %s (the job queue, %s)',
+                      task.task_id, job['mode'], ' '.join(job['targets']),
+                      job['id'])
         context = ToolContext(
-                None, threading.Event(), client_capabilities={},
+                task.task_id, task.cancel_event,
+                client_capabilities={},
                 client_info={'name': 'the job queue'}, trusted=True,
-                server=server)
-        result = _execute_playbook(
-                project, policy, arguments, context,
-                check=(job['mode'] == 'check'),
-                enabled_check=(server.killswitch.is_enabled
-                               if server.killswitch is not None
-                               else None),
-                on_disabled=server.cancel_all)
+                task=task, server=server,
+                # The queue is unattended: a confirmation gate
+                # refuses the job instead of parking it on a
+                # question nobody can answer
+                unattended=True)
+        with server._active_lock:
+            server._active_requests['task:' + task.task_id] = \
+                    task.cancel_event
+        try:
+            result = _execute_playbook(
+                    project, policy, arguments, context,
+                    check=(job['mode'] == 'check'),
+                    enabled_check=(server.killswitch.is_enabled
+                                   if server.killswitch is not None
+                                   else None),
+                    on_disabled=server.cancel_all)
+        except Exception:
+            with server._active_lock:
+                server._active_requests.pop('task:' + task.task_id,
+                                            None)
+            task.fail({'code': -32603,
+                       'message': 'Internal error: the execution '
+                                  'raising'})
+            raise
+        with server._active_lock:
+            server._active_requests.pop('task:' + task.task_id, None)
+        if context.cancelled.is_set():
+            task.mark_cancelled()
+            logger.notice('Task %s cancelled: %s (the job queue)',
+                          task.task_id, job['id'])
+        else:
+            task.complete(result)
+            logger.notice('Task %s completed: %s (the job queue)',
+                          task.task_id, job['id'])
         if result.get('isError'):
             raise JobQueueError(result['content'][0]['text'])
         structured = result.get('structuredContent') or {}
