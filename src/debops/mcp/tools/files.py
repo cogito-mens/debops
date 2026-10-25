@@ -15,6 +15,7 @@ directory; the deny list applies either way. Inventory queries run
 
 import fnmatch
 import hashlib
+import json
 import logging
 import os
 import re
@@ -322,12 +323,22 @@ def tool_inventory_query(project, arguments):
         return error_result('ansible-inventory failed: '
                             + result.stderr.strip()[-2000:])
 
+    # The JSON-shaped actions carry the parse as the structured
+    # content; the truncation guards the text answer only
+    structured = None
+    if action in ('list', 'host'):
+        try:
+            structured = {'action': action,
+                          'inventory': json.loads(result.stdout)}
+        except ValueError:
+            pass
+
     output = result.stdout
     if len(output) > INVENTORY_OUTPUT_LIMIT:
         output = (output[:INVENTORY_OUTPUT_LIMIT]
                   + '\n… (truncated; use the "graph" action or query a '
                     'single host for a narrower view)')
-    return text_result(output)
+    return text_result(output, structured=structured)
 
 
 def _authorized_write_path(project, policy, relative, elevated=False):

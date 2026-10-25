@@ -93,6 +93,42 @@ def _doc_environ(project, policy):
     return env
 
 
+def _ansible_doc_json(env, cwd, plugin, plugin_type, entry_point,
+                      roles_paths):
+    """The plugin's documentation as the parsed data, via
+    'ansible-doc --json'; None when it cannot answer (the structured
+    content of an answer is best-effort — the text is the
+    contract)."""
+    command = ['ansible-doc', '--json']
+    if plugin_type != 'module':
+        command += ['--type', plugin_type]
+    if entry_point:
+        command += ['--entry-point', entry_point]
+    for path in roles_paths or []:
+        command += ['--roles-path', path]
+    command.append(plugin)
+    try:
+        result = subprocess.run(
+                command, env=env, cwd=cwd, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, universal_newlines=True,
+                timeout=DOC_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        document = json.loads(result.stdout)
+    except ValueError:
+        return None
+    # ansible-doc --json answers {name: {doc, examples, metadata,
+    # return, ...}}; the inner entry is the answer
+    if isinstance(document, dict):
+        for _key, value in document.items():
+            if isinstance(value, dict):
+                return value
+    return None
+
+
 def tool_ansible_doc(project, policy, arguments, roles_paths=None):
     plugin = str(arguments.get('plugin') or '')
     plugin_type = str(arguments.get('type') or 'module')
@@ -171,11 +207,39 @@ def tool_ansible_doc(project, policy, arguments, roles_paths=None):
                 plugin,
                 result.stderr.strip()[-300:] or 'not found'))
 
+    # The structured form: the documentation parsed (the YAML of
+    # the DOCUMENTATION block), or the list of plugin names
+    structured = None
+    if list_mode:
+        names = []
+        for line in result.stdout.splitlines():
+            parts = line.split(None, 1)
+            if parts:
+                names.append(parts[0])
+        structured = {'plugins': names}
+    elif snippet:
+        structured = {'plugin': plugin, 'type': plugin_type,
+                      'snippet': result.stdout}
+    else:
+        document = _ansible_doc_json(env, (project.path
+                                           if project is not None
+                                           else None),
+                                     plugin, plugin_type, entry_point,
+                                     roles_paths)
+        if document is not None:
+            structured = {'plugin': plugin, 'type': plugin_type,
+                          'doc': document.get('doc') or {},
+                          'examples': document.get('examples') or '',
+                          'metadata': document.get('metadata') or {}}
+
     if output_format != 'text':
         try:
             document = json.loads(result.stdout)
         except ValueError:
             return error_result('ansible-doc did not return JSON: '
                                 + result.stdout.strip()[:200])
-        return document_result(document, output_format)
-    return text_result(result.stdout)
+        result = document_result(document, output_format)
+        if structured is not None and not result.get('isError'):
+            result['structuredContent'] = structured
+        return result
+    return text_result(result.stdout, structured=structured)

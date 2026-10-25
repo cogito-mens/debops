@@ -878,6 +878,23 @@ def test_inventory_query_via_stdio(run_debops, mcp_env, project_dir):
     assert response["result"]["isError"] is False
     assert "@testgroup" in response["result"]["content"][0]["text"]
 
+    # The list action carries the parsed inventory as structured
+    # content — the console's Inventory tab reads it
+    request = json.dumps({
+        "jsonrpc": "2.0", "id": 2,
+        "method": "tools/call",
+        "params": {"_meta": REQUEST_META, "name": "inventory.query",
+                   "arguments": {"action": "list"}},
+    }) + "\n"
+    result = run_debops("mcp", "serve", cwd=str(project_dir),
+                        env=mcp_env, input_text=request)
+    assert result.returncode == 0
+    (response,) = read_json_lines(result.stdout)
+    structured = response["result"]["structuredContent"]
+    assert structured["action"] == "list"
+    assert "testgroup" in structured["inventory"]["all"]["children"]
+    assert "testhost" in structured["inventory"]["testgroup"]["hosts"]
+
 
 def test_role_inspection_via_stdio(run_debops, mcp_env, project_dir):
     requests = (
@@ -4342,6 +4359,11 @@ def test_ansible_doc_via_stdio(run_debops, mcp_env, tmp_path):
     response = call({"plugin": "ansible.builtin.service"})
     text = response["result"]["content"][0]["text"]
     assert "manage" in text.lower() and "service" in text.lower()
+    # The structured content is the parsed documentation
+    structured = response["result"]["structuredContent"]
+    assert structured["plugin"] == "ansible.builtin.service"
+    assert "doc" in structured
+    assert structured["doc"].get("short_description")
 
     response = call({"plugin": "debops.debops.dpkg_divert",
                      "format": "json"}, 2)

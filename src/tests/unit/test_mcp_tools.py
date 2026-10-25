@@ -1993,6 +1993,30 @@ class ToolsTestCase(unittest.TestCase):
         # Undocumented variables are listed too
         self.assertIn('## testrole__extra', text)
 
+    def test_role_defaults_structured_content(self):
+        # The YAML parsed, the comment documentation attached
+        response = self.call_tool('role.defaults',
+                                  {'name': 'testrole'})
+        structured = response['result']['structuredContent']
+        self.assertEqual(structured['role'], 'debops.testrole')
+        entries = {entry['name']: entry
+                   for entry in structured['defaults']}
+        enabled = entries['testrole__enabled']
+        self.assertTrue(enabled['documented'])
+        self.assertIn('Enable or disable the test role.',
+                      enabled['documentation'])
+        self.assertIs(enabled['value'], True)
+        self.assertEqual(entries['testrole__port']['value'], 8080)
+        # The undocumented variable shows, marked as such
+        extra = entries['testrole__extra']
+        self.assertFalse(extra['documented'])
+        self.assertEqual(extra['value'], 'undocumented')
+        # ... in the names-only detail too
+        response = self.call_tool('role.defaults',
+                                  {'name': 'testrole',
+                                   'detail': 'names'})
+        self.assertIn('structuredContent', response['result'])
+
     def test_role_defaults_names_detail(self):
         response = self.call_tool('role.defaults',
                                   {'name': 'testrole', 'detail': 'names'})

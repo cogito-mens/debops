@@ -479,9 +479,16 @@ def _tool_role_tasklist(roles_paths, arguments, subdir,
                     '' if count == 1 else 's'))
             total += count
         lines.insert(1, '({} {}s)'.format(total, kind))
+        structured = {'role': 'debops.{}'.format(name),
+                      'files': counts,
+                      'tasks': total}
         if output_format != 'text':
-            return document_result(counts, output_format)
-        return text_result('\n'.join(lines) + '\n')
+            result = document_result(counts, output_format)
+            if not result.get('isError'):
+                result['structuredContent'] = structured
+            return result
+        return text_result('\n'.join(lines) + '\n',
+                           structured=structured)
 
     if not task_file.endswith(('.yml', '.yaml')):
         task_file += '.yml'
@@ -517,7 +524,20 @@ def _tool_role_tasklist(roles_paths, arguments, subdir,
         shown += 1
     if name_filter:
         lines.insert(1, '({} matching)'.format(shown))
-    return text_result('\n'.join(lines) + '\n')
+    # The structured form: the tasks' summaries — the name, the
+    # module, the tags — parsed from the YAML
+    structured = {'role': 'debops.{}'.format(name),
+                  'file': task_file,
+                  'tasks': [{'name': str(task.get('name',
+                                                 '(unnamed)')),
+                             'module': task_module(task),
+                             'tags': task.get('tags') or []}
+                            for task in tasks
+                            if not name_filter
+                            or name_filter in str(
+                                    task.get('name', '')).lower()]}
+    return text_result('\n'.join(lines) + '\n',
+                       structured=structured)
 
 
 def tool_role_tasks(roles_paths, arguments, index_provider=None):
@@ -546,18 +566,26 @@ def _tool_role_tree(roles_paths, arguments, subdir,
     relative = str(arguments.get('path') or '').strip('/')
     if not relative:
         lines = ['# debops.{} {}'.format(name, subdir), '']
+        paths = []
         for base, dirs, files in os.walk(tree_dir):
             dirs[:] = sorted(directory for directory in dirs
                              if not directory.startswith('.'))
             for filename in sorted(files):
                 if filename.startswith('.'):
                     continue
-                lines.append('- {}'.format(os.path.relpath(
-                        os.path.join(base, filename), tree_dir)))
+                entry = os.path.relpath(os.path.join(base, filename),
+                                        tree_dir)
+                lines.append('- {}'.format(entry))
+                paths.append(entry)
+        # The structured form of the listing
+        structured = {'role': 'debops.{}'.format(name),
+                      subdir: paths}
         if len(lines) == 2:
             return text_result('role {} has an empty {} directory'
-                               .format(name, subdir))
-        return text_result('\n'.join(lines) + '\n')
+                               .format(name, subdir),
+                               structured=structured)
+        return text_result('\n'.join(lines) + '\n',
+                           structured=structured)
 
     try:
         target = confine_under(tree_dir, relative)
@@ -575,7 +603,10 @@ def _tool_role_tree(roles_paths, arguments, subdir,
         return error_result('not a UTF-8 text file: ' + relative)
     if content and not content.endswith('\n'):
         content += '\n'
-    return text_result('# {}\n\n```\n{}```'.format(relative, content))
+    return text_result('# {}\n\n```\n{}```'.format(relative, content),
+                       structured={'role': 'debops.{}'.format(name),
+                                   'path': relative,
+                                   'content': content})
 
 
 def tool_role_templates(roles_paths, arguments, index_provider=None):
@@ -681,6 +712,8 @@ def tool_role_argspec(roles_paths, arguments, index_provider=None):
     if not specs:
         return error_result('role {} has no argument specs '
                             '(meta/argument_specs.yml)'.format(display))
+    # The structured form is the parsed spec document itself
+    structured = {'role': display, 'argumentSpecs': specs}
 
     detail = arguments.get('detail', 'brief')
     if detail not in ('names', 'brief', 'full'):
@@ -701,8 +734,9 @@ def tool_role_argspec(roles_paths, arguments, index_provider=None):
         lines.append('')
     if not lines:
         return text_result('no matching options in the debops.{} '
-                           'argument specs'.format(name))
-    return text_result('\n'.join(lines))
+                           'argument specs'.format(name),
+                           structured=structured)
+    return text_result('\n'.join(lines), structured=structured)
 
 
 def tool_role_variables(roles_paths, arguments, index_provider=None):
@@ -742,14 +776,26 @@ def tool_role_variables(roles_paths, arguments, index_provider=None):
         entries = [entry for entry in entries
                    if name_filter in entry[0].lower()]
 
+    # The structured form rides every answer: the YAML parse typed
+    # the values, the comments the documentation
+    structured = {'role': 'debops.{}'.format(name),
+                  'vars': [{'name': var_name,
+                            'value': values.get(var_name),
+                            'documentation': description,
+                            'documented': bool(description)}
+                           for var_name, description in entries]}
+
     if output_format != 'text':
         document = {key: value for key, value in values.items()
                     if not name_filter or name_filter in key.lower()}
-        return document_result(document, output_format)
+        result = document_result(document, output_format)
+        if not result.get('isError'):
+            result['structuredContent'] = structured
+        return result
 
     if not entries:
         return text_result('no matching variables in debops.{} vars'
-                           .format(name))
+                           .format(name), structured=structured)
 
     detail = arguments.get('detail', 'brief')
     if detail not in ('names', 'brief', 'full'):
@@ -758,7 +804,8 @@ def tool_role_variables(roles_paths, arguments, index_provider=None):
     header = '# debops.{} variables ({})'.format(name, len(entries))
     if detail == 'names':
         return text_result('\n'.join([header, '']
-                                     + [entry[0] for entry in entries]))
+                                     + [entry[0] for entry in entries]),
+                           structured=structured)
 
     lines = [header, '']
     for var_name, description in entries:
@@ -787,7 +834,7 @@ def tool_role_variables(roles_paths, arguments, index_provider=None):
             if var_name in values:
                 lines.extend(['```yaml', dump_default(values[var_name]),
                               '```', ''])
-    return text_result('\n'.join(lines))
+    return text_result('\n'.join(lines), structured=structured)
 
 
 def tool_role_defaults(roles_paths, arguments, index_provider=None,
@@ -840,14 +887,32 @@ def tool_role_defaults(roles_paths, arguments, index_provider=None,
         entries = [entry for entry in entries
                    if name_filter in entry[0].lower()]
 
+    # The structured form rides every answer: the entries with the
+    # typed values from the YAML parse and the documentation from
+    # the comment blocks the YAML parser would drop
+    structured_entries = []
+    for var_name, description, value_text, source in entries:
+        structured_entries.append({
+                'name': var_name,
+                'value': values.get(var_name),
+                'documentation': description,
+                'source': source,
+                'documented': bool(description)})
+    structured = {'role': 'debops.{}'.format(name),
+                  'defaults': structured_entries}
+
     if output_format != 'text':
         document = {key: value for key, value in values.items()
                     if not name_filter or name_filter in key.lower()}
-        return document_result(document, output_format)
+        result = document_result(document, output_format)
+        if not result.get('isError'):
+            result['structuredContent'] = structured
+        return result
 
     if not entries:
         return text_result('no matching variables in debops.{} '
-                           'defaults'.format(name))
+                           'defaults'.format(name),
+                           structured=structured)
 
     detail = arguments.get('detail', 'brief')
     if detail not in ('names', 'brief', 'full'):
@@ -857,7 +922,8 @@ def tool_role_defaults(roles_paths, arguments, index_provider=None,
                                                          len(entries))
     if detail == 'names':
         return text_result('\n'.join(
-                [header, ''] + [entry[0] for entry in entries]))
+                [header, ''] + [entry[0] for entry in entries]),
+                structured=structured)
 
     if detail == 'brief':
         lines = [header, '']
@@ -879,7 +945,7 @@ def tool_role_defaults(roles_paths, arguments, index_provider=None,
             if default:
                 line += ' (default: `{}`)'.format(default)
             lines.append(line)
-        return text_result('\n'.join(lines))
+        return text_result('\n'.join(lines), structured=structured)
 
     lines = [header]
     if len(sources) > 1:
@@ -909,4 +975,4 @@ def tool_role_defaults(roles_paths, arguments, index_provider=None,
                 default = value_text
             if default:
                 lines.extend(['```yaml', default, '```', ''])
-    return text_result('\n'.join(lines))
+    return text_result('\n'.join(lines), structured=structured)
