@@ -394,6 +394,7 @@ TOOL_CALL_EXAMPLES = {
     'execution.output': ['id=3 kind=changed',
                          'id=last pattern="^fatal" context=5'],
     'execution.purge': ['older_than=86400'],
+    'log.reader': ['id=3', 'id=last'],
     'batch.create': ['name=infra'],
     'batch.remove': ['name=infra'],
     'batch.prune': ['name=infra'],

@@ -1706,6 +1706,7 @@ DOCS_STUB_TOOLS = frozenset((
     'collection.require', 'collection.sync', 'config.get',
     'environment.list', 'environment.set', 'environment.unset',
     'execution.list', 'execution.output', 'execution.purge',
+    'log.reader',
     'file.delete', 'file.move', 'file.write',
     'inventory.query', 'inventory.spec', 'keyring.fetch',
     'project.files', 'project.list', 'project.mkdir', 'project.pull',

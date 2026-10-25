@@ -1705,6 +1705,7 @@ class ToolsTestCase(unittest.TestCase):
                           'file.delete', 'file.move', 'file.write',
                           'inventory.query',
                           'inventory.spec', 'keyring.fetch',
+                          'log.reader',
                           'playbook.info',
                           'playbook.list', 'project.files', 'project.list',
                           'project.mkdir', 'project.pull',
