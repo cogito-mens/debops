@@ -14,6 +14,7 @@ from debops.mcp.server import McpServer
 from debops.mcp.skills import SkillLibrary
 from debops.mcp.tools import DOCS_STUB_TOOLS
 from debops.mcp.transport import UnixSocketTransport
+import fcntl
 import json
 import os
 import shutil
@@ -452,10 +453,13 @@ def test_docs_mode_tools_agree_on_the_account_collections(
 def test_serve_log_file(run_debops, mcp_env, project_dir):
     # A harness swallows the server's stderr; the audit log is the file
     log_path = project_dir.parent / "server.log"
+    # The ok probe is a state-changing tool on purpose: the read-only
+    # polls (project.status) journal at a lower level — the audit log
+    # tells what changed, not who looked
     request = json.dumps({
         "jsonrpc": "2.0", "id": 1,
         "method": "tools/call",
-        "params": {"_meta": REQUEST_META, "name": "project.status",
+        "params": {"_meta": REQUEST_META, "name": "queue.start",
                    "arguments": {}},
     }) + "\n"
     result = run_debops("mcp", "serve", "--log", str(log_path),
@@ -464,7 +468,7 @@ def test_serve_log_file(run_debops, mcp_env, project_dir):
     assert result.returncode == 0
     content = log_path.read_text()
     assert "Serving project" in content
-    assert "Tool project.status() -> ok" in content
+    assert "Tool queue.start() -> ok" in content
     # A tool error is an audit line, not silence
     request = json.dumps({
         "jsonrpc": "2.0", "id": 1,
@@ -484,6 +488,35 @@ def _hook_canary(hook_dir, marker):
     script = hook_dir / "00-canary"
     script.write_text("#!/bin/sh\ntouch {}\n".format(marker))
     script.chmod(0o755)
+
+
+def _await_run_finalize(project_dir, timeout=90):
+    """Wait out a detached run whose server is gone.
+
+    A successful run ends at its recap — the wrapper's sendoff line
+    speaks only on failure — so the log carries no finalization
+    signal on success. The lock does: the wrapper holds the project
+    flock through its finalize, and the kernel releases it when the
+    wrapper exits.
+    """
+    locks = list(project_dir.glob('**/mcp.lock')) + \
+        list(project_dir.glob('**/.mcp.lock'))
+    assert len(locks) == 1, 'the run lock file was not found'
+    deadline = time.monotonic() + timeout
+    while True:
+        fp = open(str(locks[0]), 'a')
+        try:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            held = True
+        else:
+            held = False
+        fp.close()
+        if not held:
+            return
+        if time.monotonic() > deadline:
+            pytest.fail('the detached run never finalized')
+        time.sleep(0.2)
 
 
 def test_docs_mode_never_runs_hooks(run_debops, mcp_env, tmp_path):
@@ -1172,16 +1205,9 @@ def test_detached_run_survives_the_death_of_the_server(
         server.wait(timeout=10)
         assert server.returncode == -signal.SIGKILL
 
-        # The detached run completes anyway, and the log is the record
-        deadline = time.monotonic() + 90
-        while time.monotonic() < deadline:
-            text = log.read_text()
-            if "debops-mcp: Ansible finished" in text:
-                break
-            time.sleep(0.2)
-        else:
-            pytest.fail("the detached run never finalized; the log:\n"
-                        + log.read_text())
+        # The detached run completes anyway, and the log is the record;
+        # the finalization signal is the lock, not a sendoff line
+        _await_run_finalize(project_dir)
         text = log.read_text()
         assert "survived the harness" in text
         assert "PLAY RECAP" in text
@@ -1283,12 +1309,7 @@ def test_an_orphaned_run_keeps_the_project_locked(
             assert "exitCode" not in entry
 
             # The orphan finishes; the lock releases with its finalize
-            deadline = time.monotonic() + 90
-            while "debops-mcp: Ansible finished" \
-                    not in log.read_text():
-                assert time.monotonic() < deadline, \
-                    "the orphaned run never finalized"
-                time.sleep(0.2)
+            _await_run_finalize(project_dir)
 
             # Now the mutation goes through (the first attempt may race
             # the wrapper's exit by a moment; poll)
@@ -4251,7 +4272,8 @@ def test_serve_detach_reports_and_serves(run_debops, mcp_env,
         assert "debops-mcp" in Path(
                 "/proc/{}/comm".format(pid)).read_text()
         # And it answers
-        probe = run_debops("mcp", "inspect", str(sockets[0]),
+        probe = run_debops("mcp", "inspect", "--socket",
+                           str(sockets[0]),
                            cwd=str(project_dir), env=env)
         assert probe.returncode == 0
     finally:
