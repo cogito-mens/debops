@@ -40,3 +40,250 @@
   playbook: 'service/python'
   groups: [ 'debops_service_python' ]
   idempotency: 'advisory'
+
+# Batch 1: base system, packaging and language roles.
+
+- name: 'environment'
+  playbook: 'service/environment'
+  idempotency: 'advisory'
+
+- name: 'fhs'
+  playbook: 'service/fhs'
+  idempotency: 'advisory'
+
+- name: 'debops_fact'
+  playbook: 'service/debops_fact'
+  idempotency: 'advisory'
+
+- name: 'secret'
+  playbook: 'service/secret'
+  idempotency: 'advisory'
+
+- name: 'console'
+  playbook: 'service/console'
+  idempotency: 'advisory'
+
+- name: 'cron'
+  playbook: 'service/cron'
+  idempotency: 'advisory'
+
+- name: 'atd'
+  playbook: 'service/atd'
+  idempotency: 'advisory'
+
+- name: 'sysnews'
+  playbook: 'service/sysnews'
+  groups: [ 'debops_service_sysnews' ]
+  idempotency: 'advisory'
+
+- name: 'tzdata'
+  playbook: 'service/tzdata'
+  idempotency: 'advisory'
+
+- name: 'locales'
+  playbook: 'service/locales'
+  idempotency: 'advisory'
+
+- name: 'netbase'
+  playbook: 'service/netbase'
+  idempotency: 'advisory'
+
+- name: 'proc_hidepid'
+  playbook: 'service/proc_hidepid'
+  idempotency: 'advisory'
+
+- name: 'persistent_paths'
+  playbook: 'service/persistent_paths'
+  groups: [ 'debops_service_persistent_paths' ]
+  idempotency: 'advisory'
+
+- name: 'mount'
+  playbook: 'service/mount'
+  idempotency: 'advisory'
+
+- name: 'swapfile'
+  playbook: 'service/swapfile'
+  groups: [ 'debops_service_swapfile' ]
+  idempotency: 'advisory'
+
+- name: 'users'
+  playbook: 'service/users'
+  idempotency: 'advisory'
+
+- name: 'system_users'
+  playbook: 'service/system_users'
+  idempotency: 'advisory'
+
+- name: 'system_groups'
+  playbook: 'service/system_groups'
+  idempotency: 'advisory'
+
+- name: 'root_account'
+  playbook: 'service/root_account'
+  idempotency: 'advisory'
+
+- name: 'auth'
+  playbook: 'service/auth'
+  idempotency: 'advisory'
+
+- name: 'sudo'
+  playbook: 'service/sudo'
+  idempotency: 'advisory'
+
+- name: 'pam_access'
+  playbook: 'service/pam_access'
+  idempotency: 'advisory'
+
+- name: 'libuser'
+  playbook: 'service/libuser'
+  idempotency: 'advisory'
+
+- name: 'nsswitch'
+  playbook: 'service/nsswitch'
+  idempotency: 'advisory'
+
+- name: 'nscd'
+  playbook: 'service/nscd'
+  groups: [ 'debops_service_nscd' ]
+  idempotency: 'advisory'
+
+- name: 'systemd'
+  playbook: 'service/systemd'
+  idempotency: 'advisory'
+
+- name: 'journald'
+  playbook: 'service/journald'
+  idempotency: 'advisory'
+
+- name: 'timesyncd'
+  playbook: 'service/timesyncd'
+  idempotency: 'advisory'
+
+- name: 'sysctl'
+  playbook: 'service/sysctl'
+  idempotency: 'advisory'
+
+- name: 'sysfs'
+  playbook: 'service/sysfs'
+  groups: [ 'debops_service_sysfs' ]
+  idempotency: 'advisory'
+
+- name: 'logrotate'
+  playbook: 'service/logrotate'
+  idempotency: 'advisory'
+
+- name: 'monit'
+  playbook: 'service/monit'
+  groups: [ 'debops_service_monit' ]
+  idempotency: 'advisory'
+
+- name: 'etckeeper'
+  playbook: 'service/etckeeper'
+  idempotency: 'advisory'
+
+- name: 'debconf'
+  playbook: 'service/debconf'
+  groups: [ 'debops_service_debconf' ]
+  idempotency: 'advisory'
+
+- name: 'apparmor'
+  playbook: 'service/apparmor'
+  idempotency: 'advisory'
+
+- name: 'unattended_upgrades'
+  playbook: 'service/unattended_upgrades'
+  idempotency: 'advisory'
+
+- name: 'yadm'
+  playbook: 'service/yadm'
+  idempotency: 'advisory'
+
+- name: 'apt_install'
+  playbook: 'service/apt_install'
+  idempotency: 'advisory'
+
+- name: 'apt_preferences'
+  playbook: 'service/apt_preferences'
+  idempotency: 'advisory'
+
+- name: 'apt_mark'
+  playbook: 'service/apt_mark'
+  idempotency: 'advisory'
+
+- name: 'apt_mirror'
+  playbook: 'service/apt_mirror'
+  groups: [ 'debops_service_apt_mirror' ]
+  idempotency: 'advisory'
+
+- name: 'apt_proxy'
+  playbook: 'service/apt_proxy'
+  idempotency: 'advisory'
+
+- name: 'apt_cacher_ng'
+  playbook: 'service/apt_cacher_ng'
+  groups: [ 'debops_service_apt_cacher_ng' ]
+  idempotency: 'advisory'
+
+- name: 'extrepo'
+  playbook: 'service/extrepo'
+  groups: [ 'debops_service_extrepo' ]
+  idempotency: 'advisory'
+
+- name: 'keyring'
+  playbook: 'service/keyring'
+  idempotency: 'advisory'
+
+- name: 'neurodebian'
+  playbook: 'service/neurodebian'
+  groups: [ 'debops_service_neurodebian' ]
+  idempotency: 'advisory'
+
+- name: 'hashicorp'
+  playbook: 'service/hashicorp'
+  groups: [ 'debops_service_hashicorp' ]
+  idempotency: 'advisory'
+
+- name: 'elastic_co'
+  playbook: 'service/elastic_co'
+  groups: [ 'debops_service_elastic_co' ]
+  idempotency: 'advisory'
+
+- name: 'influxdata'
+  playbook: 'service/influxdata'
+  groups: [ 'debops_service_influxdata' ]
+  idempotency: 'advisory'
+
+- name: 'java'
+  playbook: 'service/java'
+  groups: [ 'debops_service_java' ]
+  idempotency: 'advisory'
+
+- name: 'golang'
+  playbook: 'service/golang'
+  groups: [ 'debops_service_golang' ]
+  idempotency: 'advisory'
+
+- name: 'ruby'
+  playbook: 'service/ruby'
+  groups: [ 'debops_service_ruby' ]
+  idempotency: 'advisory'
+
+- name: 'cran'
+  playbook: 'service/cran'
+  groups: [ 'debops_service_cran' ]
+  idempotency: 'advisory'
+
+- name: 'nodejs'
+  playbook: 'service/nodejs'
+  groups: [ 'debops_service_nodejs' ]
+  idempotency: 'advisory'
+
+- name: 'php'
+  playbook: 'service/php'
+  groups: [ 'debops_service_php' ]
+  idempotency: 'advisory'
+
+- name: 'ansible'
+  playbook: 'service/ansible'
+  groups: [ 'debops_service_ansible' ]
+  idempotency: 'advisory'
